@@ -19,6 +19,9 @@ on:
         required: false
         type: string
 
+permissions:
+  contents: write  # Required for creating releases
+
 jobs:
   # Job 1: Get list of all regions to extract
   get-regions:
