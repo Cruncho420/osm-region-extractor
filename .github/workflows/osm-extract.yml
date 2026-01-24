@@ -114,9 +114,9 @@ jobs:
         working-directory: scripts
         run: |
           npm run generate-manifest -- \
-            --input ../../release-files \
-            --output ../../release-files/manifest.json
-          cat ../../release-files/manifest.json | head -50
+            --input ../release-files \
+            --output ../release-files/manifest.json
+          cat ../release-files/manifest.json | head -50
 
       - name: Get release info
         id: release-info
