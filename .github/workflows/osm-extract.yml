@@ -1,0 +1,170 @@
+name: Monthly OSM Data Extraction
+
+# Purpose: Extract traffic calming and roundabout data from OpenStreetMap monthly
+# Goal: Provide pre-downloaded regional data for the Rods app to avoid Overpass API calls
+#
+# This workflow:
+# 1. Runs on the 1st of every month at 3 AM UTC (or manually)
+# 2. Extracts ~100 regions in parallel (max 20 concurrent)
+# 3. Creates a GitHub Release with all extracted files
+# 4. Cleans up old releases (keeps last 3)
+
+on:
+  schedule:
+    - cron: '0 3 1 * *'  # 1st of every month at 3 AM UTC
+  workflow_dispatch:      # Manual trigger for testing
+    inputs:
+      single_region:
+        description: 'Extract single region (leave empty for all)'
+        required: false
+        type: string
+
+jobs:
+  # Job 1: Get list of all regions to extract
+  get-regions:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.regions.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get regions list
+        id: regions
+        run: |
+          if [ -n "${{ inputs.single_region }}" ]; then
+            # Single region extraction
+            echo "matrix=[\"${{ inputs.single_region }}\"]" >> $GITHUB_OUTPUT
+          else
+            # All regions
+            echo "matrix=$(jq -c '[.regions[].id]' scripts/osm-extract/regions.json)" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Show regions to extract
+        run: |
+          echo "Regions to extract:"
+          echo '${{ steps.regions.outputs.matrix }}' | jq -r '.[]'
+          echo "Total: $(echo '${{ steps.regions.outputs.matrix }}' | jq 'length')"
+
+  # Job 2: Extract each region in parallel
+  extract:
+    needs: get-regions
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        region: ${{ fromJson(needs.get-regions.outputs.matrix) }}
+      max-parallel: 20
+      fail-fast: false  # Continue even if some regions fail
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install osmium-tool
+        run: sudo apt-get update && sudo apt-get install -y osmium-tool
+
+      - name: Install dependencies
+        working-directory: scripts/osm-extract
+        run: npm install
+
+      - name: Extract ${{ matrix.region }}
+        working-directory: scripts/osm-extract
+        run: npm run extract-single -- --region ${{ matrix.region }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.region }}
+          path: scripts/osm-extract/output/${{ matrix.region }}.json.gz
+          retention-days: 1  # Clean up quickly to save storage
+
+  # Job 3: Combine all artifacts, generate manifest, create release
+  release:
+    needs: extract
+    runs-on: ubuntu-latest
+    if: always() && needs.extract.result != 'cancelled'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: scripts/osm-extract
+        run: npm install
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-regions
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release-files
+          find all-regions -name "*.json.gz" -exec mv {} release-files/ \;
+          echo "Files to release:"
+          ls -la release-files/
+          echo "Total files: $(ls release-files/*.json.gz | wc -l)"
+
+      - name: Generate manifest
+        working-directory: scripts/osm-extract
+        run: |
+          npm run generate-manifest -- \
+            --input ../../release-files \
+            --output ../../release-files/manifest.json
+          cat ../../release-files/manifest.json | head -50
+
+      - name: Get release info
+        id: release-info
+        run: |
+          VERSION=$(date +'%Y-%m-%d')
+          MONTH_NAME=$(date +'%B %Y')
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "month_name=${MONTH_NAME}" >> $GITHUB_OUTPUT
+          echo "tag_name=osm-${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.release-info.outputs.tag_name }}
+          name: "OSM Data - ${{ steps.release-info.outputs.month_name }}"
+          body: |
+            Monthly OSM data extraction for Rods app.
+
+            **Version:** ${{ steps.release-info.outputs.version }}
+
+            **Contents:**
+            - Traffic calming features (speed bumps, dips, bridges, tunnels, speed cameras)
+            - Roundabouts (full and mini)
+
+            **Usage:**
+            Download `manifest.json` first to check versions, then download needed regions.
+
+            **Files:**
+            - `manifest.json` - Version and checksum info for all regions
+            - `{region-id}.json.gz` - Compressed data for each region
+          files: release-files/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Delete old releases
+        uses: dev-drprasad/delete-older-releases@v0.3.2
+        with:
+          keep_latest: 3
+          delete_tags: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        run: |
+          echo "## OSM Data Extraction Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.release-info.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Regions:** $(ls release-files/*.json.gz | wc -l)" >> $GITHUB_STEP_SUMMARY
+          echo "**Total Size:** $(du -sh release-files | cut -f1)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Release created: [${{ steps.release-info.outputs.tag_name }}](../../releases/tag/${{ steps.release-info.outputs.tag_name }})" >> $GITHUB_STEP_SUMMARY

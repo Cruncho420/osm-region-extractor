@@ -1,0 +1,772 @@
+{
+  "regions": [
+    {
+      "id": "africa-algeria",
+      "name": "Algeria",
+      "continent": "africa",
+      "bbox": [-8.67, 19.06, 11.98, 37.09],
+      "geofabrikPath": "africa/algeria-latest.osm.pbf",
+      "estimatedSize": 500000
+    },
+    {
+      "id": "africa-angola",
+      "name": "Angola",
+      "continent": "africa",
+      "bbox": [11.64, -18.04, 24.08, -4.37],
+      "geofabrikPath": "africa/angola-latest.osm.pbf",
+      "estimatedSize": 200000
+    },
+    {
+      "id": "africa-egypt",
+      "name": "Egypt",
+      "continent": "africa",
+      "bbox": [24.70, 22.00, 36.90, 31.67],
+      "geofabrikPath": "africa/egypt-latest.osm.pbf",
+      "estimatedSize": 400000
+    },
+    {
+      "id": "africa-ethiopia",
+      "name": "Ethiopia",
+      "continent": "africa",
+      "bbox": [32.99, 3.40, 47.99, 14.89],
+      "geofabrikPath": "africa/ethiopia-latest.osm.pbf",
+      "estimatedSize": 300000
+    },
+    {
+      "id": "africa-kenya",
+      "name": "Kenya",
+      "continent": "africa",
+      "bbox": [33.91, -4.68, 41.91, 5.03],
+      "geofabrikPath": "africa/kenya-latest.osm.pbf",
+      "estimatedSize": 400000
+    },
+    {
+      "id": "africa-morocco",
+      "name": "Morocco",
+      "continent": "africa",
+      "bbox": [-13.17, 27.66, -0.99, 35.93],
+      "geofabrikPath": "africa/morocco-latest.osm.pbf",
+      "estimatedSize": 600000
+    },
+    {
+      "id": "africa-nigeria",
+      "name": "Nigeria",
+      "continent": "africa",
+      "bbox": [2.69, 4.27, 14.68, 13.89],
+      "geofabrikPath": "africa/nigeria-latest.osm.pbf",
+      "estimatedSize": 400000
+    },
+    {
+      "id": "africa-south-africa",
+      "name": "South Africa",
+      "continent": "africa",
+      "bbox": [16.45, -34.84, 32.89, -22.13],
+      "geofabrikPath": "africa/south-africa-latest.osm.pbf",
+      "estimatedSize": 800000
+    },
+    {
+      "id": "africa-tanzania",
+      "name": "Tanzania",
+      "continent": "africa",
+      "bbox": [29.33, -11.75, 40.44, -0.99],
+      "geofabrikPath": "africa/tanzania-latest.osm.pbf",
+      "estimatedSize": 400000
+    },
+    {
+      "id": "africa-tunisia",
+      "name": "Tunisia",
+      "continent": "africa",
+      "bbox": [7.52, 30.23, 11.60, 37.35],
+      "geofabrikPath": "africa/tunisia-latest.osm.pbf",
+      "estimatedSize": 200000
+    },
+    {
+      "id": "asia-afghanistan",
+      "name": "Afghanistan",
+      "continent": "asia",
+      "bbox": [60.52, 29.38, 74.89, 38.49],
+      "geofabrikPath": "asia/afghanistan-latest.osm.pbf",
+      "estimatedSize": 100000
+    },
+    {
+      "id": "asia-bangladesh",
+      "name": "Bangladesh",
+      "continent": "asia",
+      "bbox": [88.03, 20.74, 92.67, 26.63],
+      "geofabrikPath": "asia/bangladesh-latest.osm.pbf",
+      "estimatedSize": 300000
+    },
+    {
+      "id": "asia-china",
+      "name": "China",
+      "continent": "asia",
+      "bbox": [73.50, 18.16, 134.77, 53.56],
+      "geofabrikPath": "asia/china-latest.osm.pbf",
+      "estimatedSize": 3000000
+    },
+    {
+      "id": "asia-india",
+      "name": "India",
+      "continent": "asia",
+      "bbox": [68.18, 6.75, 97.40, 35.50],
+      "geofabrikPath": "asia/india-latest.osm.pbf",
+      "estimatedSize": 2000000
+    },
+    {
+      "id": "asia-indonesia",
+      "name": "Indonesia",
+      "continent": "asia",
+      "bbox": [95.01, -11.01, 141.02, 5.90],
+      "geofabrikPath": "asia/indonesia-latest.osm.pbf",
+      "estimatedSize": 1500000
+    },
+    {
+      "id": "asia-iran",
+      "name": "Iran",
+      "continent": "asia",
+      "bbox": [44.03, 25.06, 63.32, 39.78],
+      "geofabrikPath": "asia/iran-latest.osm.pbf",
+      "estimatedSize": 400000
+    },
+    {
+      "id": "asia-iraq",
+      "name": "Iraq",
+      "continent": "asia",
+      "bbox": [38.79, 29.06, 48.56, 37.38],
+      "geofabrikPath": "asia/iraq-latest.osm.pbf",
+      "estimatedSize": 200000
+    },
+    {
+      "id": "asia-israel-and-palestine",
+      "name": "Israel and Palestine",
+      "continent": "asia",
+      "bbox": [34.22, 29.49, 35.89, 33.34],
+      "geofabrikPath": "asia/israel-and-palestine-latest.osm.pbf",
+      "estimatedSize": 300000
+    },
+    {
+      "id": "asia-japan",
+      "name": "Japan",
+      "continent": "asia",
+      "bbox": [122.93, 24.25, 153.99, 45.52],
+      "geofabrikPath": "asia/japan-latest.osm.pbf",
+      "estimatedSize": 2500000
+    },
+    {
+      "id": "asia-jordan",
+      "name": "Jordan",
+      "continent": "asia",
+      "bbox": [34.96, 29.19, 39.30, 33.38],
+      "geofabrikPath": "asia/jordan-latest.osm.pbf",
+      "estimatedSize": 100000
+    },
+    {
+      "id": "asia-kazakhstan",
+      "name": "Kazakhstan",
+      "continent": "asia",
+      "bbox": [46.49, 40.57, 87.31, 55.44],
+      "geofabrikPath": "asia/kazakhstan-latest.osm.pbf",
+      "estimatedSize": 300000
+    },
+    {
+      "id": "asia-kyrgyzstan",
+      "name": "Kyrgyzstan",
+      "continent": "asia",
+      "bbox": [69.28, 39.17, 80.23, 43.24],
+      "geofabrikPath": "asia/kyrgyzstan-latest.osm.pbf",
+      "estimatedSize": 100000
+    },
+    {
+      "id": "asia-malaysia-singapore-brunei",
+      "name": "Malaysia, Singapore, and Brunei",
+      "continent": "asia",
+      "bbox": [99.64, 0.86, 119.27, 7.36],
+      "geofabrikPath": "asia/malaysia-singapore-brunei-latest.osm.pbf",
+      "estimatedSize": 600000
+    },
+    {
+      "id": "asia-mongolia",
+      "name": "Mongolia",
+      "continent": "asia",
+      "bbox": [87.75, 41.59, 119.93, 52.15],
+      "geofabrikPath": "asia/mongolia-latest.osm.pbf",
+      "estimatedSize": 100000
+    },
+    {
+      "id": "asia-nepal",
+      "name": "Nepal",
+      "continent": "asia",
+      "bbox": [80.06, 26.35, 88.20, 30.45],
+      "geofabrikPath": "asia/nepal-latest.osm.pbf",
+      "estimatedSize": 200000
+    },
+    {
+      "id": "asia-pakistan",
+      "name": "Pakistan",
+      "continent": "asia",
+      "bbox": [60.87, 23.69, 77.83, 37.08],
+      "geofabrikPath": "asia/pakistan-latest.osm.pbf",
+      "estimatedSize": 400000
+    },
+    {
+      "id": "asia-philippines",
+      "name": "Philippines",
+      "continent": "asia",
+      "bbox": [116.93, 4.59, 126.60, 21.12],
+      "geofabrikPath": "asia/philippines-latest.osm.pbf",
+      "estimatedSize": 500000
+    },
+    {
+      "id": "asia-russia",
+      "name": "Russia",
+      "continent": "asia",
+      "bbox": [19.64, 41.19, 180.00, 81.86],
+      "geofabrikPath": "russia-latest.osm.pbf",
+      "estimatedSize": 4000000
+    },
+    {
+      "id": "asia-saudi-arabia",
+      "name": "Saudi Arabia",
+      "continent": "asia",
+      "bbox": [34.57, 16.38, 55.67, 32.16],
+      "geofabrikPath": "asia/gcc-states-latest.osm.pbf",
+      "estimatedSize": 300000
+    },
+    {
+      "id": "asia-south-korea",
+      "name": "South Korea",
+      "continent": "asia",
+      "bbox": [124.61, 33.19, 130.92, 38.62],
+      "geofabrikPath": "asia/south-korea-latest.osm.pbf",
+      "estimatedSize": 600000
+    },
+    {
+      "id": "asia-sri-lanka",
+      "name": "Sri Lanka",
+      "continent": "asia",
+      "bbox": [79.65, 5.92, 81.88, 9.83],
+      "geofabrikPath": "asia/sri-lanka-latest.osm.pbf",
+      "estimatedSize": 200000
+    },
+    {
+      "id": "asia-taiwan",
+      "name": "Taiwan",
+      "continent": "asia",
+      "bbox": [119.30, 21.90, 122.01, 25.30],
+      "geofabrikPath": "asia/taiwan-latest.osm.pbf",
+      "estimatedSize": 300000
+    },
+    {
+      "id": "asia-thailand",
+      "name": "Thailand",
+      "continent": "asia",
+      "bbox": [97.35, 5.61, 105.64, 20.46],
+      "geofabrikPath": "asia/thailand-latest.osm.pbf",
+      "estimatedSize": 600000
+    },
+    {
+      "id": "asia-turkey",
+      "name": "Turkey",
+      "continent": "asia",
+      "bbox": [26.04, 35.82, 44.79, 42.11],
+      "geofabrikPath": "europe/turkey-latest.osm.pbf",
+      "estimatedSize": 800000
+    },
+    {
+      "id": "asia-uzbekistan",
+      "name": "Uzbekistan",
+      "continent": "asia",
+      "bbox": [55.99, 37.18, 73.13, 45.59],
+      "geofabrikPath": "asia/uzbekistan-latest.osm.pbf",
+      "estimatedSize": 100000
+    },
+    {
+      "id": "asia-vietnam",
+      "name": "Vietnam",
+      "continent": "asia",
+      "bbox": [102.14, 8.56, 109.47, 23.39],
+      "geofabrikPath": "asia/vietnam-latest.osm.pbf",
+      "estimatedSize": 400000
+    },
+    {
+      "id": "australia-oceania-australia",
+      "name": "Australia",
+      "continent": "australia-oceania",
+      "bbox": [113.34, -43.63, 153.64, -10.67],
+      "geofabrikPath": "australia-oceania/australia-latest.osm.pbf",
+      "estimatedSize": 1500000
+    },
+    {
+      "id": "australia-oceania-new-zealand",
+      "name": "New Zealand",
+      "continent": "australia-oceania",
+      "bbox": [166.43, -47.29, 178.52, -34.39],
+      "geofabrikPath": "australia-oceania/new-zealand-latest.osm.pbf",
+      "estimatedSize": 400000
+    },
+    {
+      "id": "central-america-belize",
+      "name": "Belize",
+      "continent": "central-america",
+      "bbox": [-89.22, 15.89, -87.78, 18.50],
+      "geofabrikPath": "central-america/belize-latest.osm.pbf",
+      "estimatedSize": 50000
+    },
+    {
+      "id": "central-america-costa-rica",
+      "name": "Costa Rica",
+      "continent": "central-america",
+      "bbox": [-85.95, 8.04, -82.55, 11.22],
+      "geofabrikPath": "central-america/costa-rica-latest.osm.pbf",
+      "estimatedSize": 100000
+    },
+    {
+      "id": "central-america-cuba",
+      "name": "Cuba",
+      "continent": "central-america",
+      "bbox": [-84.95, 19.83, -74.13, 23.19],
+      "geofabrikPath": "central-america/cuba-latest.osm.pbf",
+      "estimatedSize": 100000
+    },
+    {
+      "id": "central-america-guatemala",
+      "name": "Guatemala",
+      "continent": "central-america",
+      "bbox": [-92.23, 13.74, -88.22, 17.82],
+      "geofabrikPath": "central-america/guatemala-latest.osm.pbf",
+      "estimatedSize": 100000
+    },
+    {
+      "id": "central-america-haiti-and-domrep",
+      "name": "Haiti and Dominican Republic",
+      "continent": "central-america",
+      "bbox": [-74.48, 17.47, -68.32, 19.93],
+      "geofabrikPath": "central-america/haiti-and-domrep-latest.osm.pbf",
+      "estimatedSize": 100000
+    },
+    {
+      "id": "central-america-honduras",
+      "name": "Honduras",
+      "continent": "central-america",
+      "bbox": [-89.35, 12.98, -83.16, 16.52],
+      "geofabrikPath": "central-america/honduras-latest.osm.pbf",
+      "estimatedSize": 80000
+    },
+    {
+      "id": "central-america-mexico",
+      "name": "Mexico",
+      "continent": "central-america",
+      "bbox": [-118.37, 14.55, -86.70, 32.72],
+      "geofabrikPath": "north-america/mexico-latest.osm.pbf",
+      "estimatedSize": 1500000
+    },
+    {
+      "id": "central-america-nicaragua",
+      "name": "Nicaragua",
+      "continent": "central-america",
+      "bbox": [-87.69, 10.71, -83.13, 15.03],
+      "geofabrikPath": "central-america/nicaragua-latest.osm.pbf",
+      "estimatedSize": 80000
+    },
+    {
+      "id": "central-america-panama",
+      "name": "Panama",
+      "continent": "central-america",
+      "bbox": [-83.05, 7.20, -77.17, 9.65],
+      "geofabrikPath": "central-america/panama-latest.osm.pbf",
+      "estimatedSize": 80000
+    },
+    {
+      "id": "europe-albania",
+      "name": "Albania",
+      "continent": "europe",
+      "bbox": [19.26, 39.64, 21.06, 42.66],
+      "geofabrikPath": "europe/albania-latest.osm.pbf",
+      "estimatedSize": 100000
+    },
+    {
+      "id": "europe-austria",
+      "name": "Austria",
+      "continent": "europe",
+      "bbox": [9.53, 46.37, 17.16, 49.02],
+      "geofabrikPath": "europe/austria-latest.osm.pbf",
+      "estimatedSize": 800000
+    },
+    {
+      "id": "europe-belgium",
+      "name": "Belgium",
+      "continent": "europe",
+      "bbox": [2.54, 49.50, 6.41, 51.50],
+      "geofabrikPath": "europe/belgium-latest.osm.pbf",
+      "estimatedSize": 500000
+    },
+    {
+      "id": "europe-bosnia-herzegovina",
+      "name": "Bosnia and Herzegovina",
+      "continent": "europe",
+      "bbox": [15.73, 42.56, 19.62, 45.28],
+      "geofabrikPath": "europe/bosnia-herzegovina-latest.osm.pbf",
+      "estimatedSize": 150000
+    },
+    {
+      "id": "europe-bulgaria",
+      "name": "Bulgaria",
+      "continent": "europe",
+      "bbox": [22.36, 41.24, 28.61, 44.22],
+      "geofabrikPath": "europe/bulgaria-latest.osm.pbf",
+      "estimatedSize": 300000
+    },
+    {
+      "id": "europe-croatia",
+      "name": "Croatia",
+      "continent": "europe",
+      "bbox": [13.49, 42.39, 19.45, 46.55],
+      "geofabrikPath": "europe/croatia-latest.osm.pbf",
+      "estimatedSize": 300000
+    },
+    {
+      "id": "europe-czech-republic",
+      "name": "Czech Republic",
+      "continent": "europe",
+      "bbox": [12.09, 48.55, 18.86, 51.06],
+      "geofabrikPath": "europe/czech-republic-latest.osm.pbf",
+      "estimatedSize": 600000
+    },
+    {
+      "id": "europe-denmark",
+      "name": "Denmark",
+      "continent": "europe",
+      "bbox": [8.07, 54.56, 15.19, 57.75],
+      "geofabrikPath": "europe/denmark-latest.osm.pbf",
+      "estimatedSize": 400000
+    },
+    {
+      "id": "europe-estonia",
+      "name": "Estonia",
+      "continent": "europe",
+      "bbox": [21.84, 57.52, 28.21, 59.68],
+      "geofabrikPath": "europe/estonia-latest.osm.pbf",
+      "estimatedSize": 150000
+    },
+    {
+      "id": "europe-finland",
+      "name": "Finland",
+      "continent": "europe",
+      "bbox": [20.55, 59.81, 31.59, 70.09],
+      "geofabrikPath": "europe/finland-latest.osm.pbf",
+      "estimatedSize": 400000
+    },
+    {
+      "id": "europe-france",
+      "name": "France",
+      "continent": "europe",
+      "bbox": [-5.14, 41.33, 9.56, 51.09],
+      "geofabrikPath": "europe/france-latest.osm.pbf",
+      "estimatedSize": 3500000
+    },
+    {
+      "id": "europe-germany",
+      "name": "Germany",
+      "continent": "europe",
+      "bbox": [5.87, 47.27, 15.04, 55.06],
+      "geofabrikPath": "europe/germany-latest.osm.pbf",
+      "estimatedSize": 4000000
+    },
+    {
+      "id": "europe-great-britain",
+      "name": "United Kingdom",
+      "continent": "europe",
+      "bbox": [-8.65, 49.86, 1.77, 60.86],
+      "geofabrikPath": "europe/great-britain-latest.osm.pbf",
+      "estimatedSize": 2000000
+    },
+    {
+      "id": "europe-greece",
+      "name": "Greece",
+      "continent": "europe",
+      "bbox": [19.37, 34.80, 29.65, 41.75],
+      "geofabrikPath": "europe/greece-latest.osm.pbf",
+      "estimatedSize": 400000
+    },
+    {
+      "id": "europe-hungary",
+      "name": "Hungary",
+      "continent": "europe",
+      "bbox": [16.11, 45.74, 22.90, 48.59],
+      "geofabrikPath": "europe/hungary-latest.osm.pbf",
+      "estimatedSize": 400000
+    },
+    {
+      "id": "europe-iceland",
+      "name": "Iceland",
+      "continent": "europe",
+      "bbox": [-24.55, 63.39, -13.50, 66.56],
+      "geofabrikPath": "europe/iceland-latest.osm.pbf",
+      "estimatedSize": 100000
+    },
+    {
+      "id": "europe-ireland-and-northern-ireland",
+      "name": "Ireland and Northern Ireland",
+      "continent": "europe",
+      "bbox": [-10.48, 51.42, -5.99, 55.38],
+      "geofabrikPath": "europe/ireland-and-northern-ireland-latest.osm.pbf",
+      "estimatedSize": 400000
+    },
+    {
+      "id": "europe-italy",
+      "name": "Italy",
+      "continent": "europe",
+      "bbox": [6.63, 36.62, 18.52, 47.09],
+      "geofabrikPath": "europe/italy-latest.osm.pbf",
+      "estimatedSize": 2500000
+    },
+    {
+      "id": "europe-latvia",
+      "name": "Latvia",
+      "continent": "europe",
+      "bbox": [20.97, 55.67, 28.24, 58.08],
+      "geofabrikPath": "europe/latvia-latest.osm.pbf",
+      "estimatedSize": 150000
+    },
+    {
+      "id": "europe-lithuania",
+      "name": "Lithuania",
+      "continent": "europe",
+      "bbox": [20.93, 53.90, 26.84, 56.45],
+      "geofabrikPath": "europe/lithuania-latest.osm.pbf",
+      "estimatedSize": 200000
+    },
+    {
+      "id": "europe-luxembourg",
+      "name": "Luxembourg",
+      "continent": "europe",
+      "bbox": [5.73, 49.45, 6.53, 50.18],
+      "geofabrikPath": "europe/luxembourg-latest.osm.pbf",
+      "estimatedSize": 50000
+    },
+    {
+      "id": "europe-netherlands",
+      "name": "Netherlands",
+      "continent": "europe",
+      "bbox": [3.37, 50.75, 7.21, 53.47],
+      "geofabrikPath": "europe/netherlands-latest.osm.pbf",
+      "estimatedSize": 800000
+    },
+    {
+      "id": "europe-norway",
+      "name": "Norway",
+      "continent": "europe",
+      "bbox": [4.65, 57.96, 31.07, 71.19],
+      "geofabrikPath": "europe/norway-latest.osm.pbf",
+      "estimatedSize": 500000
+    },
+    {
+      "id": "europe-poland",
+      "name": "Poland",
+      "continent": "europe",
+      "bbox": [14.12, 49.00, 24.15, 54.84],
+      "geofabrikPath": "europe/poland-latest.osm.pbf",
+      "estimatedSize": 1500000
+    },
+    {
+      "id": "europe-portugal",
+      "name": "Portugal",
+      "continent": "europe",
+      "bbox": [-9.53, 36.96, -6.19, 42.15],
+      "geofabrikPath": "europe/portugal-latest.osm.pbf",
+      "estimatedSize": 400000
+    },
+    {
+      "id": "europe-romania",
+      "name": "Romania",
+      "continent": "europe",
+      "bbox": [20.26, 43.62, 29.69, 48.27],
+      "geofabrikPath": "europe/romania-latest.osm.pbf",
+      "estimatedSize": 500000
+    },
+    {
+      "id": "europe-serbia",
+      "name": "Serbia",
+      "continent": "europe",
+      "bbox": [18.82, 42.23, 23.01, 46.19],
+      "geofabrikPath": "europe/serbia-latest.osm.pbf",
+      "estimatedSize": 300000
+    },
+    {
+      "id": "europe-slovakia",
+      "name": "Slovakia",
+      "continent": "europe",
+      "bbox": [16.84, 47.73, 22.57, 49.60],
+      "geofabrikPath": "europe/slovakia-latest.osm.pbf",
+      "estimatedSize": 300000
+    },
+    {
+      "id": "europe-slovenia",
+      "name": "Slovenia",
+      "continent": "europe",
+      "bbox": [13.38, 45.42, 16.61, 46.88],
+      "geofabrikPath": "europe/slovenia-latest.osm.pbf",
+      "estimatedSize": 200000
+    },
+    {
+      "id": "europe-spain",
+      "name": "Spain",
+      "continent": "europe",
+      "bbox": [-9.30, 35.95, 4.33, 43.79],
+      "geofabrikPath": "europe/spain-latest.osm.pbf",
+      "estimatedSize": 2000000
+    },
+    {
+      "id": "europe-sweden",
+      "name": "Sweden",
+      "continent": "europe",
+      "bbox": [11.11, 55.34, 24.17, 69.06],
+      "geofabrikPath": "europe/sweden-latest.osm.pbf",
+      "estimatedSize": 600000
+    },
+    {
+      "id": "europe-switzerland",
+      "name": "Switzerland",
+      "continent": "europe",
+      "bbox": [5.96, 45.82, 10.49, 47.81],
+      "geofabrikPath": "europe/switzerland-latest.osm.pbf",
+      "estimatedSize": 500000
+    },
+    {
+      "id": "europe-ukraine",
+      "name": "Ukraine",
+      "continent": "europe",
+      "bbox": [22.14, 44.38, 40.22, 52.38],
+      "geofabrikPath": "europe/ukraine-latest.osm.pbf",
+      "estimatedSize": 600000
+    },
+    {
+      "id": "north-america-canada",
+      "name": "Canada",
+      "continent": "north-america",
+      "bbox": [-141.00, 41.68, -52.62, 83.11],
+      "geofabrikPath": "north-america/canada-latest.osm.pbf",
+      "estimatedSize": 2500000
+    },
+    {
+      "id": "north-america-us-midwest",
+      "name": "US Midwest",
+      "continent": "north-america",
+      "bbox": [-104.05, 36.99, -80.52, 49.38],
+      "geofabrikPath": "north-america/us-midwest-latest.osm.pbf",
+      "estimatedSize": 2000000
+    },
+    {
+      "id": "north-america-us-northeast",
+      "name": "US Northeast",
+      "continent": "north-america",
+      "bbox": [-80.52, 38.79, -66.95, 47.46],
+      "geofabrikPath": "north-america/us-northeast-latest.osm.pbf",
+      "estimatedSize": 1500000
+    },
+    {
+      "id": "north-america-us-pacific",
+      "name": "US Pacific",
+      "continent": "north-america",
+      "bbox": [-178.22, 18.91, -104.05, 71.37],
+      "geofabrikPath": "north-america/us-pacific-latest.osm.pbf",
+      "estimatedSize": 1500000
+    },
+    {
+      "id": "north-america-us-south",
+      "name": "US South",
+      "continent": "north-america",
+      "bbox": [-106.65, 24.40, -75.15, 39.46],
+      "geofabrikPath": "north-america/us-south-latest.osm.pbf",
+      "estimatedSize": 2500000
+    },
+    {
+      "id": "north-america-us-west",
+      "name": "US West",
+      "continent": "north-america",
+      "bbox": [-124.85, 31.33, -102.04, 49.00],
+      "geofabrikPath": "north-america/us-west-latest.osm.pbf",
+      "estimatedSize": 1500000
+    },
+    {
+      "id": "south-america-argentina",
+      "name": "Argentina",
+      "continent": "south-america",
+      "bbox": [-73.56, -55.06, -53.59, -21.78],
+      "geofabrikPath": "south-america/argentina-latest.osm.pbf",
+      "estimatedSize": 800000
+    },
+    {
+      "id": "south-america-bolivia",
+      "name": "Bolivia",
+      "continent": "south-america",
+      "bbox": [-69.64, -22.90, -57.46, -9.68],
+      "geofabrikPath": "south-america/bolivia-latest.osm.pbf",
+      "estimatedSize": 200000
+    },
+    {
+      "id": "south-america-brazil",
+      "name": "Brazil",
+      "continent": "south-america",
+      "bbox": [-73.98, -33.75, -34.79, 5.27],
+      "geofabrikPath": "south-america/brazil-latest.osm.pbf",
+      "estimatedSize": 3000000
+    },
+    {
+      "id": "south-america-chile",
+      "name": "Chile",
+      "continent": "south-america",
+      "bbox": [-75.64, -55.98, -66.42, -17.51],
+      "geofabrikPath": "south-america/chile-latest.osm.pbf",
+      "estimatedSize": 500000
+    },
+    {
+      "id": "south-america-colombia",
+      "name": "Colombia",
+      "continent": "south-america",
+      "bbox": [-81.73, -4.23, -66.87, 13.38],
+      "geofabrikPath": "south-america/colombia-latest.osm.pbf",
+      "estimatedSize": 500000
+    },
+    {
+      "id": "south-america-ecuador",
+      "name": "Ecuador",
+      "continent": "south-america",
+      "bbox": [-81.08, -5.01, -75.19, 1.44],
+      "geofabrikPath": "south-america/ecuador-latest.osm.pbf",
+      "estimatedSize": 200000
+    },
+    {
+      "id": "south-america-paraguay",
+      "name": "Paraguay",
+      "continent": "south-america",
+      "bbox": [-62.64, -27.59, -54.26, -19.29],
+      "geofabrikPath": "south-america/paraguay-latest.osm.pbf",
+      "estimatedSize": 100000
+    },
+    {
+      "id": "south-america-peru",
+      "name": "Peru",
+      "continent": "south-america",
+      "bbox": [-81.33, -18.35, -68.68, -0.04],
+      "geofabrikPath": "south-america/peru-latest.osm.pbf",
+      "estimatedSize": 400000
+    },
+    {
+      "id": "south-america-uruguay",
+      "name": "Uruguay",
+      "continent": "south-america",
+      "bbox": [-58.43, -34.97, -53.09, -30.08],
+      "geofabrikPath": "south-america/uruguay-latest.osm.pbf",
+      "estimatedSize": 100000
+    },
+    {
+      "id": "south-america-venezuela",
+      "name": "Venezuela",
+      "continent": "south-america",
+      "bbox": [-73.35, 0.65, -59.80, 12.20],
+      "geofabrikPath": "south-america/venezuela-latest.osm.pbf",
+      "estimatedSize": 200000
+    }
+  ]
+}
