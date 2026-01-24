@@ -36,7 +36,7 @@ jobs:
             echo "matrix=[\"${{ inputs.single_region }}\"]" >> $GITHUB_OUTPUT
           else
             # All regions
-            echo "matrix=$(jq -c '[.regions[].id]' scripts/osm-extract/regions.json)" >> $GITHUB_OUTPUT
+            echo "matrix=$(jq -c '[.regions[].id]' scripts/regions.json)" >> $GITHUB_OUTPUT
           fi
 
       - name: Show regions to extract
@@ -66,18 +66,18 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y osmium-tool
 
       - name: Install dependencies
-        working-directory: scripts/osm-extract
+        working-directory: scripts
         run: npm install
 
       - name: Extract ${{ matrix.region }}
-        working-directory: scripts/osm-extract
+        working-directory: scripts
         run: npm run extract-single -- --region ${{ matrix.region }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.region }}
-          path: scripts/osm-extract/output/${{ matrix.region }}.json.gz
+          path: scripts/output/${{ matrix.region }}.json.gz
           retention-days: 1  # Clean up quickly to save storage
 
   # Job 3: Combine all artifacts, generate manifest, create release
@@ -94,7 +94,7 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        working-directory: scripts/osm-extract
+        working-directory: scripts
         run: npm install
 
       - name: Download all artifacts
@@ -111,7 +111,7 @@ jobs:
           echo "Total files: $(ls release-files/*.json.gz | wc -l)"
 
       - name: Generate manifest
-        working-directory: scripts/osm-extract
+        working-directory: scripts
         run: |
           npm run generate-manifest -- \
             --input ../../release-files \
