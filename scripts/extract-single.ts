@@ -53,6 +53,11 @@ interface TrafficCalmingPoint {
   lon: number;
   type: string;
   tags?: Record<string, string>;
+  /** Second endpoint for linear features (bridges, tunnels) - enables route traversal verification */
+  endLat?: number;
+  endLon?: number;
+  /** OSM way ID for bridges/tunnels - enables deduplication of multi-segment features */
+  wayId?: number;
 }
 
 interface RoundaboutInfo {
@@ -125,7 +130,8 @@ async function extractRegion(regionId: string): Promise<void> {
     // Step 1: Download PBF from Geofabrik
     console.log(`[1/5] Downloading from Geofabrik...`);
     console.log(`      URL: ${pbfUrl}`);
-    execSync(`wget -q --show-progress -O "${localPbf}" "${pbfUrl}"`, {
+    // Use curl (available on macOS) instead of wget
+    execSync(`curl -L --progress-bar -o "${localPbf}" "${pbfUrl}"`, {
       stdio: 'inherit',
     });
 
@@ -159,8 +165,9 @@ async function extractRegion(regionId: string): Promise<void> {
     console.log(`      Filtered size: ${filteredSize.toFixed(2)} MB\n`);
 
     // Step 3: Export to GeoJSON
+    // Use --add-unique-id type_id to include OSM IDs (e.g., "way/12345") for deduplication
     console.log(`[3/5] Converting to GeoJSON...`);
-    execSync(`osmium export "${filteredPbf}" -f geojson -o "${outputJson}"`, {
+    execSync(`osmium export "${filteredPbf}" -f geojson --add-unique-id=type_id -o "${outputJson}"`, {
       stdio: 'inherit',
     });
 
@@ -281,19 +288,35 @@ function convertToBundledFormat(
         });
       }
 
-      // Bridge and tunnel ways - store entry point
+      // Bridge and tunnel ways - store BOTH endpoints for route traversal verification
+      // This enables the same endpoint-matching logic used by the Overpass API query
       if (props.bridge === 'yes' || props.tunnel === 'yes') {
-        // Store the first point as entry (actual entry depends on route direction)
-        const [lon, lat] = coords[0];
+        const [startLon, startLat] = coords[0];
+        const [endLon, endLat] = coords[coords.length - 1];
+
+        // Extract OSM way ID from feature.id
+        // osmium exports with --add-unique-id=type_id as "w12345" (w=way, n=node, r=relation)
+        // This enables deduplication of multi-segment bridges/tunnels
+        let wayId: number | undefined;
+        if (feature.id && typeof feature.id === 'string') {
+          // Handle osmium format: "w12345" or "way/12345"
+          if (feature.id.startsWith('w')) {
+            wayId = parseInt(feature.id.substring(1), 10);
+          } else if (feature.id.startsWith('way/')) {
+            wayId = parseInt(feature.id.split('/')[1], 10);
+          }
+        }
+
         trafficCalming.push({
-          lat,
-          lon,
+          lat: startLat,
+          lon: startLon,
           type: props.bridge === 'yes' ? 'bridge' : 'tunnel',
-          tags: {
-            ...extractRelevantTags(props),
-            // Store way geometry for proper entry point calculation
-            _wayLength: String(calculateWayLength(coords)),
-          },
+          tags: extractRelevantTags(props),
+          // Store second endpoint for route traversal verification
+          endLat: endLat,
+          endLon: endLon,
+          // Store way ID for deduplication of multi-segment features
+          wayId,
         });
       }
     }
