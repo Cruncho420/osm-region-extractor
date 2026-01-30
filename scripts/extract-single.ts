@@ -67,11 +67,19 @@ interface RoundaboutInfo {
   type: 'roundabout' | 'mini_roundabout';
 }
 
+interface RoadSurfaceWay {
+  /** OSM surface tag value (e.g., "asphalt", "gravel") */
+  surface: string;
+  /** Simplified way geometry as flat array: [lon1, lat1, lon2, lat2, ...] */
+  coords: number[];
+}
+
 interface BundledOSMData {
   version: string;
   region: string;
   trafficCalming: TrafficCalmingPoint[];
   roundabouts: RoundaboutInfo[];
+  roadSurfaces: RoadSurfaceWay[];
 }
 
 // =============================================================================
@@ -139,7 +147,7 @@ async function extractRegion(regionId: string): Promise<void> {
     console.log(`      Downloaded: ${pbfSize.toFixed(1)} MB\n`);
 
     // Step 2: Filter to only relevant tags
-    console.log(`[2/5] Filtering to traffic calming features...`);
+    console.log(`[2/5] Filtering to traffic calming + road surface features...`);
     // Use osmium tags-filter to extract only what we need:
     // - n/traffic_calming (nodes with traffic calming)
     // - n/highway=speed_camera (speed camera nodes)
@@ -148,6 +156,7 @@ async function extractRegion(regionId: string): Promise<void> {
     // - w/tunnel=yes (tunnel ways)
     // - nw/junction=roundabout (roundabout nodes and ways)
     // - n/highway=mini_roundabout (mini roundabout nodes)
+    // - w/surface (ways with surface tags — for road surface breakdown)
     execSync(
       `osmium tags-filter "${localPbf}" ` +
         `n/traffic_calming ` +
@@ -157,6 +166,7 @@ async function extractRegion(regionId: string): Promise<void> {
         `w/tunnel=yes ` +
         `nw/junction=roundabout ` +
         `n/highway=mini_roundabout ` +
+        `w/surface ` +
         `-o "${filteredPbf}"`,
       { stdio: 'inherit' }
     );
@@ -181,6 +191,7 @@ async function extractRegion(regionId: string): Promise<void> {
 
     console.log(`      Traffic calming points: ${bundledData.trafficCalming.length}`);
     console.log(`      Roundabouts: ${bundledData.roundabouts.length}`);
+    console.log(`      Road surface ways: ${bundledData.roadSurfaces.length}`);
 
     // Write the optimized JSON
     const optimizedJson = JSON.stringify(bundledData);
@@ -232,6 +243,7 @@ function convertToBundledFormat(
 ): BundledOSMData {
   const trafficCalming: TrafficCalmingPoint[] = [];
   const roundabouts: RoundaboutInfo[] = [];
+  const roadSurfaces: RoadSurfaceWay[] = [];
 
   for (const feature of geojson.features) {
     const props = feature.properties as Record<string, string>;
@@ -319,6 +331,23 @@ function convertToBundledFormat(
           wayId,
         });
       }
+
+      // Road surface ways — any highway way with a surface tag
+      // Skip roundabouts (already handled above) to avoid duplicates
+      if (props.surface && props.junction !== 'roundabout') {
+        // Encode coordinates as flat array: [lon1, lat1, lon2, lat2, ...]
+        const flatCoords: number[] = [];
+        for (const [lon, lat] of coords) {
+          flatCoords.push(
+            Math.round(lon * 1e7) / 1e7,
+            Math.round(lat * 1e7) / 1e7
+          );
+        }
+        roadSurfaces.push({
+          surface: props.surface,
+          coords: flatCoords,
+        });
+      }
     }
 
     // Handle Polygon features (closed ways like roundabouts)
@@ -343,6 +372,7 @@ function convertToBundledFormat(
     region: regionId,
     trafficCalming,
     roundabouts,
+    roadSurfaces,
   };
 }
 
