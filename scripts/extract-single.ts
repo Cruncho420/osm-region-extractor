@@ -81,6 +81,11 @@ interface BundledOSMData {
   region: string;
   trafficCalming: TrafficCalmingPoint[];
   roundabouts: RoundaboutInfo[];
+}
+
+interface BundledSurfaceData {
+  version: string;
+  region: string;
   roadSurfaces: RoadSurfaceWay[];
 }
 
@@ -130,6 +135,7 @@ async function extractRegion(regionId: string): Promise<void> {
   const filteredPbf = `/tmp/${regionId}-filtered.osm.pbf`;
   const outputJson = join(OUTPUT_DIR, `${regionId}.json`);
   const outputGz = join(OUTPUT_DIR, `${regionId}.json.gz`);
+  const surfaceGz = join(OUTPUT_DIR, `${regionId}-surfaces.json.gz`);
 
   // Ensure output directory exists
   if (!existsSync(OUTPUT_DIR)) {
@@ -195,38 +201,32 @@ async function extractRegion(regionId: string): Promise<void> {
     console.log(`      Roundabouts: ${roundabouts.length}`);
     console.log(`      Road surface ways: ${roadSurfaceCount}`);
 
-    // Step 5: Compose final JSON and compress with gzip (streaming)
-    // Write JSON structure piece by piece to avoid holding everything in memory
+    // Step 5: Compose and compress TWO separate files
+    // Core file: traffic calming + roundabouts (small, loaded on every route open)
+    // Surface file: road surfaces (large, loaded on-demand for surface breakdown)
     console.log(`[5/5] Composing and compressing...`);
     const version = new Date().toISOString().split('T')[0];
-    await composeAndCompress(
-      outputGz, rsTempPath, version, regionId, trafficCalming, roundabouts
-    );
 
-    // Write uncompressed JSON for size reporting, then delete it
-    // (Only the .gz is kept)
-    const gzSize = statSync(outputGz).size / 1024;
+    // 5a: Core file (traffic calming + roundabouts)
+    await composeCoreFile(outputGz, version, regionId, trafficCalming, roundabouts);
+    const coreGzSize = statSync(outputGz).size / 1024;
+    console.log(`      Core file: ${coreGzSize.toFixed(1)} KB`);
 
-    // Estimate JSON size from gzip (avoid writing huge uncompressed file)
-    // For accurate reporting, compute from the parts we have
-    const tcJson = JSON.stringify(trafficCalming);
-    const raJson = JSON.stringify(roundabouts);
-    const headerSize = `{"version":"${version}","region":"${regionId}","trafficCalming":`.length;
-    const rsTempSize = existsSync(rsTempPath) ? statSync(rsTempPath).size : 0;
-    const jsonSize = (headerSize + tcJson.length + ',"roundabouts":'.length +
-      raJson.length + ',"roadSurfaces":['.length + rsTempSize + ']}'.length) / 1024;
-    console.log(`      JSON size: ${jsonSize.toFixed(1)} KB`);
-    console.log(`      Compressed size: ${gzSize.toFixed(1)} KB`);
-    console.log(`      Compression ratio: ${((1 - gzSize / jsonSize) * 100).toFixed(1)}%\n`);
+    // 5b: Surface file (road surfaces only — streamed from temp)
+    await composeSurfaceFile(surfaceGz, rsTempPath, version, regionId);
+    const surfaceGzSize = statSync(surfaceGz).size / 1024;
+    console.log(`      Surface file: ${surfaceGzSize.toFixed(1)} KB`);
+    console.log(`      Total: ${((coreGzSize + surfaceGzSize) / 1024).toFixed(2)} MB\n`);
 
     // Clean up intermediate files
     unlinkSync(localPbf);
     unlinkSync(filteredPbf);
-    unlinkSync(outputJson); // Keep only the compressed version
+    unlinkSync(outputJson); // Keep only the compressed versions
     if (existsSync(rsTempPath)) unlinkSync(rsTempPath);
 
-    console.log(`\n✓ ${region.name} complete: ${outputGz}`);
-    console.log(`  Final size: ${(gzSize / 1024).toFixed(2)} MB\n`);
+    console.log(`\n✓ ${region.name} complete`);
+    console.log(`  Core: ${outputGz} (${(coreGzSize / 1024).toFixed(2)} MB)`);
+    console.log(`  Surfaces: ${surfaceGz} (${(surfaceGzSize / 1024).toFixed(2)} MB)\n`);
   } catch (error) {
     console.error(`\n✗ Error processing ${region.name}:`, error);
 
@@ -377,29 +377,38 @@ async function parseAndStreamFeatures(
 }
 
 /**
- * Compose the final JSON and gzip-compress it by streaming.
- * Writes: {"version":...,"trafficCalming":[...],"roundabouts":[...],"roadSurfaces":[...streamed from temp...]}
+ * Compose the core data file (traffic calming + roundabouts) and gzip-compress it.
+ * Small file (~500KB), loaded on every route open.
  */
-async function composeAndCompress(
+async function composeCoreFile(
   outputGzPath: string,
-  rsTempPath: string,
   version: string,
   regionId: string,
   trafficCalming: TrafficCalmingPoint[],
   roundabouts: RoundaboutInfo[],
 ): Promise<void> {
+  const data: BundledOSMData = { version, region: regionId, trafficCalming, roundabouts };
+  const json = JSON.stringify(data);
+  const compressed = gzipSync(Buffer.from(json), { level: 9 });
+  writeFileSync(outputGzPath, compressed);
+}
+
+/**
+ * Compose the road surface file and gzip-compress it by streaming.
+ * Large file (can be 50MB+), loaded on-demand for surface breakdown.
+ */
+async function composeSurfaceFile(
+  outputGzPath: string,
+  rsTempPath: string,
+  version: string,
+  regionId: string,
+): Promise<void> {
   const gzipStream = createGzip({ level: 9 });
   const outFile = createWriteStream(outputGzPath);
 
-  // Pipe gzip -> file
   gzipStream.pipe(outFile);
 
-  // Write JSON structure piece by piece through gzip
-  gzipStream.write(`{"version":"${version}","region":"${regionId}","trafficCalming":`);
-  gzipStream.write(JSON.stringify(trafficCalming));
-  gzipStream.write(',"roundabouts":');
-  gzipStream.write(JSON.stringify(roundabouts));
-  gzipStream.write(',"roadSurfaces":[');
+  gzipStream.write(`{"version":"${version}","region":"${regionId}","roadSurfaces":[`);
 
   // Stream road surfaces from temp file (already comma-separated entries)
   if (existsSync(rsTempPath) && statSync(rsTempPath).size > 0) {
@@ -411,7 +420,6 @@ async function composeAndCompress(
 
   gzipStream.write(']}');
 
-  // Finalize
   await new Promise<void>((resolve, reject) => {
     outFile.on('finish', resolve);
     outFile.on('error', reject);

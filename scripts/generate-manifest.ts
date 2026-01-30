@@ -36,6 +36,10 @@ interface ManifestRegion {
   name: string;
   size: number;
   checksum: string;
+  /** Size of the separate road surface file */
+  surfaceSize?: number;
+  /** Checksum of the separate road surface file */
+  surfaceChecksum?: string;
 }
 
 interface Manifest {
@@ -76,8 +80,11 @@ function generateManifest(inputDir: string, outputFile: string): void {
   });
 
   // Find all .json.gz files in input directory
-  const files = readdirSync(inputDir).filter((f) => f.endsWith('.json.gz'));
-  console.log(`Found ${files.length} region files\n`);
+  // Core files: {id}.json.gz (exclude surface files: {id}-surfaces.json.gz)
+  const allFiles = readdirSync(inputDir).filter((f) => f.endsWith('.json.gz'));
+  const coreFiles = allFiles.filter((f) => !f.includes('-surfaces'));
+  const surfaceFiles = new Set(allFiles.filter((f) => f.includes('-surfaces')));
+  console.log(`Found ${coreFiles.length} core files, ${surfaceFiles.size} surface files\n`);
 
   const manifest: Manifest = {
     version: new Date().toISOString().split('T')[0],
@@ -87,21 +94,35 @@ function generateManifest(inputDir: string, outputFile: string): void {
 
   let totalSize = 0;
 
-  for (const file of files) {
+  for (const file of coreFiles) {
     const regionId = file.replace('.json.gz', '');
     const filePath = join(inputDir, file);
     const stats = statSync(filePath);
 
-    manifest.regions[regionId] = {
+    const entry: ManifestRegion = {
       name: regionNames[regionId] || regionId,
       size: stats.size,
       checksum: computeChecksum(filePath),
     };
 
+    // Check for corresponding surface file
+    const surfaceFileName = `${regionId}-surfaces.json.gz`;
+    if (surfaceFiles.has(surfaceFileName)) {
+      const surfacePath = join(inputDir, surfaceFileName);
+      const surfaceStats = statSync(surfacePath);
+      entry.surfaceSize = surfaceStats.size;
+      entry.surfaceChecksum = computeChecksum(surfacePath);
+      totalSize += surfaceStats.size;
+    }
+
+    manifest.regions[regionId] = entry;
     totalSize += stats.size;
 
+    const surfaceInfo = entry.surfaceSize
+      ? ` + ${(entry.surfaceSize / 1024).toFixed(1)} KB surfaces`
+      : '';
     console.log(
-      `  ${regionId}: ${(stats.size / 1024).toFixed(1)} KB - ${regionNames[regionId] || 'Unknown'}`
+      `  ${regionId}: ${(stats.size / 1024).toFixed(1)} KB${surfaceInfo} - ${regionNames[regionId] || 'Unknown'}`
     );
   }
 
