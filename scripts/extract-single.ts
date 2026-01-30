@@ -11,7 +11,8 @@
  */
 
 import { execSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, statSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, statSync, createReadStream } from 'fs';
+import { createInterface } from 'readline';
 import { gzipSync } from 'zlib';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -174,20 +175,17 @@ async function extractRegion(regionId: string): Promise<void> {
     const filteredSize = statSync(filteredPbf).size / (1024 * 1024);
     console.log(`      Filtered size: ${filteredSize.toFixed(2)} MB\n`);
 
-    // Step 3: Export to GeoJSON
+    // Step 3: Export to line-delimited GeoJSON (one feature per line)
+    // Use geojsonseq format to avoid loading entire file into memory
     // Use --add-unique-id type_id to include OSM IDs (e.g., "way/12345") for deduplication
-    console.log(`[3/5] Converting to GeoJSON...`);
-    execSync(`osmium export "${filteredPbf}" -f geojson --add-unique-id=type_id -o "${outputJson}"`, {
+    console.log(`[3/5] Converting to GeoJSON (line-delimited)...`);
+    execSync(`osmium export "${filteredPbf}" -f geojsonseq --add-unique-id=type_id -o "${outputJson}"`, {
       stdio: 'inherit',
     });
 
-    // Step 4: Parse GeoJSON and convert to our optimized format
+    // Step 4: Parse features line-by-line to avoid string length limits on large regions
     console.log(`[4/5] Converting to optimized format...`);
-    const geojson: GeoJSONFeatureCollection = JSON.parse(
-      readFileSync(outputJson, 'utf-8')
-    );
-
-    const bundledData = convertToBundledFormat(geojson, regionId);
+    const bundledData = await convertFromGeoJSONSeq(outputJson, regionId);
 
     console.log(`      Traffic calming points: ${bundledData.trafficCalming.length}`);
     console.log(`      Roundabouts: ${bundledData.roundabouts.length}`);
@@ -235,136 +233,32 @@ async function extractRegion(regionId: string): Promise<void> {
 }
 
 /**
- * Convert GeoJSON to our optimized bundled format
+ * Stream-parse a line-delimited GeoJSON file (geojsonseq) and convert to bundled format.
+ * Reads one feature per line to avoid Node.js string length limits on large regions.
  */
-function convertToBundledFormat(
-  geojson: GeoJSONFeatureCollection,
-  regionId: string
-): BundledOSMData {
+async function convertFromGeoJSONSeq(filePath: string, regionId: string): Promise<BundledOSMData> {
   const trafficCalming: TrafficCalmingPoint[] = [];
   const roundabouts: RoundaboutInfo[] = [];
   const roadSurfaces: RoadSurfaceWay[] = [];
 
-  for (const feature of geojson.features) {
-    const props = feature.properties as Record<string, string>;
-    const geometry = feature.geometry;
+  const rl = createInterface({
+    input: createReadStream(filePath, { encoding: 'utf-8' }),
+    crlfDelay: Infinity,
+  });
 
-    // Handle Point features (nodes)
-    if (geometry.type === 'Point') {
-      const [lon, lat] = geometry.coordinates as [number, number];
+  for await (const line of rl) {
+    // geojsonseq lines may start with RS (0x1E) separator — strip it
+    const trimmed = line.trim().replace(/^\x1e/, '');
+    if (!trimmed) continue;
 
-      // Traffic calming nodes
-      if (props.traffic_calming && TRAFFIC_CALMING_TYPES.has(props.traffic_calming)) {
-        trafficCalming.push({
-          lat,
-          lon,
-          type: mapTrafficCalmingType(props.traffic_calming),
-          tags: extractRelevantTags(props),
-        });
-      }
-
-      // Speed cameras
-      if (props.highway === 'speed_camera' || props.enforcement === 'maxspeed') {
-        trafficCalming.push({
-          lat,
-          lon,
-          type: 'speed_camera',
-          tags: extractRelevantTags(props),
-        });
-      }
-
-      // Mini roundabouts (nodes)
-      if (props.highway === 'mini_roundabout') {
-        roundabouts.push({
-          lat,
-          lon,
-          type: 'mini_roundabout',
-          radius: 3, // Mini roundabouts are typically < 4m
-        });
-      }
+    let feature: GeoJSONFeature;
+    try {
+      feature = JSON.parse(trimmed);
+    } catch {
+      continue; // Skip malformed lines
     }
 
-    // Handle LineString features (ways)
-    if (geometry.type === 'LineString') {
-      const coords = geometry.coordinates as [number, number][];
-
-      // Roundabout ways
-      if (props.junction === 'roundabout') {
-        const center = calculateCentroid(coords);
-        const radius = calculateMaxRadius(coords, center);
-        roundabouts.push({
-          lat: center[1],
-          lon: center[0],
-          type: 'roundabout',
-          radius: Math.round(radius),
-        });
-      }
-
-      // Bridge and tunnel ways - store BOTH endpoints for route traversal verification
-      // This enables the same endpoint-matching logic used by the Overpass API query
-      if (props.bridge === 'yes' || props.tunnel === 'yes') {
-        const [startLon, startLat] = coords[0];
-        const [endLon, endLat] = coords[coords.length - 1];
-
-        // Extract OSM way ID from feature.id
-        // osmium exports with --add-unique-id=type_id as "w12345" (w=way, n=node, r=relation)
-        // This enables deduplication of multi-segment bridges/tunnels
-        let wayId: number | undefined;
-        if (feature.id && typeof feature.id === 'string') {
-          // Handle osmium format: "w12345" or "way/12345"
-          if (feature.id.startsWith('w')) {
-            wayId = parseInt(feature.id.substring(1), 10);
-          } else if (feature.id.startsWith('way/')) {
-            wayId = parseInt(feature.id.split('/')[1], 10);
-          }
-        }
-
-        trafficCalming.push({
-          lat: startLat,
-          lon: startLon,
-          type: props.bridge === 'yes' ? 'bridge' : 'tunnel',
-          tags: extractRelevantTags(props),
-          // Store second endpoint for route traversal verification
-          endLat: endLat,
-          endLon: endLon,
-          // Store way ID for deduplication of multi-segment features
-          wayId,
-        });
-      }
-
-      // Road surface ways — any highway way with a surface tag
-      // Skip roundabouts (already handled above) to avoid duplicates
-      if (props.surface && props.junction !== 'roundabout') {
-        // Encode coordinates as flat array: [lon1, lat1, lon2, lat2, ...]
-        const flatCoords: number[] = [];
-        for (const [lon, lat] of coords) {
-          flatCoords.push(
-            Math.round(lon * 1e7) / 1e7,
-            Math.round(lat * 1e7) / 1e7
-          );
-        }
-        roadSurfaces.push({
-          surface: props.surface,
-          coords: flatCoords,
-        });
-      }
-    }
-
-    // Handle Polygon features (closed ways like roundabouts)
-    if (geometry.type === 'Polygon') {
-      const coords = (geometry.coordinates as [number, number][][])[0];
-
-      if (props.junction === 'roundabout') {
-        const center = calculateCentroid(coords);
-        const radius = calculateMaxRadius(coords, center);
-        roundabouts.push({
-          lat: center[1],
-          lon: center[0],
-          type: 'roundabout',
-          radius: Math.round(radius),
-        });
-      }
-    }
+    processFeature(feature, trafficCalming, roundabouts, roadSurfaces);
   }
 
   return {
@@ -374,6 +268,130 @@ function convertToBundledFormat(
     roundabouts,
     roadSurfaces,
   };
+}
+
+/**
+ * Process a single GeoJSON feature into the appropriate output arrays.
+ */
+function processFeature(
+  feature: GeoJSONFeature,
+  trafficCalming: TrafficCalmingPoint[],
+  roundabouts: RoundaboutInfo[],
+  roadSurfaces: RoadSurfaceWay[],
+): void {
+  const props = feature.properties as Record<string, string>;
+  const geometry = feature.geometry;
+
+  // Handle Point features (nodes)
+  if (geometry.type === 'Point') {
+    const [lon, lat] = geometry.coordinates as [number, number];
+
+    // Traffic calming nodes
+    if (props.traffic_calming && TRAFFIC_CALMING_TYPES.has(props.traffic_calming)) {
+      trafficCalming.push({
+        lat,
+        lon,
+        type: mapTrafficCalmingType(props.traffic_calming),
+        tags: extractRelevantTags(props),
+      });
+    }
+
+    // Speed cameras
+    if (props.highway === 'speed_camera' || props.enforcement === 'maxspeed') {
+      trafficCalming.push({
+        lat,
+        lon,
+        type: 'speed_camera',
+        tags: extractRelevantTags(props),
+      });
+    }
+
+    // Mini roundabouts (nodes)
+    if (props.highway === 'mini_roundabout') {
+      roundabouts.push({
+        lat,
+        lon,
+        type: 'mini_roundabout',
+        radius: 3, // Mini roundabouts are typically < 4m
+      });
+    }
+  }
+
+  // Handle LineString features (ways)
+  if (geometry.type === 'LineString') {
+    const coords = geometry.coordinates as [number, number][];
+
+    // Roundabout ways
+    if (props.junction === 'roundabout') {
+      const center = calculateCentroid(coords);
+      const radius = calculateMaxRadius(coords, center);
+      roundabouts.push({
+        lat: center[1],
+        lon: center[0],
+        type: 'roundabout',
+        radius: Math.round(radius),
+      });
+    }
+
+    // Bridge and tunnel ways - store BOTH endpoints for route traversal verification
+    if (props.bridge === 'yes' || props.tunnel === 'yes') {
+      const [startLon, startLat] = coords[0];
+      const [endLon, endLat] = coords[coords.length - 1];
+
+      // Extract OSM way ID from feature.id
+      // osmium exports with --add-unique-id=type_id as "w12345" (w=way, n=node, r=relation)
+      let wayId: number | undefined;
+      if (feature.id && typeof feature.id === 'string') {
+        if (feature.id.startsWith('w')) {
+          wayId = parseInt(feature.id.substring(1), 10);
+        } else if (feature.id.startsWith('way/')) {
+          wayId = parseInt(feature.id.split('/')[1], 10);
+        }
+      }
+
+      trafficCalming.push({
+        lat: startLat,
+        lon: startLon,
+        type: props.bridge === 'yes' ? 'bridge' : 'tunnel',
+        tags: extractRelevantTags(props),
+        endLat: endLat,
+        endLon: endLon,
+        wayId,
+      });
+    }
+
+    // Road surface ways — any highway way with a surface tag
+    // Skip roundabouts (already handled above) to avoid duplicates
+    if (props.surface && props.junction !== 'roundabout') {
+      const flatCoords: number[] = [];
+      for (const [lon, lat] of coords) {
+        flatCoords.push(
+          Math.round(lon * 1e7) / 1e7,
+          Math.round(lat * 1e7) / 1e7
+        );
+      }
+      roadSurfaces.push({
+        surface: props.surface,
+        coords: flatCoords,
+      });
+    }
+  }
+
+  // Handle Polygon features (closed ways like roundabouts)
+  if (geometry.type === 'Polygon') {
+    const coords = (geometry.coordinates as [number, number][][])[0];
+
+    if (props.junction === 'roundabout') {
+      const center = calculateCentroid(coords);
+      const radius = calculateMaxRadius(coords, center);
+      roundabouts.push({
+        lat: center[1],
+        lon: center[0],
+        type: 'roundabout',
+        radius: Math.round(radius),
+      });
+    }
+  }
 }
 
 /**
