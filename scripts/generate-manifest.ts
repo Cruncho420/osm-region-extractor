@@ -36,10 +36,10 @@ interface ManifestRegion {
   name: string;
   size: number;
   checksum: string;
-  /** Size of the separate road surface file */
   surfaceSize?: number;
-  /** Checksum of the separate road surface file */
   surfaceChecksum?: string;
+  waySize?: number;
+  wayChecksum?: string;
 }
 
 interface Manifest {
@@ -80,11 +80,12 @@ function generateManifest(inputDir: string, outputFile: string): void {
   });
 
   // Find all .json.gz files in input directory
-  // Core files: {id}.json.gz (exclude surface files: {id}-surfaces.json.gz)
   const allFiles = readdirSync(inputDir).filter((f) => f.endsWith('.json.gz'));
-  const coreFiles = allFiles.filter((f) => !f.includes('-surfaces'));
-  const surfaceFiles = new Set(allFiles.filter((f) => f.includes('-surfaces')));
-  console.log(`Found ${coreFiles.length} core files, ${surfaceFiles.size} surface files\n`);
+  // Core files are those that don't have a -surfaces or -ways suffix
+  const coreFiles = allFiles.filter(
+    (f) => !f.includes('-surfaces') && !f.includes('-ways'),
+  );
+  console.log(`Found ${coreFiles.length} core region files (${allFiles.length} total files)\n`);
 
   const manifest: Manifest = {
     version: new Date().toISOString().split('T')[0],
@@ -99,30 +100,46 @@ function generateManifest(inputDir: string, outputFile: string): void {
     const filePath = join(inputDir, file);
     const stats = statSync(filePath);
 
-    const entry: ManifestRegion = {
+    const region: ManifestRegion = {
       name: regionNames[regionId] || regionId,
       size: stats.size,
       checksum: computeChecksum(filePath),
     };
 
-    // Check for corresponding surface file
-    const surfaceFileName = `${regionId}-surfaces.json.gz`;
-    if (surfaceFiles.has(surfaceFileName)) {
-      const surfacePath = join(inputDir, surfaceFileName);
-      const surfaceStats = statSync(surfacePath);
-      entry.surfaceSize = surfaceStats.size;
-      entry.surfaceChecksum = computeChecksum(surfacePath);
-      totalSize += surfaceStats.size;
-    }
-
-    manifest.regions[regionId] = entry;
     totalSize += stats.size;
 
-    const surfaceInfo = entry.surfaceSize
-      ? ` + ${(entry.surfaceSize / 1024).toFixed(1)} KB surfaces`
-      : '';
+    // Check for surface data file
+    const surfaceFile = `${regionId}-surfaces.json.gz`;
+    const surfacePath = join(inputDir, surfaceFile);
+    try {
+      const surfaceStats = statSync(surfacePath);
+      region.surfaceSize = surfaceStats.size;
+      region.surfaceChecksum = computeChecksum(surfacePath);
+      totalSize += surfaceStats.size;
+    } catch {
+      // No surface file — that's fine
+    }
+
+    // Check for way data file
+    const wayFile = `${regionId}-ways.json.gz`;
+    const wayPath = join(inputDir, wayFile);
+    try {
+      const wayStats = statSync(wayPath);
+      region.waySize = wayStats.size;
+      region.wayChecksum = computeChecksum(wayPath);
+      totalSize += wayStats.size;
+    } catch {
+      // No way file — that's fine
+    }
+
+    manifest.regions[regionId] = region;
+
+    const extras = [
+      region.surfaceSize ? `surfaces: ${(region.surfaceSize / 1024).toFixed(1)} KB` : null,
+      region.waySize ? `ways: ${(region.waySize / 1024).toFixed(1)} KB` : null,
+    ].filter(Boolean).join(', ');
     console.log(
-      `  ${regionId}: ${(stats.size / 1024).toFixed(1)} KB${surfaceInfo} - ${regionNames[regionId] || 'Unknown'}`
+      `  ${regionId}: ${(stats.size / 1024).toFixed(1)} KB${extras ? ` (${extras})` : ''} - ${regionNames[regionId] || 'Unknown'}`
     );
   }
 

@@ -83,6 +83,7 @@ jobs:
           path: |
             scripts/output/${{ matrix.region }}.json.gz
             scripts/output/${{ matrix.region }}-surfaces.json.gz
+            scripts/output/${{ matrix.region }}-ways.json.gz
           retention-days: 1  # Clean up quickly to save storage
 
   # Job 3: Combine all artifacts, generate manifest, create release
@@ -145,7 +146,8 @@ jobs:
             **Contents:**
             - Traffic calming features (speed bumps, dips, bridges, tunnels, speed cameras)
             - Roundabouts (full and mini)
-            - Road surface data (asphalt, gravel, etc.) — in separate files
+            - Road surface data (asphalt, gravel, etc.)
+            - Road way geometry (dense OSM nodes for curve detection)
 
             **Usage:**
             Download `manifest.json` first to check versions, then download needed regions.
@@ -153,7 +155,8 @@ jobs:
             **Files:**
             - `manifest.json` - Version and checksum info for all regions
             - `{region-id}.json.gz` - Core data (traffic calming + roundabouts)
-            - `{region-id}-surfaces.json.gz` - Road surface data (loaded on-demand)
+            - `{region-id}-surfaces.json.gz` - Road surface data
+            - `{region-id}-ways.json.gz` - Road way geometry (dense curve nodes)
           files: release-files/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

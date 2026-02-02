@@ -11,10 +11,8 @@
  */
 
 import { execSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, statSync, createReadStream, createWriteStream } from 'fs';
-import { createInterface } from 'readline';
-import { pipeline } from 'stream/promises';
-import { createGzip, gzipSync } from 'zlib';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, statSync } from 'fs';
+import { gzipSync } from 'zlib';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -69,11 +67,17 @@ interface RoundaboutInfo {
   type: 'roundabout' | 'mini_roundabout';
 }
 
-interface RoadSurfaceWay {
-  /** OSM surface tag value (e.g., "asphalt", "gravel") */
-  surface: string;
-  /** Simplified way geometry as flat array: [lon1, lat1, lon2, lat2, ...] */
+interface BundledRoadWay {
+  /** Flat array: [lon1, lat1, lon2, lat2, ...] — FULL OSM node density */
   coords: number[];
+  /** Road classification for priority matching */
+  highway: string;
+}
+
+interface BundledWayData {
+  version: string;
+  region: string;
+  roadWays: BundledRoadWay[];
 }
 
 interface BundledOSMData {
@@ -81,12 +85,6 @@ interface BundledOSMData {
   region: string;
   trafficCalming: TrafficCalmingPoint[];
   roundabouts: RoundaboutInfo[];
-}
-
-interface BundledSurfaceData {
-  version: string;
-  region: string;
-  roadSurfaces: RoadSurfaceWay[];
 }
 
 // =============================================================================
@@ -135,7 +133,6 @@ async function extractRegion(regionId: string): Promise<void> {
   const filteredPbf = `/tmp/${regionId}-filtered.osm.pbf`;
   const outputJson = join(OUTPUT_DIR, `${regionId}.json`);
   const outputGz = join(OUTPUT_DIR, `${regionId}.json.gz`);
-  const surfaceGz = join(OUTPUT_DIR, `${regionId}-surfaces.json.gz`);
 
   // Ensure output directory exists
   if (!existsSync(OUTPUT_DIR)) {
@@ -144,7 +141,7 @@ async function extractRegion(regionId: string): Promise<void> {
 
   try {
     // Step 1: Download PBF from Geofabrik
-    console.log(`[1/5] Downloading from Geofabrik...`);
+    console.log(`[1/8] Downloading from Geofabrik...`);
     console.log(`      URL: ${pbfUrl}`);
     // Use curl (available on macOS) instead of wget
     execSync(`curl -L --progress-bar -o "${localPbf}" "${pbfUrl}"`, {
@@ -155,7 +152,7 @@ async function extractRegion(regionId: string): Promise<void> {
     console.log(`      Downloaded: ${pbfSize.toFixed(1)} MB\n`);
 
     // Step 2: Filter to only relevant tags
-    console.log(`[2/5] Filtering to traffic calming + road surface features...`);
+    console.log(`[2/8] Filtering to traffic calming features...`);
     // Use osmium tags-filter to extract only what we need:
     // - n/traffic_calming (nodes with traffic calming)
     // - n/highway=speed_camera (speed camera nodes)
@@ -164,7 +161,6 @@ async function extractRegion(regionId: string): Promise<void> {
     // - w/tunnel=yes (tunnel ways)
     // - nw/junction=roundabout (roundabout nodes and ways)
     // - n/highway=mini_roundabout (mini roundabout nodes)
-    // - w/surface (ways with surface tags — for road surface breakdown)
     execSync(
       `osmium tags-filter "${localPbf}" ` +
         `n/traffic_calming ` +
@@ -174,7 +170,6 @@ async function extractRegion(regionId: string): Promise<void> {
         `w/tunnel=yes ` +
         `nw/junction=roundabout ` +
         `n/highway=mini_roundabout ` +
-        `w/surface ` +
         `-o "${filteredPbf}"`,
       { stdio: 'inherit' }
     );
@@ -182,57 +177,106 @@ async function extractRegion(regionId: string): Promise<void> {
     const filteredSize = statSync(filteredPbf).size / (1024 * 1024);
     console.log(`      Filtered size: ${filteredSize.toFixed(2)} MB\n`);
 
-    // Step 3: Export to line-delimited GeoJSON (one feature per line)
-    // Use geojsonseq format to avoid loading entire file into memory
+    // Step 3: Export to GeoJSON
     // Use --add-unique-id type_id to include OSM IDs (e.g., "way/12345") for deduplication
-    console.log(`[3/5] Converting to GeoJSON (line-delimited)...`);
-    execSync(`osmium export "${filteredPbf}" -f geojsonseq --add-unique-id=type_id -o "${outputJson}"`, {
+    console.log(`[3/8] Converting to GeoJSON...`);
+    execSync(`osmium export "${filteredPbf}" -f geojson --add-unique-id=type_id -o "${outputJson}"`, {
       stdio: 'inherit',
     });
 
-    // Step 4: Parse features line-by-line, streaming road surfaces to temp file
-    // Traffic calming and roundabouts are small enough for memory; road surfaces are not.
-    console.log(`[4/5] Converting to optimized format...`);
-    const rsTempPath = `/tmp/${regionId}-roadsurfaces.ndjson`;
-    const { trafficCalming, roundabouts, roadSurfaceCount } =
-      await parseAndStreamFeatures(outputJson, rsTempPath);
+    // Step 4: Parse GeoJSON and convert to our optimized format
+    console.log(`[4/8] Converting to optimized format...`);
+    const geojson: GeoJSONFeatureCollection = JSON.parse(
+      readFileSync(outputJson, 'utf-8')
+    );
 
-    console.log(`      Traffic calming points: ${trafficCalming.length}`);
-    console.log(`      Roundabouts: ${roundabouts.length}`);
-    console.log(`      Road surface ways: ${roadSurfaceCount}`);
+    const bundledData = convertToBundledFormat(geojson, regionId);
 
-    // Step 5: Compose and compress TWO separate files
-    // Core file: traffic calming + roundabouts (small, loaded on every route open)
-    // Surface file: road surfaces (large, loaded on-demand for surface breakdown)
-    console.log(`[5/5] Composing and compressing...`);
-    const version = new Date().toISOString().split('T')[0];
+    console.log(`      Traffic calming points: ${bundledData.trafficCalming.length}`);
+    console.log(`      Roundabouts: ${bundledData.roundabouts.length}`);
 
-    // 5a: Core file (traffic calming + roundabouts)
-    await composeCoreFile(outputGz, version, regionId, trafficCalming, roundabouts);
-    const coreGzSize = statSync(outputGz).size / 1024;
-    console.log(`      Core file: ${coreGzSize.toFixed(1)} KB`);
+    // Write the optimized JSON
+    const optimizedJson = JSON.stringify(bundledData);
+    writeFileSync(outputJson, optimizedJson);
 
-    // 5b: Surface file (road surfaces only — streamed from temp)
-    await composeSurfaceFile(surfaceGz, rsTempPath, version, regionId);
-    const surfaceGzSize = statSync(surfaceGz).size / 1024;
-    console.log(`      Surface file: ${surfaceGzSize.toFixed(1)} KB`);
-    console.log(`      Total: ${((coreGzSize + surfaceGzSize) / 1024).toFixed(2)} MB\n`);
+    // Step 5: Compress with gzip
+    console.log(`[5/8] Compressing with gzip...`);
+    const jsonContent = readFileSync(outputJson);
+    const compressed = gzipSync(jsonContent, { level: 9 });
+    writeFileSync(outputGz, compressed);
 
-    // Clean up intermediate files
-    unlinkSync(localPbf);
+    const jsonSize = statSync(outputJson).size / 1024;
+    const gzSize = statSync(outputGz).size / 1024;
+    console.log(`      JSON size: ${jsonSize.toFixed(1)} KB`);
+    console.log(`      Compressed size: ${gzSize.toFixed(1)} KB`);
+    console.log(`      Compression ratio: ${((1 - gzSize / jsonSize) * 100).toFixed(1)}%\n`);
+
+    // Clean up intermediate files for core data
     unlinkSync(filteredPbf);
-    unlinkSync(outputJson); // Keep only the compressed versions
-    if (existsSync(rsTempPath)) unlinkSync(rsTempPath);
+    unlinkSync(outputJson); // Keep only the compressed version
 
-    console.log(`\n✓ ${region.name} complete`);
-    console.log(`  Core: ${outputGz} (${(coreGzSize / 1024).toFixed(2)} MB)`);
-    console.log(`  Surfaces: ${surfaceGz} (${(surfaceGzSize / 1024).toFixed(2)} MB)\n`);
+    console.log(`\n✓ ${region.name} core data complete: ${outputGz}`);
+    console.log(`  Final size: ${(gzSize / 1024).toFixed(2)} MB\n`);
+
+    // Step 6: Extract highway ways for dense road geometry
+    console.log(`[6/8] Filtering highway ways for road geometry...`);
+    const wayFilteredPbf = `/tmp/${regionId}-ways-filtered.osm.pbf`;
+    const wayOutputJson = join(OUTPUT_DIR, `${regionId}-ways.json`);
+    const wayOutputGz = join(OUTPUT_DIR, `${regionId}-ways.json.gz`);
+
+    execSync(
+      `osmium tags-filter "${localPbf}" ` +
+        `w/highway=primary,primary_link,secondary,secondary_link,tertiary,tertiary_link,` +
+        `residential,unclassified,living_street,service ` +
+        `-o "${wayFilteredPbf}"`,
+      { stdio: 'inherit' }
+    );
+
+    const wayFilteredSize = statSync(wayFilteredPbf).size / (1024 * 1024);
+    console.log(`      Filtered way size: ${wayFilteredSize.toFixed(2)} MB\n`);
+
+    // Step 7: Export ways to GeoJSON
+    console.log(`[7/8] Converting ways to GeoJSON...`);
+    execSync(`osmium export "${wayFilteredPbf}" -f geojson -o "${wayOutputJson}"`, {
+      stdio: 'inherit',
+    });
+
+    // Step 8: Convert to optimized way format
+    console.log(`[8/8] Converting ways to optimized format...`);
+    const wayGeojson: GeoJSONFeatureCollection = JSON.parse(
+      readFileSync(wayOutputJson, 'utf-8')
+    );
+
+    const wayData = convertToWayFormat(wayGeojson, regionId);
+    console.log(`      Road ways: ${wayData.roadWays.length}`);
+
+    const wayOptimizedJson = JSON.stringify(wayData);
+    writeFileSync(wayOutputJson, wayOptimizedJson);
+
+    const wayJsonContent = readFileSync(wayOutputJson);
+    const wayCompressed = gzipSync(wayJsonContent, { level: 9 });
+    writeFileSync(wayOutputGz, wayCompressed);
+
+    const wayJsonSize = statSync(wayOutputJson).size / 1024;
+    const wayGzSize = statSync(wayOutputGz).size / 1024;
+    console.log(`      Way JSON size: ${(wayJsonSize / 1024).toFixed(1)} MB`);
+    console.log(`      Way compressed size: ${(wayGzSize / 1024).toFixed(1)} MB`);
+    console.log(`      Compression ratio: ${((1 - wayGzSize / wayJsonSize) * 100).toFixed(1)}%\n`);
+
+    // Clean up all remaining intermediate files
+    unlinkSync(localPbf);
+    unlinkSync(wayFilteredPbf);
+    unlinkSync(wayOutputJson);
+
+    console.log(`\n✓ ${region.name} complete: core + ways`);
+    console.log(`  Core: ${(gzSize / 1024).toFixed(2)} MB, Ways: ${(wayGzSize / 1024).toFixed(2)} MB\n`);
   } catch (error) {
     console.error(`\n✗ Error processing ${region.name}:`, error);
 
     // Clean up any partial files
-    const rsTempCleanup = `/tmp/${regionId}-roadsurfaces.ndjson`;
-    [localPbf, filteredPbf, outputJson, rsTempCleanup].forEach((file) => {
+    const wayFilteredPbf = `/tmp/${regionId}-ways-filtered.osm.pbf`;
+    const wayOutputJson = join(OUTPUT_DIR, `${regionId}-ways.json`);
+    [localPbf, filteredPbf, outputJson, wayFilteredPbf, wayOutputJson].forEach((file) => {
       if (existsSync(file)) {
         try {
           unlinkSync(file);
@@ -247,40 +291,16 @@ async function extractRegion(regionId: string): Promise<void> {
 }
 
 /**
- * Parse geojsonseq input, collecting small data in memory and streaming
- * road surfaces to a temp ndjson file (one JSON object per line, comma-separated).
- * This avoids OOM on large regions like Russia (9M+ road surface ways).
+ * Convert GeoJSON to our optimized bundled format
  */
-async function parseAndStreamFeatures(
-  inputPath: string,
-  rsTempPath: string,
-): Promise<{
-  trafficCalming: TrafficCalmingPoint[];
-  roundabouts: RoundaboutInfo[];
-  roadSurfaceCount: number;
-}> {
+function convertToBundledFormat(
+  geojson: GeoJSONFeatureCollection,
+  regionId: string
+): BundledOSMData {
   const trafficCalming: TrafficCalmingPoint[] = [];
   const roundabouts: RoundaboutInfo[] = [];
-  let roadSurfaceCount = 0;
 
-  const rsStream = createWriteStream(rsTempPath, { encoding: 'utf-8' });
-
-  const rl = createInterface({
-    input: createReadStream(inputPath, { encoding: 'utf-8' }),
-    crlfDelay: Infinity,
-  });
-
-  for await (const line of rl) {
-    const trimmed = line.trim().replace(/^\x1e/, '');
-    if (!trimmed) continue;
-
-    let feature: GeoJSONFeature;
-    try {
-      feature = JSON.parse(trimmed);
-    } catch {
-      continue;
-    }
-
+  for (const feature of geojson.features) {
     const props = feature.properties as Record<string, string>;
     const geometry = feature.geometry;
 
@@ -288,20 +308,34 @@ async function parseAndStreamFeatures(
     if (geometry.type === 'Point') {
       const [lon, lat] = geometry.coordinates as [number, number];
 
+      // Traffic calming nodes
       if (props.traffic_calming && TRAFFIC_CALMING_TYPES.has(props.traffic_calming)) {
         trafficCalming.push({
-          lat, lon,
+          lat,
+          lon,
           type: mapTrafficCalmingType(props.traffic_calming),
           tags: extractRelevantTags(props),
         });
       }
 
+      // Speed cameras
       if (props.highway === 'speed_camera' || props.enforcement === 'maxspeed') {
-        trafficCalming.push({ lat, lon, type: 'speed_camera', tags: extractRelevantTags(props) });
+        trafficCalming.push({
+          lat,
+          lon,
+          type: 'speed_camera',
+          tags: extractRelevantTags(props),
+        });
       }
 
+      // Mini roundabouts (nodes)
       if (props.highway === 'mini_roundabout') {
-        roundabouts.push({ lat, lon, type: 'mini_roundabout', radius: 3 });
+        roundabouts.push({
+          lat,
+          lon,
+          type: 'mini_roundabout',
+          radius: 3, // Mini roundabouts are typically < 4m
+        });
       }
     }
 
@@ -309,20 +343,30 @@ async function parseAndStreamFeatures(
     if (geometry.type === 'LineString') {
       const coords = geometry.coordinates as [number, number][];
 
+      // Roundabout ways
       if (props.junction === 'roundabout') {
         const center = calculateCentroid(coords);
         const radius = calculateMaxRadius(coords, center);
         roundabouts.push({
-          lat: center[1], lon: center[0], type: 'roundabout', radius: Math.round(radius),
+          lat: center[1],
+          lon: center[0],
+          type: 'roundabout',
+          radius: Math.round(radius),
         });
       }
 
+      // Bridge and tunnel ways - store BOTH endpoints for route traversal verification
+      // This enables the same endpoint-matching logic used by the Overpass API query
       if (props.bridge === 'yes' || props.tunnel === 'yes') {
         const [startLon, startLat] = coords[0];
         const [endLon, endLat] = coords[coords.length - 1];
 
+        // Extract OSM way ID from feature.id
+        // osmium exports with --add-unique-id=type_id as "w12345" (w=way, n=node, r=relation)
+        // This enables deduplication of multi-segment bridges/tunnels
         let wayId: number | undefined;
         if (feature.id && typeof feature.id === 'string') {
+          // Handle osmium format: "w12345" or "way/12345"
           if (feature.id.startsWith('w')) {
             wayId = parseInt(feature.id.substring(1), 10);
           } else if (feature.id.startsWith('way/')) {
@@ -331,100 +375,42 @@ async function parseAndStreamFeatures(
         }
 
         trafficCalming.push({
-          lat: startLat, lon: startLon,
+          lat: startLat,
+          lon: startLon,
           type: props.bridge === 'yes' ? 'bridge' : 'tunnel',
           tags: extractRelevantTags(props),
-          endLat, endLon, wayId,
+          // Store second endpoint for route traversal verification
+          endLat: endLat,
+          endLon: endLon,
+          // Store way ID for deduplication of multi-segment features
+          wayId,
         });
-      }
-
-      // Road surfaces — stream to temp file instead of accumulating in memory
-      if (props.surface && props.junction !== 'roundabout') {
-        const flatCoords: number[] = [];
-        for (const [lon, lat] of coords) {
-          flatCoords.push(
-            Math.round(lon * 1e7) / 1e7,
-            Math.round(lat * 1e7) / 1e7
-          );
-        }
-        const entry = JSON.stringify({ surface: props.surface, coords: flatCoords });
-        if (roadSurfaceCount > 0) rsStream.write(',');
-        rsStream.write(entry);
-        roadSurfaceCount++;
       }
     }
 
     // Handle Polygon features (closed ways like roundabouts)
     if (geometry.type === 'Polygon') {
       const coords = (geometry.coordinates as [number, number][][])[0];
+
       if (props.junction === 'roundabout') {
         const center = calculateCentroid(coords);
         const radius = calculateMaxRadius(coords, center);
         roundabouts.push({
-          lat: center[1], lon: center[0], type: 'roundabout', radius: Math.round(radius),
+          lat: center[1],
+          lon: center[0],
+          type: 'roundabout',
+          radius: Math.round(radius),
         });
       }
     }
   }
 
-  // Wait for write stream to finish flushing
-  await new Promise<void>((resolve, reject) => {
-    rsStream.end(() => resolve());
-    rsStream.on('error', reject);
-  });
-
-  return { trafficCalming, roundabouts, roadSurfaceCount };
-}
-
-/**
- * Compose the core data file (traffic calming + roundabouts) and gzip-compress it.
- * Small file (~500KB), loaded on every route open.
- */
-async function composeCoreFile(
-  outputGzPath: string,
-  version: string,
-  regionId: string,
-  trafficCalming: TrafficCalmingPoint[],
-  roundabouts: RoundaboutInfo[],
-): Promise<void> {
-  const data: BundledOSMData = { version, region: regionId, trafficCalming, roundabouts };
-  const json = JSON.stringify(data);
-  const compressed = gzipSync(Buffer.from(json), { level: 9 });
-  writeFileSync(outputGzPath, compressed);
-}
-
-/**
- * Compose the road surface file and gzip-compress it by streaming.
- * Large file (can be 50MB+), loaded on-demand for surface breakdown.
- */
-async function composeSurfaceFile(
-  outputGzPath: string,
-  rsTempPath: string,
-  version: string,
-  regionId: string,
-): Promise<void> {
-  const gzipStream = createGzip({ level: 9 });
-  const outFile = createWriteStream(outputGzPath);
-
-  gzipStream.pipe(outFile);
-
-  gzipStream.write(`{"version":"${version}","region":"${regionId}","roadSurfaces":[`);
-
-  // Stream road surfaces from temp file (already comma-separated entries)
-  if (existsSync(rsTempPath) && statSync(rsTempPath).size > 0) {
-    const rsInput = createReadStream(rsTempPath, { encoding: 'utf-8' });
-    for await (const chunk of rsInput) {
-      gzipStream.write(chunk);
-    }
-  }
-
-  gzipStream.write(']}');
-
-  await new Promise<void>((resolve, reject) => {
-    outFile.on('finish', resolve);
-    outFile.on('error', reject);
-    gzipStream.end();
-  });
+  return {
+    version: new Date().toISOString().split('T')[0],
+    region: regionId,
+    trafficCalming,
+    roundabouts,
+  };
 }
 
 /**
@@ -531,6 +517,47 @@ function haversineDistance(
 
 function toRadians(degrees: number): number {
   return (degrees * Math.PI) / 180;
+}
+
+/**
+ * Convert GeoJSON highway ways to optimized format with full node density
+ */
+function convertToWayFormat(
+  geojson: GeoJSONFeatureCollection,
+  regionId: string
+): BundledWayData {
+  const roadWays: BundledRoadWay[] = [];
+
+  for (const feature of geojson.features) {
+    const props = feature.properties as Record<string, string>;
+    const geometry = feature.geometry;
+
+    // Only LineString ways (skip any Point or Polygon features)
+    if (geometry.type !== 'LineString') continue;
+
+    const highway = props.highway;
+    if (!highway) continue;
+
+    const coords = geometry.coordinates as [number, number][];
+    if (coords.length < 2) continue;
+
+    // Store as flat array [lon1, lat1, lon2, lat2, ...] at FULL OSM node density
+    const flatCoords: number[] = [];
+    for (const [lon, lat] of coords) {
+      flatCoords.push(lon, lat);
+    }
+
+    roadWays.push({
+      coords: flatCoords,
+      highway,
+    });
+  }
+
+  return {
+    version: new Date().toISOString().split('T')[0],
+    region: regionId,
+    roadWays,
+  };
 }
 
 // =============================================================================
