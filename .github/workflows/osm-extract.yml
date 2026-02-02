@@ -39,7 +39,7 @@ jobs:
             echo "matrix=[\"${{ inputs.single_region }}\"]" >> $GITHUB_OUTPUT
           else
             # All regions
-            echo "matrix=$(jq -c '[.regions[].id]' scripts/regions.json)" >> $GITHUB_OUTPUT
+            echo "matrix=$(jq -c '[.regions[].id]' scripts/osm-extract/regions.json)" >> $GITHUB_OUTPUT
           fi
 
       - name: Show regions to extract
@@ -69,11 +69,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y osmium-tool
 
       - name: Install dependencies
-        working-directory: scripts
+        working-directory: scripts/osm-extract
         run: npm install
 
       - name: Extract ${{ matrix.region }}
-        working-directory: scripts
+        working-directory: scripts/osm-extract
         run: npm run extract-single -- --region ${{ matrix.region }}
 
       - name: Upload artifact
@@ -81,9 +81,9 @@ jobs:
         with:
           name: ${{ matrix.region }}
           path: |
-            scripts/output/${{ matrix.region }}.json.gz
-            scripts/output/${{ matrix.region }}-surfaces.json.gz
-            scripts/output/${{ matrix.region }}-ways.json.gz
+            scripts/osm-extract/output/${{ matrix.region }}.json.gz
+            scripts/osm-extract/output/${{ matrix.region }}-ways.json.gz
+            scripts/osm-extract/output/${{ matrix.region }}-surfaces.json.gz
           retention-days: 1  # Clean up quickly to save storage
 
   # Job 3: Combine all artifacts, generate manifest, create release
@@ -100,7 +100,7 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        working-directory: scripts
+        working-directory: scripts/osm-extract
         run: npm install
 
       - name: Download all artifacts
@@ -117,12 +117,12 @@ jobs:
           echo "Total files: $(ls release-files/*.json.gz | wc -l)"
 
       - name: Generate manifest
-        working-directory: scripts
+        working-directory: scripts/osm-extract
         run: |
           npm run generate-manifest -- \
-            --input ../release-files \
-            --output ../release-files/manifest.json
-          cat ../release-files/manifest.json | head -50
+            --input ../../release-files \
+            --output ../../release-files/manifest.json
+          cat ../../release-files/manifest.json | head -50
 
       - name: Get release info
         id: release-info
@@ -143,11 +143,11 @@ jobs:
 
             **Version:** ${{ steps.release-info.outputs.version }}
 
-            **Contents:**
+            **Contents (per region, 3 files):**
             - Traffic calming features (speed bumps, dips, bridges, tunnels, speed cameras)
             - Roundabouts (full and mini)
-            - Road surface data (asphalt, gravel, etc.)
-            - Road way geometry (dense OSM nodes for curve detection)
+            - Road surfaces (asphalt, gravel, cobblestone, dirt, etc.)
+            - Road ways (dense road geometry for curve detection)
 
             **Usage:**
             Download `manifest.json` first to check versions, then download needed regions.
@@ -155,8 +155,8 @@ jobs:
             **Files:**
             - `manifest.json` - Version and checksum info for all regions
             - `{region-id}.json.gz` - Core data (traffic calming + roundabouts)
-            - `{region-id}-surfaces.json.gz` - Road surface data
-            - `{region-id}-ways.json.gz` - Road way geometry (dense curve nodes)
+            - `{region-id}-surfaces.json.gz` - Road surface types
+            - `{region-id}-ways.json.gz` - Road geometry
           files: release-files/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

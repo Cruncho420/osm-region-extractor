@@ -80,6 +80,19 @@ interface BundledWayData {
   roadWays: BundledRoadWay[];
 }
 
+interface BundledRoadSurface {
+  /** Normalized surface type (asphalt, gravel, etc.) */
+  surface: string;
+  /** Flat array: [lon1, lat1, lon2, lat2, ...] */
+  coords: number[];
+}
+
+interface BundledSurfaceData {
+  version: string;
+  region: string;
+  roadSurfaces: BundledRoadSurface[];
+}
+
 interface BundledOSMData {
   version: string;
   region: string;
@@ -141,7 +154,7 @@ async function extractRegion(regionId: string): Promise<void> {
 
   try {
     // Step 1: Download PBF from Geofabrik
-    console.log(`[1/8] Downloading from Geofabrik...`);
+    console.log(`[1/11] Downloading from Geofabrik...`);
     console.log(`      URL: ${pbfUrl}`);
     // Use curl (available on macOS) instead of wget
     execSync(`curl -L --progress-bar -o "${localPbf}" "${pbfUrl}"`, {
@@ -152,7 +165,7 @@ async function extractRegion(regionId: string): Promise<void> {
     console.log(`      Downloaded: ${pbfSize.toFixed(1)} MB\n`);
 
     // Step 2: Filter to only relevant tags
-    console.log(`[2/8] Filtering to traffic calming features...`);
+    console.log(`[2/11] Filtering to traffic calming features...`);
     // Use osmium tags-filter to extract only what we need:
     // - n/traffic_calming (nodes with traffic calming)
     // - n/highway=speed_camera (speed camera nodes)
@@ -179,13 +192,13 @@ async function extractRegion(regionId: string): Promise<void> {
 
     // Step 3: Export to GeoJSON
     // Use --add-unique-id type_id to include OSM IDs (e.g., "way/12345") for deduplication
-    console.log(`[3/8] Converting to GeoJSON...`);
+    console.log(`[3/11] Converting to GeoJSON...`);
     execSync(`osmium export "${filteredPbf}" -f geojson --add-unique-id=type_id -o "${outputJson}"`, {
       stdio: 'inherit',
     });
 
     // Step 4: Parse GeoJSON and convert to our optimized format
-    console.log(`[4/8] Converting to optimized format...`);
+    console.log(`[4/11] Converting to optimized format...`);
     const geojson: GeoJSONFeatureCollection = JSON.parse(
       readFileSync(outputJson, 'utf-8')
     );
@@ -200,7 +213,7 @@ async function extractRegion(regionId: string): Promise<void> {
     writeFileSync(outputJson, optimizedJson);
 
     // Step 5: Compress with gzip
-    console.log(`[5/8] Compressing with gzip...`);
+    console.log(`[5/11] Compressing with gzip...`);
     const jsonContent = readFileSync(outputJson);
     const compressed = gzipSync(jsonContent, { level: 9 });
     writeFileSync(outputGz, compressed);
@@ -219,7 +232,7 @@ async function extractRegion(regionId: string): Promise<void> {
     console.log(`  Final size: ${(gzSize / 1024).toFixed(2)} MB\n`);
 
     // Step 6: Extract highway ways for dense road geometry
-    console.log(`[6/8] Filtering highway ways for road geometry...`);
+    console.log(`[6/11] Filtering highway ways for road geometry...`);
     const wayFilteredPbf = `/tmp/${regionId}-ways-filtered.osm.pbf`;
     const wayOutputJson = join(OUTPUT_DIR, `${regionId}-ways.json`);
     const wayOutputGz = join(OUTPUT_DIR, `${regionId}-ways.json.gz`);
@@ -236,13 +249,13 @@ async function extractRegion(regionId: string): Promise<void> {
     console.log(`      Filtered way size: ${wayFilteredSize.toFixed(2)} MB\n`);
 
     // Step 7: Export ways to GeoJSON
-    console.log(`[7/8] Converting ways to GeoJSON...`);
+    console.log(`[7/11] Converting ways to GeoJSON...`);
     execSync(`osmium export "${wayFilteredPbf}" -f geojson -o "${wayOutputJson}"`, {
       stdio: 'inherit',
     });
 
     // Step 8: Convert to optimized way format
-    console.log(`[8/8] Converting ways to optimized format...`);
+    console.log(`[8/11] Converting ways to optimized format...`);
     const wayGeojson: GeoJSONFeatureCollection = JSON.parse(
       readFileSync(wayOutputJson, 'utf-8')
     );
@@ -263,20 +276,68 @@ async function extractRegion(regionId: string): Promise<void> {
     console.log(`      Way compressed size: ${(wayGzSize / 1024).toFixed(1)} MB`);
     console.log(`      Compression ratio: ${((1 - wayGzSize / wayJsonSize) * 100).toFixed(1)}%\n`);
 
+    // Step 9: Extract road surfaces (highway ways with surface=* tag)
+    console.log(`[9/11] Filtering highway ways with surface tags...`);
+    const surfaceFilteredPbf = `/tmp/${regionId}-surfaces-filtered.osm.pbf`;
+    const surfaceOutputJson = join(OUTPUT_DIR, `${regionId}-surfaces.json`);
+    const surfaceOutputGz = join(OUTPUT_DIR, `${regionId}-surfaces.json.gz`);
+
+    // Two-step filter: first get highway ways, then narrow to those with surface tag.
+    // Reuse the wayFilteredPbf (already filtered to highway types) and narrow to surface=*
+    execSync(
+      `osmium tags-filter "${wayFilteredPbf}" w/surface -o "${surfaceFilteredPbf}"`,
+      { stdio: 'inherit' }
+    );
+
+    const surfaceFilteredSize = statSync(surfaceFilteredPbf).size / (1024 * 1024);
+    console.log(`      Filtered surface size: ${surfaceFilteredSize.toFixed(2)} MB\n`);
+
+    // Step 10: Export surfaces to GeoJSON
+    console.log(`[10/11] Converting surface ways to GeoJSON...`);
+    execSync(`osmium export "${surfaceFilteredPbf}" -f geojson -o "${surfaceOutputJson}"`, {
+      stdio: 'inherit',
+    });
+
+    // Step 11: Convert to optimized surface format
+    console.log(`[11/11] Converting surfaces to optimized format...`);
+    const surfaceGeojson: GeoJSONFeatureCollection = JSON.parse(
+      readFileSync(surfaceOutputJson, 'utf-8')
+    );
+
+    const surfaceData = convertToSurfaceFormat(surfaceGeojson, regionId);
+    console.log(`      Road surfaces: ${surfaceData.roadSurfaces.length}`);
+
+    const surfaceOptimizedJson = JSON.stringify(surfaceData);
+    writeFileSync(surfaceOutputJson, surfaceOptimizedJson);
+
+    const surfaceJsonContent = readFileSync(surfaceOutputJson);
+    const surfaceCompressed = gzipSync(surfaceJsonContent, { level: 9 });
+    writeFileSync(surfaceOutputGz, surfaceCompressed);
+
+    const surfaceJsonSize = statSync(surfaceOutputJson).size / 1024;
+    const surfaceGzSize = statSync(surfaceOutputGz).size / 1024;
+    console.log(`      Surface JSON size: ${(surfaceJsonSize / 1024).toFixed(1)} MB`);
+    console.log(`      Surface compressed size: ${(surfaceGzSize / 1024).toFixed(1)} MB`);
+    console.log(`      Compression ratio: ${((1 - surfaceGzSize / surfaceJsonSize) * 100).toFixed(1)}%\n`);
+
     // Clean up all remaining intermediate files
     unlinkSync(localPbf);
     unlinkSync(wayFilteredPbf);
     unlinkSync(wayOutputJson);
+    unlinkSync(surfaceFilteredPbf);
+    unlinkSync(surfaceOutputJson);
 
-    console.log(`\n✓ ${region.name} complete: core + ways`);
-    console.log(`  Core: ${(gzSize / 1024).toFixed(2)} MB, Ways: ${(wayGzSize / 1024).toFixed(2)} MB\n`);
+    console.log(`\n✓ ${region.name} complete: core + ways + surfaces`);
+    console.log(`  Core: ${(gzSize / 1024).toFixed(2)} MB, Ways: ${(wayGzSize / 1024).toFixed(2)} MB, Surfaces: ${(surfaceGzSize / 1024).toFixed(2)} MB\n`);
   } catch (error) {
     console.error(`\n✗ Error processing ${region.name}:`, error);
 
     // Clean up any partial files
     const wayFilteredPbf = `/tmp/${regionId}-ways-filtered.osm.pbf`;
     const wayOutputJson = join(OUTPUT_DIR, `${regionId}-ways.json`);
-    [localPbf, filteredPbf, outputJson, wayFilteredPbf, wayOutputJson].forEach((file) => {
+    const surfaceFilteredPbf = `/tmp/${regionId}-surfaces-filtered.osm.pbf`;
+    const surfaceOutputJson = join(OUTPUT_DIR, `${regionId}-surfaces.json`);
+    [localPbf, filteredPbf, outputJson, wayFilteredPbf, wayOutputJson, surfaceFilteredPbf, surfaceOutputJson].forEach((file) => {
       if (existsSync(file)) {
         try {
           unlinkSync(file);
@@ -557,6 +618,82 @@ function convertToWayFormat(
     version: new Date().toISOString().split('T')[0],
     region: regionId,
     roadWays,
+  };
+}
+
+/**
+ * Normalize raw OSM surface tag to a standardized type.
+ * Must stay in sync with services/osm/roadSurface.ts normalization.
+ */
+function normalizeSurfaceType(osmSurface: string): string {
+  const map: Record<string, string> = {
+    // Paved
+    'asphalt': 'asphalt',
+    'concrete': 'concrete',
+    'concrete:plates': 'concrete',
+    'concrete:lanes': 'concrete',
+    'paved': 'paved',
+    'cobblestone': 'cobblestone',
+    'cobblestone:flattened': 'cobblestone',
+    'paving_stones': 'cobblestone',
+    'sett': 'cobblestone',
+    // Unpaved
+    'gravel': 'gravel',
+    'fine_gravel': 'gravel',
+    'pebblestone': 'gravel',
+    'compacted': 'compacted',
+    'dirt': 'dirt',
+    'earth': 'dirt',
+    'mud': 'dirt',
+    'sand': 'dirt',
+    'grass': 'grass',
+    'grass_paver': 'grass',
+    'unpaved': 'unpaved',
+    'ground': 'unpaved',
+  };
+  return map[osmSurface] ?? 'unknown';
+}
+
+/**
+ * Convert GeoJSON highway ways (with surface tags) to optimized surface format
+ */
+function convertToSurfaceFormat(
+  geojson: GeoJSONFeatureCollection,
+  regionId: string
+): BundledSurfaceData {
+  const roadSurfaces: BundledRoadSurface[] = [];
+
+  for (const feature of geojson.features) {
+    const props = feature.properties as Record<string, string>;
+    const geometry = feature.geometry;
+
+    // Only LineString ways
+    if (geometry.type !== 'LineString') continue;
+
+    const surface = props.surface;
+    if (!surface) continue;
+
+    const coords = geometry.coordinates as [number, number][];
+    if (coords.length < 2) continue;
+
+    const normalized = normalizeSurfaceType(surface);
+
+    // Store as flat array [lon1, lat1, lon2, lat2, ...]
+    const flatCoords: number[] = [];
+    for (const [lon, lat] of coords) {
+      flatCoords.push(lon, lat);
+    }
+
+    roadSurfaces.push({
+      surface: normalized,
+      coords: flatCoords,
+    });
+  }
+
+  return {
+    version: new Date().toISOString().split('T')[0],
+    region: regionId,
+    roadSurfaces,
   };
 }
 
