@@ -11,10 +11,11 @@
  */
 
 import { execSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, statSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, statSync, createReadStream } from 'fs';
 import { gzipSync } from 'zlib';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { createInterface } from 'readline';
 
 // =============================================================================
 // TYPES
@@ -248,19 +249,15 @@ async function extractRegion(regionId: string): Promise<void> {
     const wayFilteredSize = statSync(wayFilteredPbf).size / (1024 * 1024);
     console.log(`      Filtered way size: ${wayFilteredSize.toFixed(2)} MB\n`);
 
-    // Step 7: Export ways to GeoJSON
-    console.log(`[7/11] Converting ways to GeoJSON...`);
-    execSync(`osmium export "${wayFilteredPbf}" -f geojson -o "${wayOutputJson}"`, {
+    // Step 7: Export ways to GeoJSON sequence (one feature per line — avoids string size limit)
+    console.log(`[7/11] Converting ways to GeoJSON sequence...`);
+    execSync(`osmium export "${wayFilteredPbf}" -f geojsonseq -o "${wayOutputJson}"`, {
       stdio: 'inherit',
     });
 
-    // Step 8: Convert to optimized way format
+    // Step 8: Convert to optimized way format (streaming, line-by-line)
     console.log(`[8/11] Converting ways to optimized format...`);
-    const wayGeojson: GeoJSONFeatureCollection = JSON.parse(
-      readFileSync(wayOutputJson, 'utf-8')
-    );
-
-    const wayData = convertToWayFormat(wayGeojson, regionId);
+    const wayData = await streamConvertWays(wayOutputJson, regionId);
     console.log(`      Road ways: ${wayData.roadWays.length}`);
 
     const wayOptimizedJson = JSON.stringify(wayData);
@@ -292,19 +289,15 @@ async function extractRegion(regionId: string): Promise<void> {
     const surfaceFilteredSize = statSync(surfaceFilteredPbf).size / (1024 * 1024);
     console.log(`      Filtered surface size: ${surfaceFilteredSize.toFixed(2)} MB\n`);
 
-    // Step 10: Export surfaces to GeoJSON
-    console.log(`[10/11] Converting surface ways to GeoJSON...`);
-    execSync(`osmium export "${surfaceFilteredPbf}" -f geojson -o "${surfaceOutputJson}"`, {
+    // Step 10: Export surfaces to GeoJSON sequence (one feature per line)
+    console.log(`[10/11] Converting surface ways to GeoJSON sequence...`);
+    execSync(`osmium export "${surfaceFilteredPbf}" -f geojsonseq -o "${surfaceOutputJson}"`, {
       stdio: 'inherit',
     });
 
-    // Step 11: Convert to optimized surface format
+    // Step 11: Convert to optimized surface format (streaming, line-by-line)
     console.log(`[11/11] Converting surfaces to optimized format...`);
-    const surfaceGeojson: GeoJSONFeatureCollection = JSON.parse(
-      readFileSync(surfaceOutputJson, 'utf-8')
-    );
-
-    const surfaceData = convertToSurfaceFormat(surfaceGeojson, regionId);
+    const surfaceData = await streamConvertSurfaces(surfaceOutputJson, regionId);
     console.log(`      Road surfaces: ${surfaceData.roadSurfaces.length}`);
 
     const surfaceOptimizedJson = JSON.stringify(surfaceData);
@@ -688,6 +681,106 @@ function convertToSurfaceFormat(
       surface: normalized,
       coords: flatCoords,
     });
+  }
+
+  return {
+    version: new Date().toISOString().split('T')[0],
+    region: regionId,
+    roadSurfaces,
+  };
+}
+
+// =============================================================================
+// STREAMING CONVERTERS (for large files that exceed Node.js string limit)
+// =============================================================================
+
+/**
+ * Stream-read a GeoJSON sequence file (one feature per line) and convert ways.
+ * Avoids loading the entire file into memory as a single string.
+ */
+async function streamConvertWays(filePath: string, regionId: string): Promise<BundledWayData> {
+  const roadWays: BundledRoadWay[] = [];
+
+  const rl = createInterface({
+    input: createReadStream(filePath, { encoding: 'utf-8' }),
+    crlfDelay: Infinity,
+  });
+
+  for await (const line of rl) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    let feature: GeoJSONFeature;
+    try {
+      feature = JSON.parse(trimmed);
+    } catch {
+      continue; // Skip malformed lines
+    }
+
+    const props = feature.properties as Record<string, string>;
+    const geometry = feature.geometry;
+    if (geometry.type !== 'LineString') continue;
+
+    const highway = props.highway;
+    if (!highway) continue;
+
+    const coords = geometry.coordinates as [number, number][];
+    if (coords.length < 2) continue;
+
+    const flatCoords: number[] = [];
+    for (const [lon, lat] of coords) {
+      flatCoords.push(lon, lat);
+    }
+
+    roadWays.push({ coords: flatCoords, highway });
+  }
+
+  return {
+    version: new Date().toISOString().split('T')[0],
+    region: regionId,
+    roadWays,
+  };
+}
+
+/**
+ * Stream-read a GeoJSON sequence file and convert surface ways.
+ */
+async function streamConvertSurfaces(filePath: string, regionId: string): Promise<BundledSurfaceData> {
+  const roadSurfaces: BundledRoadSurface[] = [];
+
+  const rl = createInterface({
+    input: createReadStream(filePath, { encoding: 'utf-8' }),
+    crlfDelay: Infinity,
+  });
+
+  for await (const line of rl) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    let feature: GeoJSONFeature;
+    try {
+      feature = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+
+    const props = feature.properties as Record<string, string>;
+    const geometry = feature.geometry;
+    if (geometry.type !== 'LineString') continue;
+
+    const surface = props.surface;
+    if (!surface) continue;
+
+    const coords = geometry.coordinates as [number, number][];
+    if (coords.length < 2) continue;
+
+    const normalized = normalizeSurfaceType(surface);
+    const flatCoords: number[] = [];
+    for (const [lon, lat] of coords) {
+      flatCoords.push(lon, lat);
+    }
+
+    roadSurfaces.push({ surface: normalized, coords: flatCoords });
   }
 
   return {
