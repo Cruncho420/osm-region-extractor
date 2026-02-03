@@ -707,7 +707,7 @@ async function streamConvertWays(filePath: string, regionId: string): Promise<Bu
   });
 
   for await (const line of rl) {
-    const trimmed = line.trim();
+    const trimmed = line.trim().replace(/^\x1e/, '');
     if (!trimmed) continue;
 
     let feature: GeoJSONFeature;
@@ -754,7 +754,7 @@ async function streamConvertSurfaces(filePath: string, regionId: string): Promis
   });
 
   for await (const line of rl) {
-    const trimmed = line.trim();
+    const trimmed = line.trim().replace(/^\x1e/, '');
     if (!trimmed) continue;
 
     let feature: GeoJSONFeature;
