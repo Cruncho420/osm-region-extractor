@@ -136,32 +136,49 @@ jobs:
           echo "tag_name=osm-${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ steps.release-info.outputs.tag_name }}
-          name: "OSM Data - ${{ steps.release-info.outputs.month_name }}"
-          body: |
-            Monthly OSM data extraction for Rods app.
-
-            **Version:** ${{ steps.release-info.outputs.version }}
-
-            **Contents (per region, 3 files):**
-            - Traffic calming features (speed bumps, dips, bridges, tunnels, speed cameras)
-            - Roundabouts (full and mini)
-            - Road surfaces (asphalt, gravel, cobblestone, dirt, etc.)
-            - Road ways (dense road geometry for curve detection)
-
-            **Usage:**
-            Download `manifest.json` first to check versions, then download needed regions.
-
-            **Files:**
-            - `manifest.json` - Version and checksum info for all regions
-            - `{region-id}.json.gz` - Core data (traffic calming + roundabouts)
-            - `{region-id}-surfaces.json.gz` - Road surface types
-            - `{region-id}-ways.json.gz` - Road geometry
-          files: release-files/*
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.release-info.outputs.tag_name }}"
+          TITLE="OSM Data - ${{ steps.release-info.outputs.month_name }}"
+
+          # Delete existing release with same tag if it exists
+          gh release delete "$TAG" --yes 2>/dev/null || true
+          git tag -d "$TAG" 2>/dev/null || true
+          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+
+          # Create the release
+          gh release create "$TAG" \
+            --title "$TITLE" \
+            --notes "Monthly OSM data extraction for Rods app.
+
+          **Version:** ${{ steps.release-info.outputs.version }}
+
+          **Contents (per region, 3 files):**
+          - Traffic calming features (speed bumps, dips, bridges, tunnels, speed cameras)
+          - Roundabouts (full and mini)
+          - Road surfaces (asphalt, gravel, cobblestone, dirt, etc.)
+          - Road ways (dense road geometry for curve detection)
+
+          **Usage:**
+          Download manifest.json first to check versions, then download needed regions.
+
+          **Files:**
+          - manifest.json - Version and checksum info for all regions
+          - {region-id}.json.gz - Core data (traffic calming + roundabouts)
+          - {region-id}-surfaces.json.gz - Road surface types
+          - {region-id}-ways.json.gz - Road geometry"
+
+          # Upload files in batches of 20 to avoid timeouts
+          cd release-files
+          FILES=(*)
+          BATCH_SIZE=20
+          for ((i=0; i<${#FILES[@]}; i+=BATCH_SIZE)); do
+            BATCH=("${FILES[@]:i:BATCH_SIZE}")
+            echo "Uploading batch $((i/BATCH_SIZE + 1)): ${#BATCH[@]} files..."
+            gh release upload "$TAG" "${BATCH[@]}" --clobber
+          done
+          echo "All files uploaded successfully!"
 
       - name: Delete old releases
         uses: dev-drprasad/delete-older-releases@v0.3.2
