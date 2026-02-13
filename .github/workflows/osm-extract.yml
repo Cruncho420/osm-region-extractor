@@ -75,6 +75,8 @@ jobs:
       - name: Extract ${{ matrix.region }}
         working-directory: scripts
         run: npm run extract-single -- --region ${{ matrix.region }}
+        env:
+          NODE_OPTIONS: '--max-old-space-size=7168'
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
