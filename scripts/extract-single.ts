@@ -11,7 +11,7 @@
  */
 
 import { execSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, statSync, createReadStream } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, statSync, createReadStream, createWriteStream } from 'fs';
 import { gzipSync } from 'zlib';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -255,20 +255,17 @@ async function extractRegion(regionId: string): Promise<void> {
       stdio: 'inherit',
     });
 
-    // Step 8: Convert to optimized way format (streaming, line-by-line)
+    // Step 8: Convert to optimized way format (streaming read + streaming write)
     console.log(`[8/11] Converting ways to optimized format...`);
-    const wayData = await streamConvertWays(wayOutputJson, regionId);
-    console.log(`      Road ways: ${wayData.roadWays.length}`);
+    const wayTmpOutput = `${wayOutputJson}.tmp`;
+    const wayCount = await streamConvertWays(wayOutputJson, wayTmpOutput, regionId);
+    console.log(`      Road ways: ${wayCount}`);
 
-    const wayOptimizedJson = JSON.stringify(wayData);
-    writeFileSync(wayOutputJson, wayOptimizedJson);
-
-    const wayJsonContent = readFileSync(wayOutputJson);
-    const wayCompressed = gzipSync(wayJsonContent, { level: 9 });
-    writeFileSync(wayOutputGz, wayCompressed);
-
-    const wayJsonSize = statSync(wayOutputJson).size / 1024;
+    // Compress from the streamed JSON file (avoid loading into memory)
+    execSync(`gzip -9 -c "${wayTmpOutput}" > "${wayOutputGz}"`, { stdio: 'inherit' });
+    const wayJsonSize = statSync(wayTmpOutput).size / 1024;
     const wayGzSize = statSync(wayOutputGz).size / 1024;
+    unlinkSync(wayTmpOutput);
     console.log(`      Way JSON size: ${(wayJsonSize / 1024).toFixed(1)} MB`);
     console.log(`      Way compressed size: ${(wayGzSize / 1024).toFixed(1)} MB`);
     console.log(`      Compression ratio: ${((1 - wayGzSize / wayJsonSize) * 100).toFixed(1)}%\n`);
@@ -295,20 +292,17 @@ async function extractRegion(regionId: string): Promise<void> {
       stdio: 'inherit',
     });
 
-    // Step 11: Convert to optimized surface format (streaming, line-by-line)
+    // Step 11: Convert to optimized surface format (streaming read + streaming write)
     console.log(`[11/11] Converting surfaces to optimized format...`);
-    const surfaceData = await streamConvertSurfaces(surfaceOutputJson, regionId);
-    console.log(`      Road surfaces: ${surfaceData.roadSurfaces.length}`);
+    const surfaceTmpOutput = `${surfaceOutputJson}.tmp`;
+    const surfaceCount = await streamConvertSurfaces(surfaceOutputJson, surfaceTmpOutput, regionId);
+    console.log(`      Road surfaces: ${surfaceCount}`);
 
-    const surfaceOptimizedJson = JSON.stringify(surfaceData);
-    writeFileSync(surfaceOutputJson, surfaceOptimizedJson);
-
-    const surfaceJsonContent = readFileSync(surfaceOutputJson);
-    const surfaceCompressed = gzipSync(surfaceJsonContent, { level: 9 });
-    writeFileSync(surfaceOutputGz, surfaceCompressed);
-
-    const surfaceJsonSize = statSync(surfaceOutputJson).size / 1024;
+    // Compress from the streamed JSON file (avoid loading into memory)
+    execSync(`gzip -9 -c "${surfaceTmpOutput}" > "${surfaceOutputGz}"`, { stdio: 'inherit' });
+    const surfaceJsonSize = statSync(surfaceTmpOutput).size / 1024;
     const surfaceGzSize = statSync(surfaceOutputGz).size / 1024;
+    unlinkSync(surfaceTmpOutput);
     console.log(`      Surface JSON size: ${(surfaceJsonSize / 1024).toFixed(1)} MB`);
     console.log(`      Surface compressed size: ${(surfaceGzSize / 1024).toFixed(1)} MB`);
     console.log(`      Compression ratio: ${((1 - surfaceGzSize / surfaceJsonSize) * 100).toFixed(1)}%\n`);
@@ -330,7 +324,9 @@ async function extractRegion(regionId: string): Promise<void> {
     const wayOutputJson = join(OUTPUT_DIR, `${regionId}-ways.json`);
     const surfaceFilteredPbf = `/tmp/${regionId}-surfaces-filtered.osm.pbf`;
     const surfaceOutputJson = join(OUTPUT_DIR, `${regionId}-surfaces.json`);
-    [localPbf, filteredPbf, outputJson, wayFilteredPbf, wayOutputJson, surfaceFilteredPbf, surfaceOutputJson].forEach((file) => {
+    const wayTmpOutput = `${wayOutputJson}.tmp`;
+    const surfaceTmpOutput = `${surfaceOutputJson}.tmp`;
+    [localPbf, filteredPbf, outputJson, wayFilteredPbf, wayOutputJson, surfaceFilteredPbf, surfaceOutputJson, wayTmpOutput, surfaceTmpOutput].forEach((file) => {
       if (existsSync(file)) {
         try {
           unlinkSync(file);
@@ -695,14 +691,19 @@ function convertToSurfaceFormat(
 // =============================================================================
 
 /**
- * Stream-read a GeoJSON sequence file (one feature per line) and convert ways.
- * Avoids loading the entire file into memory as a single string.
+ * Stream-read a GeoJSON sequence file and stream-write optimized way JSON.
+ * Never holds all ways in memory — reads one feature at a time and writes immediately.
+ * Returns the count of processed ways.
  */
-async function streamConvertWays(filePath: string, regionId: string): Promise<BundledWayData> {
-  const roadWays: BundledRoadWay[] = [];
+async function streamConvertWays(inputPath: string, outputPath: string, regionId: string): Promise<number> {
+  const ws = createWriteStream(outputPath, { encoding: 'utf-8' });
+  const version = new Date().toISOString().split('T')[0];
+  ws.write(`{"version":"${version}","region":"${regionId}","roadWays":[`);
+
+  let count = 0;
 
   const rl = createInterface({
-    input: createReadStream(filePath, { encoding: 'utf-8' }),
+    input: createReadStream(inputPath, { encoding: 'utf-8' }),
     crlfDelay: Infinity,
   });
 
@@ -732,24 +733,37 @@ async function streamConvertWays(filePath: string, regionId: string): Promise<Bu
       flatCoords.push(lon, lat);
     }
 
-    roadWays.push({ coords: flatCoords, highway });
+    if (count > 0) ws.write(',');
+    ws.write(JSON.stringify({ coords: flatCoords, highway }));
+    count++;
   }
 
-  return {
-    version: new Date().toISOString().split('T')[0],
-    region: regionId,
-    roadWays,
-  };
+  ws.write(']}');
+  ws.end();
+
+  // Wait for the write stream to finish
+  await new Promise<void>((resolve, reject) => {
+    ws.on('finish', resolve);
+    ws.on('error', reject);
+  });
+
+  return count;
 }
 
 /**
- * Stream-read a GeoJSON sequence file and convert surface ways.
+ * Stream-read a GeoJSON sequence file and stream-write optimized surface JSON.
+ * Never holds all surfaces in memory — reads one feature at a time and writes immediately.
+ * Returns the count of processed surfaces.
  */
-async function streamConvertSurfaces(filePath: string, regionId: string): Promise<BundledSurfaceData> {
-  const roadSurfaces: BundledRoadSurface[] = [];
+async function streamConvertSurfaces(inputPath: string, outputPath: string, regionId: string): Promise<number> {
+  const ws = createWriteStream(outputPath, { encoding: 'utf-8' });
+  const version = new Date().toISOString().split('T')[0];
+  ws.write(`{"version":"${version}","region":"${regionId}","roadSurfaces":[`);
+
+  let count = 0;
 
   const rl = createInterface({
-    input: createReadStream(filePath, { encoding: 'utf-8' }),
+    input: createReadStream(inputPath, { encoding: 'utf-8' }),
     crlfDelay: Infinity,
   });
 
@@ -780,14 +794,21 @@ async function streamConvertSurfaces(filePath: string, regionId: string): Promis
       flatCoords.push(lon, lat);
     }
 
-    roadSurfaces.push({ surface: normalized, coords: flatCoords });
+    if (count > 0) ws.write(',');
+    ws.write(JSON.stringify({ surface: normalized, coords: flatCoords }));
+    count++;
   }
 
-  return {
-    version: new Date().toISOString().split('T')[0],
-    region: regionId,
-    roadSurfaces,
-  };
+  ws.write(']}');
+  ws.end();
+
+  // Wait for the write stream to finish
+  await new Promise<void>((resolve, reject) => {
+    ws.on('finish', resolve);
+    ws.on('error', reject);
+  });
+
+  return count;
 }
 
 // =============================================================================
