@@ -18,11 +18,14 @@ import { createGunzip } from 'zlib';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
-import Database from 'better-sqlite3';
-import { parser } from 'stream-json';
-import { pick } from 'stream-json/filters/Pick.js';
-import { streamArray } from 'stream-json/streamers/StreamArray.js';
-import { chain } from 'stream-json/utils/chain.js';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+
+const Database = require('better-sqlite3');
+const { parser } = require('stream-json');
+const { pick } = require('stream-json/filters/Pick');
+const { streamArray } = require('stream-json/streamers/StreamArray');
+const chain = require('stream-chain');
 
 // =============================================================================
 // TYPES
@@ -163,7 +166,7 @@ function streamJsonArray<T>(
   return new Promise<void>((resolve, reject) => {
     const fileStream = createReadStream(gzipPath);
 
-    const jsonChain = chain([
+    const jsonChain = new chain([
       createGunzip(),
       parser(),
       pick({ filter: arrayKey }),
