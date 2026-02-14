@@ -15,7 +15,7 @@
 
 import { createReadStream, existsSync, unlinkSync, statSync } from 'fs';
 import { createGunzip } from 'zlib';
-import { join, dirname } from 'path';
+import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import Database from 'better-sqlite3';
@@ -114,7 +114,6 @@ CREATE TABLE IF NOT EXISTS metadata (
 // =============================================================================
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 // =============================================================================
 // HELPERS
