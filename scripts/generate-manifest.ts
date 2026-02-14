@@ -40,6 +40,8 @@ interface ManifestRegion {
   surfaceChecksum?: string;
   waySize?: number;
   wayChecksum?: string;
+  sqliteSize?: number;
+  sqliteChecksum?: string;
 }
 
 interface Manifest {
@@ -132,11 +134,23 @@ function generateManifest(inputDir: string, outputFile: string): void {
       // No way file — that's fine
     }
 
+    // Check for pre-built SQLite database
+    const sqliteFile = `${regionId}.sqlite.gz`;
+    const sqlitePath = join(inputDir, sqliteFile);
+    try {
+      const sqliteStats = statSync(sqlitePath);
+      region.sqliteSize = sqliteStats.size;
+      region.sqliteChecksum = computeChecksum(sqlitePath);
+    } catch {
+      // No SQLite file — that's fine, app falls back to JSON pipeline
+    }
+
     manifest.regions[regionId] = region;
 
     const extras = [
       region.surfaceSize ? `surfaces: ${(region.surfaceSize / 1024).toFixed(1)} KB` : null,
       region.waySize ? `ways: ${(region.waySize / 1024).toFixed(1)} KB` : null,
+      region.sqliteSize ? `sqlite: ${(region.sqliteSize / 1024 / 1024).toFixed(1)} MB` : null,
     ].filter(Boolean).join(', ');
     console.log(
       `  ${regionId}: ${(stats.size / 1024).toFixed(1)} KB${extras ? ` (${extras})` : ''} - ${regionNames[regionId] || 'Unknown'}`

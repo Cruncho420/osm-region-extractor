@@ -78,6 +78,10 @@ jobs:
         env:
           NODE_OPTIONS: '--max-old-space-size=7168'
 
+      - name: Build SQLite for ${{ matrix.region }}
+        working-directory: scripts
+        run: npm run build-sqlite -- --region ${{ matrix.region }}
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -86,6 +90,7 @@ jobs:
             scripts/output/${{ matrix.region }}.json.gz
             scripts/output/${{ matrix.region }}-ways.json.gz
             scripts/output/${{ matrix.region }}-surfaces.json.gz
+            scripts/output/${{ matrix.region }}.sqlite.gz
           retention-days: 1  # Clean up quickly to save storage
 
   # Job 3: Combine all artifacts, generate manifest, create release
@@ -114,9 +119,11 @@ jobs:
         run: |
           mkdir -p release-files
           find all-regions -name "*.json.gz" -exec mv {} release-files/ \;
+          find all-regions -name "*.sqlite.gz" -exec mv {} release-files/ \;
           echo "Files to release:"
           ls -la release-files/
-          echo "Total files: $(ls release-files/*.json.gz | wc -l)"
+          echo "Total JSON files: $(ls release-files/*.json.gz 2>/dev/null | wc -l)"
+          echo "Total SQLite files: $(ls release-files/*.sqlite.gz 2>/dev/null | wc -l)"
 
       - name: Generate manifest
         working-directory: scripts
@@ -154,7 +161,7 @@ jobs:
 
           **Version:** ${{ steps.release-info.outputs.version }}
 
-          **Contents (per region, 3 files):**
+          **Contents (per region):**
           - Traffic calming features (speed bumps, dips, bridges, tunnels, speed cameras)
           - Roundabouts (full and mini)
           - Road surfaces (asphalt, gravel, cobblestone, dirt, etc.)
@@ -165,9 +172,10 @@ jobs:
 
           **Files:**
           - manifest.json - Version and checksum info for all regions
-          - {region-id}.json.gz - Core data (traffic calming + roundabouts)
-          - {region-id}-surfaces.json.gz - Road surface types
-          - {region-id}-ways.json.gz - Road geometry"
+          - {region-id}.sqlite.gz - Pre-built SQLite database (recommended)
+          - {region-id}.json.gz - Core data (traffic calming + roundabouts) [legacy]
+          - {region-id}-surfaces.json.gz - Road surface types [legacy]
+          - {region-id}-ways.json.gz - Road geometry [legacy]"
 
           # Upload files in batches of 20 to avoid timeouts
           cd release-files

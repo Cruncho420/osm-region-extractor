@@ -5,13 +5,17 @@
   "type": "module",
   "scripts": {
     "extract-single": "tsx extract-single.ts",
+    "build-sqlite": "tsx build-sqlite.ts",
     "generate-manifest": "tsx generate-manifest.ts",
     "generate-regions": "tsx generate-regions.ts"
   },
   "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "stream-json": "^1.8.0",
     "tsx": "^4.7.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^20.10.0",
     "typescript": "^5.3.0"
   }
