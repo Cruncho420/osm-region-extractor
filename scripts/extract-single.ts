@@ -726,6 +726,12 @@ async function streamConvertWays(inputPath: string, outputPath: string, regionId
     const highway = props.highway;
     if (!highway) continue;
 
+    // Skip service subtypes that are never the driving road (driveways, parking aisles).
+    // These cause surface contamination when their paving_stones/cobblestone surface
+    // gets attributed to the adjacent main road via proximity matching.
+    const serviceType = props.service;
+    if (highway === 'service' && (serviceType === 'driveway' || serviceType === 'parking_aisle')) continue;
+
     const coords = geometry.coordinates as [number, number][];
     if (coords.length < 2) continue;
 
@@ -785,6 +791,12 @@ async function streamConvertSurfaces(inputPath: string, outputPath: string, regi
 
     const surface = props.surface;
     if (!surface) continue;
+
+    // Skip service subtypes that are never the driving road (driveways, parking aisles).
+    // These cause surface contamination when their paving_stones/cobblestone surface
+    // gets attributed to the adjacent main road via proximity matching.
+    const serviceType = props.service;
+    if (props.highway === 'service' && (serviceType === 'driveway' || serviceType === 'parking_aisle')) continue;
 
     const coords = geometry.coordinates as [number, number][];
     if (coords.length < 2) continue;
