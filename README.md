@@ -1,28 +1,20 @@
-# Rods OSM Data
+# OSM Region Extractor
 
-Pre-extracted OpenStreetMap data for the Rods app. Contains traffic calming features (speed bumps, bridges, tunnels, speed cameras) and roundabouts.
+Extract regional OpenStreetMap data from Geofabrik PBF files into compact SQLite databases.
 
-## How It Works
+## What It Does
 
 1. **Monthly Extraction**: GitHub Actions extracts data from Geofabrik PBF files on the 1st of each month
 2. **GitHub Releases**: Extracted data is published as GitHub Release assets
-3. **App Download**: The Rods app downloads region data on-demand based on user location
+3. **On-Demand Download**: Clients download region data on-demand via release URLs
 
 ## Data Format
 
-Each region file (`{region-id}.json.gz`) contains:
-```json
-{
-  "version": "2025-01-24",
-  "region": "europe-gb",
-  "trafficCalming": [
-    { "lat": 51.5074, "lon": -0.1278, "type": "speed_bump" }
-  ],
-  "roundabouts": [
-    { "lat": 51.5074, "lon": -0.1278, "type": "roundabout", "radius": 25 }
-  ]
-}
-```
+Each region produces a SQLite database (`{region-id}.sqlite.gz`) containing:
+- Traffic calming features (speed bumps, dips, bridges, tunnels, speed cameras)
+- Roundabouts (full and mini)
+- Road surfaces (asphalt, gravel, cobblestone, dirt, etc.)
+- Road ways (dense road geometry)
 
 ## Manual Trigger
 

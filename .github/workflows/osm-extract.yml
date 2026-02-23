@@ -1,7 +1,7 @@
 name: Monthly OSM Data Extraction
 
 # Purpose: Extract traffic calming and roundabout data from OpenStreetMap monthly
-# Goal: Provide pre-downloaded regional data for the Rods app to avoid Overpass API calls
+# Goal: Provide pre-downloaded regional OSM data to avoid Overpass API calls
 #
 # This workflow:
 # 1. Runs on the 1st of every month at 3 AM UTC (or manually)
@@ -157,7 +157,7 @@ jobs:
           # Create the release
           gh release create "$TAG" \
             --title "$TITLE" \
-            --notes "Monthly OSM data extraction for Rods app.
+            --notes "Monthly OSM data extraction.
 
           **Version:** ${{ steps.release-info.outputs.version }}
 

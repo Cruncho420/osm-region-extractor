@@ -1,7 +1,7 @@
 {
   "name": "osm-extract",
   "version": "1.0.0",
-  "description": "OSM data extraction scripts for Rods traffic calming and roundabout data",
+  "description": "OSM data extraction and SQLite build scripts",
   "type": "module",
   "scripts": {
     "extract-single": "tsx extract-single.ts",
