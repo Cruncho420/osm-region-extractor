@@ -94,10 +94,13 @@ jobs:
           retention-days: 1  # Clean up quickly to save storage
 
   # Job 3: Combine all artifacts, generate manifest, create release
+  # SAFETY: Skip release creation for single-region test runs — publishing a
+  # partial release overwrites the "latest" tag and breaks all other regions
+  # for every user. Single-region runs are for testing extraction only.
   release:
-    needs: extract
+    needs: [get-regions, extract]
     runs-on: ubuntu-latest
-    if: always() && needs.extract.result != 'cancelled'
+    if: always() && needs.extract.result != 'cancelled' && inputs.single_region == ''
     steps:
       - uses: actions/checkout@v4
 
