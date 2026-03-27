@@ -121,6 +121,9 @@ const TRAFFIC_CALMING_TYPES = new Set([
   'dynamic_bump',
   'dip',
   'double_dip',
+  'chicane',
+  'choker',
+  'island',
 ]);
 
 // =============================================================================
@@ -359,14 +362,20 @@ function convertToBundledFormat(
     if (geometry.type === 'Point') {
       const [lon, lat] = geometry.coordinates as [number, number];
 
-      // Traffic calming nodes
-      if (props.traffic_calming && TRAFFIC_CALMING_TYPES.has(props.traffic_calming)) {
-        trafficCalming.push({
-          lat,
-          lon,
-          type: mapTrafficCalmingType(props.traffic_calming),
-          tags: extractRelevantTags(props),
-        });
+      // Traffic calming nodes — handle semicolon-separated values (e.g. "chicane;choker")
+      if (props.traffic_calming) {
+        const tcValues = props.traffic_calming.split(';');
+        for (const tcValue of tcValues) {
+          const trimmed = tcValue.trim();
+          if (TRAFFIC_CALMING_TYPES.has(trimmed)) {
+            trafficCalming.push({
+              lat,
+              lon,
+              type: mapTrafficCalmingType(trimmed),
+              tags: extractRelevantTags(props),
+            });
+          }
+        }
       }
 
       // Speed cameras
@@ -473,6 +482,7 @@ function mapTrafficCalmingType(osmType: string): string {
 
   if (bumpTypes.includes(osmType)) return 'speed_bump';
   if (dipTypes.includes(osmType)) return 'dip';
+  if (osmType === 'choker') return 'narrowing';
   return osmType;
 }
 
