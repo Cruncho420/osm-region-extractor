@@ -55,6 +55,7 @@ interface BundledRoadSurface {
 
 interface BundledRoadWay {
   highway: string;
+  surface?: string;
   coords: number[];
 }
 
@@ -98,6 +99,7 @@ CREATE INDEX IF NOT EXISTS idx_ra_lat_lon ON roundabouts(lat, lon);
 CREATE TABLE IF NOT EXISTS road_ways (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   highway TEXT NOT NULL,
+  surface TEXT,
   coords TEXT NOT NULL,
   min_lat REAL NOT NULL,
   max_lat REAL NOT NULL,
@@ -282,7 +284,7 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
     'INSERT INTO road_surfaces (surface, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?)',
   );
   const insertWay = db.prepare(
-    'INSERT INTO road_ways (highway, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?)',
+    'INSERT INTO road_ways (highway, surface, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?, ?)',
   );
 
   // Read metadata from core file
@@ -339,7 +341,7 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
     console.log('Streaming way data...');
     await streamJsonArray<BundledRoadWay>(wayPath, 'roadWays', (rw) => {
       const { minLat, maxLat, minLon, maxLon } = computeBboxFromFlatCoords(rw.coords);
-      insertWay.run(rw.highway, JSON.stringify(rw.coords), minLat, maxLat, minLon, maxLon);
+      insertWay.run(rw.highway, rw.surface ?? null, JSON.stringify(rw.coords), minLat, maxLat, minLon, maxLon);
       wayCount++;
     });
     hasWayData = wayCount > 0;

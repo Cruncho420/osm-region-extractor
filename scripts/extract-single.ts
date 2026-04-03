@@ -751,7 +751,12 @@ async function streamConvertWays(inputPath: string, outputPath: string, regionId
     }
 
     if (count > 0) ws.write(',');
-    ws.write(JSON.stringify({ coords: flatCoords, highway }));
+    // Include surface tag when present — enables primary-tier surface matching
+    // on road_ways without needing separate road_surface mediation
+    const surface = props.surface ? normalizeSurfaceType(props.surface) : undefined;
+    const way: Record<string, unknown> = { coords: flatCoords, highway };
+    if (surface && surface !== 'unknown') way.surface = surface;
+    ws.write(JSON.stringify(way));
     count++;
   }
 
