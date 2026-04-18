@@ -1,0 +1,143 @@
+name: Regenerate Manifest for a Release
+
+# Purpose: safe repair path for when .sqlite.gz / .json.gz assets have been manually
+# re-uploaded to an existing release without running the monthly CI flow.
+# Downloads every asset in the given release, runs generate-manifest.ts against
+# them, and re-uploads manifest.json — preserving the release's version string
+# (the date in the release tag), so clients do NOT treat existing regions as stale.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to regenerate manifest for (e.g. osm-2026-04-03)'
+        required: true
+        type: string
+
+permissions:
+  contents: write  # Required to upload the regenerated manifest asset
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: scripts
+        run: npm install
+
+      - name: Derive version string from release tag
+        id: ver
+        run: |
+          TAG="${{ inputs.release_tag }}"
+          # Release tags have the form osm-YYYY-MM-DD; manifest version is YYYY-MM-DD.
+          VERSION="${TAG#osm-}"
+          if ! [[ "$VERSION" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            echo "::error::Release tag '$TAG' does not match the expected 'osm-YYYY-MM-DD' format."
+            echo "::error::Refusing to run — the version string MUST match the release's existing value to avoid flagging all regions as stale."
+            exit 1
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Will preserve manifest version as: $VERSION"
+
+      - name: Download all release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p release-assets
+          gh release download "${{ inputs.release_tag }}" \
+            -D release-assets \
+            --pattern '*.sqlite.gz' \
+            --pattern '*.json.gz'
+          echo "Downloaded $(ls release-assets | wc -l) assets"
+
+      - name: Capture current manifest for diff
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "${{ inputs.release_tag }}" -D release-assets --pattern 'manifest.json' || true
+          if [ -f release-assets/manifest.json ]; then
+            cp release-assets/manifest.json /tmp/manifest-before.json
+            echo "Current manifest.json backed up to /tmp/manifest-before.json"
+          else
+            echo "No existing manifest.json on this release (will create fresh)."
+          fi
+
+      - name: Regenerate manifest (preserving version)
+        working-directory: scripts
+        run: |
+          npm run generate-manifest -- \
+            --input ../release-assets \
+            --output ../release-assets/manifest.json \
+            --version "${{ steps.ver.outputs.version }}"
+
+      - name: Show diff vs current manifest
+        run: |
+          if [ -f /tmp/manifest-before.json ]; then
+            echo "=== Diff between current manifest and regenerated manifest ==="
+            diff /tmp/manifest-before.json release-assets/manifest.json || true
+            # Always show the generatedAt difference is expected; we care about size/checksum diffs.
+            echo ""
+            echo "=== Summary ==="
+            python3 <<'PY'
+          import json
+          a = json.load(open('/tmp/manifest-before.json'))
+          b = json.load(open('release-assets/manifest.json'))
+          assert a['version'] == b['version'], f"VERSION MISMATCH — cannot proceed: {a['version']} vs {b['version']}"
+          changed = []
+          for rid in a.get('regions', {}):
+              if rid not in b.get('regions', {}):
+                  changed.append(f"  REMOVED: {rid}")
+                  continue
+              for field in ('size','checksum','surfaceSize','surfaceChecksum','waySize','wayChecksum','sqliteSize','sqliteChecksum'):
+                  av, bv = a['regions'][rid].get(field), b['regions'][rid].get(field)
+                  if av != bv:
+                      changed.append(f"  {rid}.{field}: {av} -> {bv}")
+          for rid in b.get('regions', {}):
+              if rid not in a.get('regions', {}):
+                  changed.append(f"  ADDED: {rid}")
+          print(f"Field-level changes: {len(changed)}")
+          for c in changed[:50]:
+              print(c)
+          if len(changed) > 50:
+              print(f"  ... and {len(changed) - 50} more")
+          PY
+          else
+            echo "No prior manifest to diff against."
+          fi
+
+      - name: Upload regenerated manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ inputs.release_tag }}" release-assets/manifest.json --clobber
+          echo "Regenerated manifest uploaded."
+
+      - name: Verify post-upload
+        run: |
+          sleep 5
+          python3 <<'PY'
+          import urllib.request, json, subprocess, concurrent.futures, re
+          URL = f"https://github.com/Cruncho420/osm-region-extractor/releases/download/${{ inputs.release_tag }}/manifest.json"
+          m = json.loads(urllib.request.urlopen(URL).read())
+          print(f"Fetched manifest version: {m['version']}")
+          print(f"Regions: {len(m['regions'])}")
+          # Quick sweep: HEAD first 10 to confirm matches
+          keys = list(m['regions'].keys())[:10]
+          for k in keys:
+              if not m['regions'][k].get('sqliteSize'):
+                  continue
+              url = f"https://github.com/Cruncho420/osm-region-extractor/releases/download/${{ inputs.release_tag }}/{k}.sqlite.gz"
+              out = subprocess.run(['curl','-sLI','--max-time','15',url], capture_output=True, text=True, timeout=20).stdout
+              sizes = [int(v) for v in re.findall(r'(?im)^content-length:\s*(\d+)', out) if int(v) > 0]
+              actual = sizes[-1] if sizes else None
+              expected = m['regions'][k]['sqliteSize']
+              ok = "OK" if actual == expected else "MISMATCH"
+              print(f"  {k:50s} expected={expected} actual={actual} {ok}")
+          PY
