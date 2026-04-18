@@ -66,7 +66,7 @@ function computeChecksum(filePath: string): string {
   return createHash('sha256').update(content).digest('hex').substring(0, 16);
 }
 
-function generateManifest(inputDir: string, outputFile: string): void {
+function generateManifest(inputDir: string, outputFile: string, overrideVersion?: string): void {
   console.log(`\n========================================`);
   console.log(`Generating Manifest`);
   console.log(`========================================\n`);
@@ -89,8 +89,13 @@ function generateManifest(inputDir: string, outputFile: string): void {
   );
   console.log(`Found ${coreFiles.length} core region files (${allFiles.length} total files)\n`);
 
+  // Version defaults to today's date for fresh CI runs, but can be overridden
+  // with --version when repairing a historical release. Repair MUST preserve the
+  // original version string, otherwise all clients would see every region as
+  // stale and trigger a mass re-download.
+  const version = overrideVersion ?? new Date().toISOString().split('T')[0];
   const manifest: Manifest = {
-    version: new Date().toISOString().split('T')[0],
+    version,
     generatedAt: new Date().toISOString(),
     regions: {},
   };
@@ -173,11 +178,14 @@ function generateManifest(inputDir: string, outputFile: string): void {
 const args = process.argv.slice(2);
 const inputIndex = args.indexOf('--input');
 const outputIndex = args.indexOf('--output');
+const versionIndex = args.indexOf('--version');
 
 const inputDir = inputIndex !== -1 && args[inputIndex + 1] ? args[inputIndex + 1] : './output';
 const outputFile =
   outputIndex !== -1 && args[outputIndex + 1]
     ? args[outputIndex + 1]
     : './output/manifest.json';
+const overrideVersion =
+  versionIndex !== -1 && args[versionIndex + 1] ? args[versionIndex + 1] : undefined;
 
-generateManifest(inputDir, outputFile);
+generateManifest(inputDir, outputFile, overrideVersion);

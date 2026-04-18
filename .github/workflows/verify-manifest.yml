@@ -1,0 +1,137 @@
+name: Verify Latest Release Manifest
+
+# Purpose: Catch manifest/asset drift within 24h of it happening.
+# Context: the 2026-04-03 release had two regions whose .sqlite.gz were re-uploaded
+# manually without regenerating manifest.json. The resulting size/checksum
+# mismatch caused clients to reject the download and retry forever.
+# This workflow HEAD-checks every asset's Content-Length against the manifest's
+# sqliteSize field and opens an issue if any region drifts.
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # Daily at 06:00 UTC
+  workflow_dispatch:      # Manual trigger for ad-hoc verification
+
+permissions:
+  contents: read
+  issues: write  # Required to open an issue on mismatch
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch manifest and verify against assets
+        id: verify
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          python3 <<'PY' > verify-output.txt
+          import urllib.request, json, subprocess, concurrent.futures, re, sys
+
+          URL = "https://github.com/Cruncho420/osm-region-extractor/releases/latest/download/manifest.json"
+          m = json.loads(urllib.request.urlopen(URL).read())
+          print(f"manifest version: {m['version']}")
+          print(f"regions: {len(m['regions'])}")
+
+          def head_size(url):
+              try:
+                  out = subprocess.run(
+                      ['curl', '-sLI', '--max-time', '20', url],
+                      capture_output=True, text=True, timeout=25
+                  ).stdout
+                  sizes = [int(v) for v in re.findall(r'(?im)^content-length:\s*(\d+)', out)]
+                  sizes = [s for s in sizes if s > 0]
+                  return sizes[-1] if sizes else None
+              except Exception as e:
+                  return f"err:{e}"
+
+          def check(item):
+              k, v = item
+              expected = v.get('sqliteSize')
+              if not expected:
+                  return (k, 'no_sqliteSize', None, None)
+              url = f"https://github.com/Cruncho420/osm-region-extractor/releases/latest/download/{k}.sqlite.gz"
+              actual = head_size(url)
+              if isinstance(actual, str) or actual is None:
+                  return (k, 'err', expected, actual)
+              return (k, 'ok' if actual == expected else 'MISMATCH', expected, actual)
+
+          results = []
+          with concurrent.futures.ThreadPoolExecutor(max_workers=20) as ex:
+              for res in ex.map(check, m['regions'].items()):
+                  results.append(res)
+
+          mismatch = [r for r in results if r[1] == 'MISMATCH']
+          errors = [r for r in results if r[1] not in ('ok', 'MISMATCH')]
+
+          print(f"ok: {sum(1 for r in results if r[1] == 'ok')}")
+          print(f"MISMATCH: {len(mismatch)}")
+          print(f"errors: {len(errors)}")
+
+          if mismatch:
+              print("\n### Mismatches\n")
+              for k, _, exp, act in mismatch:
+                  print(f"- `{k}`: manifest says {exp}, actual asset is {act} (diff {act-exp:+})")
+          if errors:
+              print("\n### Errors (HEAD failed)\n")
+              for k, status, exp, act in errors:
+                  print(f"- `{k}`: {status} ({act})")
+
+          # Write exit marker for the next step
+          with open('verify-status.txt', 'w') as f:
+              if mismatch or errors:
+                  f.write('FAIL\n')
+              else:
+                  f.write('PASS\n')
+          PY
+          cat verify-output.txt
+          echo ""
+          echo "status=$(cat verify-status.txt)"
+          echo "status=$(cat verify-status.txt)" >> $GITHUB_OUTPUT
+
+      - name: Open issue on mismatch
+        if: steps.verify.outputs.status == 'FAIL'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Deduplicate: if an open issue already exists with the same title, update it instead of opening a new one
+          TITLE="Manifest/asset drift detected in latest release"
+          EXISTING=$(gh issue list --state open --search "$TITLE in:title" --json number --jq '.[0].number // empty')
+
+          BODY=$(cat <<EOF
+          The nightly \`verify-manifest\` workflow detected that one or more assets
+          in the latest release have sizes that disagree with \`manifest.json\`.
+          Clients validating downloads against the manifest will reject these files
+          and retry forever.
+
+          ### Output
+          \`\`\`
+          $(cat verify-output.txt)
+          \`\`\`
+
+          ### How to fix
+          Run the \`regenerate-manifest\` workflow against the affected release tag
+          (dispatch it with the release tag as input), or manually run:
+          \`\`\`bash
+          cd scripts
+          npm install
+          mkdir -p ./output
+          gh release download <TAG> -D ./output
+          npm run generate-manifest -- --input ./output --output ./output/manifest.json --version <DATE>
+          gh release upload <TAG> ./output/manifest.json --clobber
+          \`\`\`
+          (where \`<DATE>\` matches the release's existing \`version\` field — DO NOT bump it.)
+
+          _Detected automatically by \`.github/workflows/verify-manifest.yml\`._
+          EOF
+          )
+
+          if [ -n "$EXISTING" ]; then
+            echo "Updating existing issue #$EXISTING"
+            gh issue comment "$EXISTING" --body "$BODY"
+          else
+            echo "Opening new issue"
+            gh issue create --title "$TITLE" --body "$BODY" --label "bug"
+          fi
+          exit 1  # fail the workflow so the red X is visible on the actions tab
