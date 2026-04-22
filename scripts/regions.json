@@ -1132,6 +1132,19 @@
       "estimatedSize": 800000
     },
     {
+      "id": "europe-belarus",
+      "name": "Belarus",
+      "continent": "europe",
+      "bbox": [
+        23.18,
+        51.26,
+        32.78,
+        56.17
+      ],
+      "geofabrikPath": "europe/belarus-latest.osm.pbf",
+      "estimatedSize": 400000
+    },
+    {
       "id": "europe-belgium",
       "name": "Belgium",
       "continent": "europe",
