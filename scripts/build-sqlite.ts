@@ -56,6 +56,11 @@ interface BundledRoadSurface {
 interface BundledRoadWay {
   highway: string;
   surface?: string;
+  name?: string;
+  ref?: string;
+  oneway?: string;
+  junction?: string;
+  osmId?: number;
   coords: number[];
 }
 
@@ -100,6 +105,11 @@ CREATE TABLE IF NOT EXISTS road_ways (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   highway TEXT NOT NULL,
   surface TEXT,
+  name TEXT,
+  ref TEXT,
+  oneway TEXT,
+  junction TEXT,
+  osm_id INTEGER,
   coords TEXT NOT NULL,
   min_lat REAL NOT NULL,
   max_lat REAL NOT NULL,
@@ -107,6 +117,7 @@ CREATE TABLE IF NOT EXISTS road_ways (
   max_lon REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ways_bbox ON road_ways(min_lat, max_lat, min_lon, max_lon);
+CREATE INDEX IF NOT EXISTS idx_ways_osm_id ON road_ways(osm_id);
 
 CREATE TABLE IF NOT EXISTS metadata (
   key TEXT PRIMARY KEY,
@@ -284,7 +295,7 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
     'INSERT INTO road_surfaces (surface, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?)',
   );
   const insertWay = db.prepare(
-    'INSERT INTO road_ways (highway, surface, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO road_ways (highway, surface, name, ref, oneway, junction, osm_id, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   );
 
   // Read metadata from core file
@@ -341,7 +352,20 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
     console.log('Streaming way data...');
     await streamJsonArray<BundledRoadWay>(wayPath, 'roadWays', (rw) => {
       const { minLat, maxLat, minLon, maxLon } = computeBboxFromFlatCoords(rw.coords);
-      insertWay.run(rw.highway, rw.surface ?? null, JSON.stringify(rw.coords), minLat, maxLat, minLon, maxLon);
+      insertWay.run(
+        rw.highway,
+        rw.surface ?? null,
+        rw.name ?? null,
+        rw.ref ?? null,
+        rw.oneway ?? null,
+        rw.junction ?? null,
+        rw.osmId ?? null,
+        JSON.stringify(rw.coords),
+        minLat,
+        maxLat,
+        minLon,
+        maxLon,
+      );
       wayCount++;
     });
     hasWayData = wayCount > 0;

@@ -73,6 +73,18 @@ interface BundledRoadWay {
   coords: number[];
   /** Road classification for priority matching */
   highway: string;
+  /** Normalized surface type when present (asphalt/gravel/etc) */
+  surface?: string;
+  /** Road name from OSM `name` tag — primary identity signal for "same road" matching at junctions */
+  name?: string;
+  /** Route reference from OSM `ref` tag (e.g. "A4", "M1", "E67") — strongest identity signal on numbered routes */
+  ref?: string;
+  /** OSM `oneway` tag value: "yes" | "-1" | "no" | "reversible" — needed for direction-of-travel disambiguation on dual carriageways */
+  oneway?: string;
+  /** OSM `junction` tag value: "roundabout" | "mini_roundabout" | "circular" | etc — marks ways that are PART of a junction structure */
+  junction?: string;
+  /** OSM way ID (positive integer) — enables stable cross-reference between segments and topology lookups */
+  osmId?: number;
 }
 
 interface BundledWayData {
@@ -254,8 +266,10 @@ async function extractRegion(regionId: string): Promise<void> {
     console.log(`      Filtered way size: ${wayFilteredSize.toFixed(2)} MB\n`);
 
     // Step 7: Export ways to GeoJSON sequence (one feature per line — avoids string size limit)
+    // --add-unique-id=type_id includes the OSM way @id ("w12345") in feature.properties,
+    // letting downstream consumers reference ways stably across runs.
     console.log(`[7/11] Converting ways to GeoJSON sequence...`);
-    execSync(`osmium export "${wayFilteredPbf}" -f geojsonseq -o "${wayOutputJson}"`, {
+    execSync(`osmium export "${wayFilteredPbf}" -f geojsonseq --add-unique-id=type_id -o "${wayOutputJson}"`, {
       stdio: 'inherit',
     });
 
@@ -756,6 +770,25 @@ async function streamConvertWays(inputPath: string, outputPath: string, regionId
     const surface = props.surface ? normalizeSurfaceType(props.surface) : undefined;
     const way: Record<string, unknown> = { coords: flatCoords, highway };
     if (surface && surface !== 'unknown') way.surface = surface;
+
+    // Identity tags — needed by the routing/way-following pipeline to match
+    // "same road" continuation at junctions. Each tag is optional; absence means
+    // the upstream consumer falls back to bearing/class-only scoring.
+    if (props.name) way.name = props.name;
+    if (props.ref) way.ref = props.ref;
+    if (props.oneway) way.oneway = props.oneway;
+    if (props.junction) way.junction = props.junction;
+
+    // OSM way ID. osmium-export with --add-unique-id=type_id emits the typed
+    // string "w12345" at feature.id (top-level, NOT inside properties). We
+    // strip the "w" prefix and store the numeric ID so downstream SQL can
+    // index it as an INTEGER.
+    const idStr = feature.id;
+    if (typeof idStr === 'string' && idStr.startsWith('w')) {
+      const num = parseInt(idStr.slice(1), 10);
+      if (Number.isFinite(num) && num > 0) way.osmId = num;
+    }
+
     ws.write(JSON.stringify(way));
     count++;
   }
