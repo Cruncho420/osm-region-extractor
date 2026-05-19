@@ -57,6 +57,14 @@ interface BundledRoadWay {
   highway: string;
   surface?: string;
   coords: number[];
+  /** Phase 2: routing-relevant tags consumed by Free Roam OSM walker.
+   *  `oneway` values are only `'yes'` or `'-1'` (other OSM values are
+   *  bidirectional). `name` is diagnostic-only. `access` lists only the
+   *  restrictive values (`private`, `no`, `destination`, `delivery`,
+   *  `customers`) — public access is absence-of-tag. */
+  oneway?: 'yes' | '-1';
+  name?: string;
+  access?: 'private' | 'no' | 'destination' | 'delivery' | 'customers';
 }
 
 // =============================================================================
@@ -100,6 +108,9 @@ CREATE TABLE IF NOT EXISTS road_ways (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   highway TEXT NOT NULL,
   surface TEXT,
+  oneway TEXT,
+  name TEXT,
+  access TEXT,
   coords TEXT NOT NULL,
   min_lat REAL NOT NULL,
   max_lat REAL NOT NULL,
@@ -284,7 +295,7 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
     'INSERT INTO road_surfaces (surface, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?)',
   );
   const insertWay = db.prepare(
-    'INSERT INTO road_ways (highway, surface, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO road_ways (highway, surface, oneway, name, access, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   );
 
   // Read metadata from core file
@@ -341,7 +352,18 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
     console.log('Streaming way data...');
     await streamJsonArray<BundledRoadWay>(wayPath, 'roadWays', (rw) => {
       const { minLat, maxLat, minLon, maxLon } = computeBboxFromFlatCoords(rw.coords);
-      insertWay.run(rw.highway, rw.surface ?? null, JSON.stringify(rw.coords), minLat, maxLat, minLon, maxLon);
+      insertWay.run(
+        rw.highway,
+        rw.surface ?? null,
+        rw.oneway ?? null,
+        rw.name ?? null,
+        rw.access ?? null,
+        JSON.stringify(rw.coords),
+        minLat,
+        maxLat,
+        minLon,
+        maxLon,
+      );
       wayCount++;
     });
     hasWayData = wayCount > 0;

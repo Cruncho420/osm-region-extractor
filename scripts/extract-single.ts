@@ -73,6 +73,18 @@ interface BundledRoadWay {
   coords: number[];
   /** Road classification for priority matching */
   highway: string;
+  /** Normalized surface type when OSM has surface tag (Phase 2 mirror) */
+  surface?: string;
+  /** OSM oneway: `'yes'` = forward along polyline, `'-1'` = reverse-only.
+   *  Absent = bidirectional (or implicit oneway like motorway, handled by
+   *  walker via highway-class rules). */
+  oneway?: 'yes' | '-1';
+  /** Diagnostic street name. Used in walker logs and metro traces. */
+  name?: string;
+  /** Restrictive access tag: `private`, `no`, `destination`, `delivery`,
+   *  `customers`. Absent = `yes` or `permissive` (public). Walker rejects
+   *  ways with restrictive access from drivable candidates. */
+  access?: 'private' | 'no' | 'destination' | 'delivery' | 'customers';
 }
 
 interface BundledWayData {
@@ -756,6 +768,23 @@ async function streamConvertWays(inputPath: string, outputPath: string, regionId
     const surface = props.surface ? normalizeSurfaceType(props.surface) : undefined;
     const way: Record<string, unknown> = { coords: flatCoords, highway };
     if (surface && surface !== 'unknown') way.surface = surface;
+    // Phase 2: oneway / name / access drive Free Roam OSM way-walker routing
+    // decisions. `oneway` is the canonical wrong-way-on-oneway signal; only
+    // `'yes'` (forward-only along polyline) and `'-1'` (reverse-only) carry
+    // meaning. Other values (`no`, `reversible`, etc.) are treated as
+    // bidirectional by the walker and not stored. `name` is diagnostic-only
+    // (lets logs read "wrong way down Pylimo St" instead of way ids).
+    // `access` filters private/destination/no roads from drivable candidates
+    // at the walker level; only restrictive values are stored (`private`,
+    // `no`, `destination`, `delivery`, `customers`).
+    const oneway = props.oneway;
+    if (oneway === 'yes' || oneway === '-1') way.oneway = oneway;
+    const name = props.name;
+    if (name) way.name = name;
+    const access = props.access;
+    if (access === 'private' || access === 'no' || access === 'destination' || access === 'delivery' || access === 'customers') {
+      way.access = access;
+    }
     ws.write(JSON.stringify(way));
     count++;
   }
