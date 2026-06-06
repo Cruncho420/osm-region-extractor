@@ -85,6 +85,9 @@ interface BundledRoadWay {
    *  `customers`. Absent = `yes` or `permissive` (public). Walker rejects
    *  ways with restrictive access from drivable candidates. */
   access?: 'private' | 'no' | 'destination' | 'delivery' | 'customers';
+  /** OSM junction tag (e.g. `roundabout`). Road-identity signal — absent on
+   *  ordinary roads. Written to road_ways.junction by build-sqlite.ts. */
+  junction?: string;
 }
 
 interface BundledWayData {
@@ -785,6 +788,12 @@ async function streamConvertWays(inputPath: string, outputPath: string, regionId
     if (access === 'private' || access === 'no' || access === 'destination' || access === 'delivery' || access === 'customers') {
       way.access = access;
     }
+    // Road-identity: keep the way's junction tag (junction=roundabout). The app
+    // announces a roundabout only when the route's walker drives onto a
+    // junction=roundabout way (not by point-proximity — a tunnel UNDER the ring is a
+    // different way with no junction tag). build-sqlite.ts writes it to road_ways.junction.
+    const junction = props.junction;
+    if (junction) way.junction = junction;
     ws.write(JSON.stringify(way));
     count++;
   }

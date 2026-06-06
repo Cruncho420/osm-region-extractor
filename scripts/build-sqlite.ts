@@ -65,6 +65,10 @@ interface BundledRoadWay {
   oneway?: 'yes' | '-1';
   name?: string;
   access?: 'private' | 'no' | 'destination' | 'delivery' | 'customers';
+  /** OSM junction tag (e.g. `roundabout`). Road-identity: the app announces a
+   *  roundabout only when the route's walker drives onto a `junction=roundabout`
+   *  way. Absent on ordinary roads. */
+  junction?: string;
 }
 
 // =============================================================================
@@ -111,6 +115,7 @@ CREATE TABLE IF NOT EXISTS road_ways (
   oneway TEXT,
   name TEXT,
   access TEXT,
+  junction TEXT,
   coords TEXT NOT NULL,
   min_lat REAL NOT NULL,
   max_lat REAL NOT NULL,
@@ -295,7 +300,7 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
     'INSERT INTO road_surfaces (surface, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?)',
   );
   const insertWay = db.prepare(
-    'INSERT INTO road_ways (highway, surface, oneway, name, access, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO road_ways (highway, surface, oneway, name, access, junction, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   );
 
   // Read metadata from core file
@@ -358,6 +363,7 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
         rw.oneway ?? null,
         rw.name ?? null,
         rw.access ?? null,
+        rw.junction ?? null,
         JSON.stringify(rw.coords),
         minLat,
         maxLat,
