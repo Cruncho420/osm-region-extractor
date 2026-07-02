@@ -69,6 +69,34 @@ interface BundledRoadWay {
    *  roundabout only when the route's walker drives onto a `junction=roundabout`
    *  way. Absent on ordinary roads. */
   junction?: string;
+  /** Raw OSM maxspeed tag string — normalized to a whole km/h integer on insert
+   *  for the speed-limit HUD (FEAT-031). */
+  maxspeed?: string;
+}
+
+/**
+ * Normalize a raw OSM `maxspeed` tag to a whole km/h integer, or null when it
+ * carries no usable numeric limit (implicit/zonal/unknown). Display-only — feeds
+ * the speed-limit HUD, never pace-note generation (FEAT-031).
+ *
+ * Handles: "50" → 50 · "50 km/h"/"50kph" → 50 · "30 mph" → 48 (× 1.609344) ·
+ * "50;30" (list) → first value. Returns null for "none"/"walk"/"signals"/
+ * "variable", country-coded zones like "RO:urban", and anything non-numeric or
+ * absurd (>400 km/h) — v1 shows only explicit posted limits.
+ */
+function normalizeMaxspeedKmh(raw?: string): number | null {
+  if (!raw) return null;
+  const first = raw.trim().toLowerCase().split(';')[0].trim();
+  if (!first || first === 'none' || first === 'walk' || first === 'signals' || first === 'variable') {
+    return null;
+  }
+  const m = first.match(/^(\d+(?:\.\d+)?)\s*(mph|km\/h|kmh|kph)?$/);
+  if (!m) return null; // country-code zones ("ro:urban"), signals refs, etc.
+  const num = parseFloat(m[1]);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  const kmh = Math.round(m[2] === 'mph' ? num * 1.609344 : num);
+  if (kmh <= 0 || kmh > 400) return null; // reject typos (e.g. "200000")
+  return kmh;
 }
 
 // =============================================================================
@@ -116,6 +144,7 @@ CREATE TABLE IF NOT EXISTS road_ways (
   name TEXT,
   access TEXT,
   junction TEXT,
+  maxspeed INTEGER,
   coords TEXT NOT NULL,
   min_lat REAL NOT NULL,
   max_lat REAL NOT NULL,
@@ -300,7 +329,7 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
     'INSERT INTO road_surfaces (surface, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?)',
   );
   const insertWay = db.prepare(
-    'INSERT INTO road_ways (highway, surface, oneway, name, access, junction, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO road_ways (highway, surface, oneway, name, access, junction, maxspeed, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   );
 
   // Read metadata from core file
@@ -364,6 +393,7 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
         rw.name ?? null,
         rw.access ?? null,
         rw.junction ?? null,
+        normalizeMaxspeedKmh(rw.maxspeed),
         JSON.stringify(rw.coords),
         minLat,
         maxLat,

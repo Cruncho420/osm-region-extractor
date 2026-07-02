@@ -88,6 +88,10 @@ interface BundledRoadWay {
   /** OSM junction tag (e.g. `roundabout`). Road-identity signal — absent on
    *  ordinary roads. Written to road_ways.junction by build-sqlite.ts. */
   junction?: string;
+  /** Raw OSM `maxspeed` tag (e.g. `"50"`, `"30 mph"`, `"RO:urban"`, `"none"`).
+   *  Normalized to a whole km/h integer by build-sqlite.ts for the speed-limit
+   *  HUD (FEAT-031). Display-only — never feeds pace-note generation. */
+  maxspeed?: string;
 }
 
 interface BundledWayData {
@@ -794,6 +798,10 @@ async function streamConvertWays(inputPath: string, outputPath: string, regionId
     // different way with no junction tag). build-sqlite.ts writes it to road_ways.junction.
     const junction = props.junction;
     if (junction) way.junction = junction;
+    // Raw maxspeed string — build-sqlite.ts normalizes it to whole km/h for the
+    // speed-limit HUD (FEAT-031). Keep the raw OSM value here so all parsing
+    // (mph→km/h, zone-code/none → NULL) lives in one place.
+    if (props.maxspeed) way.maxspeed = props.maxspeed;
     ws.write(JSON.stringify(way));
     count++;
   }
