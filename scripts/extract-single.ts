@@ -92,6 +92,23 @@ interface BundledRoadWay {
    *  Normalized to a whole km/h integer by build-sqlite.ts for the speed-limit
    *  HUD (FEAT-031). Display-only — never feeds pace-note generation. */
   maxspeed?: string;
+  /** Country-coded legal-context tag (`maxspeed:type` / `zone:maxspeed` /
+   *  `source:maxspeed`, e.g. `"LT:rural"`, `"DE:zone30"`). Lets the app resolve
+   *  the EXACT legal default when no numeric maxspeed exists (inferred-limits
+   *  tier 2). Only country-coded values are kept (`"sign"`, survey notes → dropped). */
+  maxspeedType?: string;
+}
+
+/** Built-up area reduced to its bounding box — all the app's occupancy-grid
+ *  urban test needs (inferred-limits tier 3). Bbox-only keeps the payload tiny. */
+interface BuiltUpArea {
+  /** 'landuse' (residential/retail/commercial/industrial polygon) or
+   *  'place_city' | 'place_town' | 'place_village' (place node + nominal radius). */
+  kind: string;
+  minLon: number;
+  minLat: number;
+  maxLon: number;
+  maxLat: number;
 }
 
 interface BundledWayData {
@@ -330,15 +347,49 @@ async function extractRegion(regionId: string): Promise<void> {
     console.log(`      Surface compressed size: ${(surfaceGzSize / 1024).toFixed(1)} MB`);
     console.log(`      Compression ratio: ${((1 - surfaceGzSize / surfaceJsonSize) * 100).toFixed(1)}%\n`);
 
+    // Steps 12-14: Built-up areas (inferred-limits tier 3 — urban/rural signal).
+    // landuse polygons (residential/retail/commercial/industrial) + place nodes
+    // (city/town/village), reduced to BBOXES ONLY — the app's occupancy-grid
+    // urban test needs nothing more, and bbox-only keeps the payload tiny.
+    console.log(`[builtup 1/3] Filtering built-up areas (landuse + place)...`);
+    const builtupFilteredPbf = `/tmp/${regionId}-builtup-filtered.osm.pbf`;
+    const builtupOutputJson = join(OUTPUT_DIR, `${regionId}-builtup.json`);
+    const builtupOutputGz = join(OUTPUT_DIR, `${regionId}-builtup.json.gz`);
+
+    execSync(
+      `osmium tags-filter "${localPbf}" ` +
+        `a/landuse=residential,retail,commercial,industrial ` +
+        `n/place=city,town,village ` +
+        `-o "${builtupFilteredPbf}"`,
+      { stdio: 'inherit' }
+    );
+
+    console.log(`[builtup 2/3] Converting built-up areas to GeoJSON sequence...`);
+    execSync(`osmium export "${builtupFilteredPbf}" -f geojsonseq -o "${builtupOutputJson}"`, {
+      stdio: 'inherit',
+    });
+
+    console.log(`[builtup 3/3] Converting built-up areas to bbox format...`);
+    const builtupTmpOutput = `${builtupOutputJson}.tmp`;
+    const builtupCount = await streamConvertBuiltUp(builtupOutputJson, builtupTmpOutput, regionId);
+    console.log(`      Built-up areas: ${builtupCount}`);
+
+    execSync(`gzip -9 -c "${builtupTmpOutput}" > "${builtupOutputGz}"`, { stdio: 'inherit' });
+    const builtupGzSize = statSync(builtupOutputGz).size / 1024;
+    unlinkSync(builtupTmpOutput);
+    console.log(`      Built-up compressed size: ${builtupGzSize.toFixed(1)} KB\n`);
+
     // Clean up all remaining intermediate files
     unlinkSync(localPbf);
     unlinkSync(wayFilteredPbf);
     unlinkSync(wayOutputJson);
     unlinkSync(surfaceFilteredPbf);
     unlinkSync(surfaceOutputJson);
+    unlinkSync(builtupFilteredPbf);
+    unlinkSync(builtupOutputJson);
 
-    console.log(`\n✓ ${region.name} complete: core + ways + surfaces`);
-    console.log(`  Core: ${(gzSize / 1024).toFixed(2)} MB, Ways: ${(wayGzSize / 1024).toFixed(2)} MB, Surfaces: ${(surfaceGzSize / 1024).toFixed(2)} MB\n`);
+    console.log(`\n✓ ${region.name} complete: core + ways + surfaces + builtup`);
+    console.log(`  Core: ${(gzSize / 1024).toFixed(2)} MB, Ways: ${(wayGzSize / 1024).toFixed(2)} MB, Surfaces: ${(surfaceGzSize / 1024).toFixed(2)} MB, BuiltUp: ${(builtupGzSize / 1024).toFixed(2)} MB\n`);
   } catch (error) {
     console.error(`\n✗ Error processing ${region.name}:`, error);
 
@@ -347,9 +398,12 @@ async function extractRegion(regionId: string): Promise<void> {
     const wayOutputJson = join(OUTPUT_DIR, `${regionId}-ways.json`);
     const surfaceFilteredPbf = `/tmp/${regionId}-surfaces-filtered.osm.pbf`;
     const surfaceOutputJson = join(OUTPUT_DIR, `${regionId}-surfaces.json`);
+    const builtupFilteredPbf = `/tmp/${regionId}-builtup-filtered.osm.pbf`;
+    const builtupOutputJson = join(OUTPUT_DIR, `${regionId}-builtup.json`);
     const wayTmpOutput = `${wayOutputJson}.tmp`;
     const surfaceTmpOutput = `${surfaceOutputJson}.tmp`;
-    [localPbf, filteredPbf, outputJson, wayFilteredPbf, wayOutputJson, surfaceFilteredPbf, surfaceOutputJson, wayTmpOutput, surfaceTmpOutput].forEach((file) => {
+    const builtupTmpOutput = `${builtupOutputJson}.tmp`;
+    [localPbf, filteredPbf, outputJson, wayFilteredPbf, wayOutputJson, surfaceFilteredPbf, surfaceOutputJson, builtupFilteredPbf, builtupOutputJson, wayTmpOutput, surfaceTmpOutput, builtupTmpOutput].forEach((file) => {
       if (existsSync(file)) {
         try {
           unlinkSync(file);
@@ -802,6 +856,14 @@ async function streamConvertWays(inputPath: string, outputPath: string, regionId
     // speed-limit HUD (FEAT-031). Keep the raw OSM value here so all parsing
     // (mph→km/h, zone-code/none → NULL) lives in one place.
     if (props.maxspeed) way.maxspeed = props.maxspeed;
+    // Legal-context tag (inferred-limits tier 2): country-coded values only
+    // ("LT:rural", "DE:zone30"). `source:maxspeed` often holds junk ("sign",
+    // survey notes) — the pattern filter drops those. Priority: maxspeed:type
+    // (canonical) → zone:maxspeed → source:maxspeed (legacy tagging).
+    const msType = props['maxspeed:type'] || props['zone:maxspeed'] || props['source:maxspeed'];
+    if (msType && /^[A-Za-z]{2}(-[A-Za-z0-9]+)?:.+$/.test(msType.trim())) {
+      way.maxspeedType = msType.trim();
+    }
     ws.write(JSON.stringify(way));
     count++;
   }
@@ -877,6 +939,91 @@ async function streamConvertSurfaces(inputPath: string, outputPath: string, regi
   ws.end();
 
   // Wait for the write stream to finish
+  await new Promise<void>((resolve, reject) => {
+    ws.on('finish', resolve);
+    ws.on('error', reject);
+  });
+
+  return count;
+}
+
+/**
+ * Stream-read a built-up GeoJSON sequence and stream-write bbox-only JSON.
+ * Polygons/MultiPolygons (landuse) → geometry bbox; place nodes → point ± a
+ * nominal radius by place size. Pathological giant polygons (>0.25° span,
+ * ~28 km — malformed relations) are skipped rather than marking half a region
+ * urban. Returns the count of written areas.
+ */
+async function streamConvertBuiltUp(inputPath: string, outputPath: string, regionId: string): Promise<number> {
+  const ws = createWriteStream(outputPath, { encoding: 'utf-8' });
+  const version = new Date().toISOString().split('T')[0];
+  ws.write(`{"version":"${version}","region":"${regionId}","builtUpAreas":[`);
+
+  // Nominal half-side (degrees) around a place node when no polygon exists.
+  // city ~4 km, town ~1.5 km, village ~550 m — errs small; landuse polygons
+  // carry the real footprint where mapped.
+  const PLACE_HALF_DEG: Record<string, number> = { city: 0.036, town: 0.014, village: 0.005 };
+  const MAX_SPAN_DEG = 0.25; // skip malformed giant polygons
+
+  let count = 0;
+  const rl = createInterface({
+    input: createReadStream(inputPath, { encoding: 'utf-8' }),
+    crlfDelay: Infinity,
+  });
+
+  for await (const line of rl) {
+    const trimmed = line.trim().replace(/^\x1e/, '');
+    if (!trimmed) continue;
+
+    let feature: GeoJSONFeature;
+    try {
+      feature = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+
+    const props = feature.properties as Record<string, string>;
+    const geometry = feature.geometry;
+    let area: BuiltUpArea | null = null;
+
+    if (geometry.type === 'Point' && props.place && PLACE_HALF_DEG[props.place] !== undefined) {
+      const [lon, lat] = geometry.coordinates as [number, number];
+      const h = PLACE_HALF_DEG[props.place];
+      area = { kind: `place_${props.place}`, minLon: lon - h, minLat: lat - h, maxLon: lon + h, maxLat: lat + h };
+    } else if ((geometry.type === 'Polygon' || geometry.type === 'MultiPolygon') && props.landuse) {
+      // Bbox over every ring vertex (outer rings dominate; holes are irrelevant to a bbox).
+      let minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
+      const polys = (geometry.type === 'Polygon'
+        ? [geometry.coordinates]
+        : geometry.coordinates) as [number, number][][][];
+      for (const rings of polys) {
+        for (const ring of rings) {
+          for (const [lon, lat] of ring) {
+            if (lon < minLon) minLon = lon;
+            if (lon > maxLon) maxLon = lon;
+            if (lat < minLat) minLat = lat;
+            if (lat > maxLat) maxLat = lat;
+          }
+        }
+      }
+      if (
+        Number.isFinite(minLon) &&
+        maxLon - minLon <= MAX_SPAN_DEG &&
+        maxLat - minLat <= MAX_SPAN_DEG
+      ) {
+        area = { kind: 'landuse', minLon, minLat, maxLon, maxLat };
+      }
+    }
+
+    if (!area) continue;
+    if (count > 0) ws.write(',');
+    ws.write(JSON.stringify(area));
+    count++;
+  }
+
+  ws.write(']}');
+  ws.end();
+
   await new Promise<void>((resolve, reject) => {
     ws.on('finish', resolve);
     ws.on('error', reject);

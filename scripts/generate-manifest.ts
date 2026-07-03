@@ -40,6 +40,8 @@ interface ManifestRegion {
   surfaceChecksum?: string;
   waySize?: number;
   wayChecksum?: string;
+  builtupSize?: number;
+  builtupChecksum?: string;
   sqliteSize?: number;
   sqliteChecksum?: string;
 }
@@ -83,9 +85,11 @@ function generateManifest(inputDir: string, outputFile: string, overrideVersion?
 
   // Find all .json.gz files in input directory
   const allFiles = readdirSync(inputDir).filter((f) => f.endsWith('.json.gz'));
-  // Core files are those that don't have a -surfaces or -ways suffix
+  // Core files are those that don't have a -surfaces, -ways, or -builtup suffix.
+  // CRITICAL: every new per-region data file MUST be excluded here or the manifest
+  // treats it as a phantom core region (breaking the app's region list).
   const coreFiles = allFiles.filter(
-    (f) => !f.includes('-surfaces') && !f.includes('-ways'),
+    (f) => !f.includes('-surfaces') && !f.includes('-ways') && !f.includes('-builtup'),
   );
   console.log(`Found ${coreFiles.length} core region files (${allFiles.length} total files)\n`);
 
@@ -137,6 +141,18 @@ function generateManifest(inputDir: string, outputFile: string, overrideVersion?
       totalSize += wayStats.size;
     } catch {
       // No way file — that's fine
+    }
+
+    // Check for built-up area data file (inferred-limits tier 3)
+    const builtupFile = `${regionId}-builtup.json.gz`;
+    const builtupPath = join(inputDir, builtupFile);
+    try {
+      const builtupStats = statSync(builtupPath);
+      region.builtupSize = builtupStats.size;
+      region.builtupChecksum = computeChecksum(builtupPath);
+      totalSize += builtupStats.size;
+    } catch {
+      // No built-up file — that's fine
     }
 
     // Check for pre-built SQLite database

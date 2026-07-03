@@ -72,6 +72,17 @@ interface BundledRoadWay {
   /** Raw OSM maxspeed tag string — normalized to a whole km/h integer on insert
    *  for the speed-limit HUD (FEAT-031). */
   maxspeed?: string;
+  /** Country-coded legal-context tag (`"LT:rural"`, `"DE:zone30"`) — inferred-limits
+   *  tier 2. Stored raw in road_ways.maxspeed_type; the app resolves it. */
+  maxspeedType?: string;
+}
+
+interface BundledBuiltUpArea {
+  kind: string;
+  minLon: number;
+  minLat: number;
+  maxLon: number;
+  maxLat: number;
 }
 
 /**
@@ -145,6 +156,7 @@ CREATE TABLE IF NOT EXISTS road_ways (
   access TEXT,
   junction TEXT,
   maxspeed INTEGER,
+  maxspeed_type TEXT,
   coords TEXT NOT NULL,
   min_lat REAL NOT NULL,
   max_lat REAL NOT NULL,
@@ -152,6 +164,16 @@ CREATE TABLE IF NOT EXISTS road_ways (
   max_lon REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ways_bbox ON road_ways(min_lat, max_lat, min_lon, max_lon);
+
+CREATE TABLE IF NOT EXISTS built_up_areas (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  min_lat REAL NOT NULL,
+  max_lat REAL NOT NULL,
+  min_lon REAL NOT NULL,
+  max_lon REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_builtup_bbox ON built_up_areas(min_lat, max_lat, min_lon, max_lon);
 
 CREATE TABLE IF NOT EXISTS metadata (
   key TEXT PRIMARY KEY,
@@ -329,7 +351,10 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
     'INSERT INTO road_surfaces (surface, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?)',
   );
   const insertWay = db.prepare(
-    'INSERT INTO road_ways (highway, surface, oneway, name, access, junction, maxspeed, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO road_ways (highway, surface, oneway, name, access, junction, maxspeed, maxspeed_type, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  );
+  const insertBuiltUp = db.prepare(
+    'INSERT INTO built_up_areas (kind, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?)',
   );
 
   // Read metadata from core file
@@ -394,6 +419,7 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
         rw.access ?? null,
         rw.junction ?? null,
         normalizeMaxspeedKmh(rw.maxspeed),
+        rw.maxspeedType ?? null,
         JSON.stringify(rw.coords),
         minLat,
         maxLat,
@@ -408,6 +434,22 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
     console.log('  ⚠ No way data file');
   }
 
+  // Insert built-up areas (inferred-limits tier 3 — urban/rural signal)
+  const builtupPath = join(outputDir, `${regionId}-builtup.json.gz`);
+  let builtupCount = 0;
+  let hasBuiltUpData = false;
+  if (existsSync(builtupPath)) {
+    console.log('Streaming built-up area data...');
+    await streamJsonArray<BundledBuiltUpArea>(builtupPath, 'builtUpAreas', (bu) => {
+      insertBuiltUp.run(bu.kind, bu.minLat, bu.maxLat, bu.minLon, bu.maxLon);
+      builtupCount++;
+    });
+    hasBuiltUpData = builtupCount > 0;
+    console.log(`  ✓ ${builtupCount} built-up areas`);
+  } else {
+    console.log('  ⚠ No built-up data file');
+  }
+
   // Insert metadata
   const insertMeta = db.prepare('INSERT INTO metadata (key, value) VALUES (?, ?)');
   insertMeta.run('version', meta.version);
@@ -415,6 +457,7 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
   insertMeta.run('createdAt', new Date().toISOString());
   insertMeta.run('hasSurfaceData', hasSurfaceData ? 'true' : 'false');
   insertMeta.run('hasWayData', hasWayData ? 'true' : 'false');
+  insertMeta.run('hasBuiltUpData', hasBuiltUpData ? 'true' : 'false');
 
   // Commit transaction
   db.exec('COMMIT');
@@ -435,7 +478,7 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
 
   console.log(`\n✓ Built ${regionId}.sqlite.gz`);
-  console.log(`  Rows: ${tcCount} tc + ${raCount} ra + ${surfaceCount} surfaces + ${wayCount} ways`);
+  console.log(`  Rows: ${tcCount} tc + ${raCount} ra + ${surfaceCount} surfaces + ${wayCount} ways + ${builtupCount} builtup`);
   console.log(`  SQLite: ${(sqliteSize / 1024 / 1024).toFixed(1)} MB → gzip: ${(gzSize / 1024 / 1024).toFixed(1)} MB (${ratio}% compression)`);
   console.log(`  Time: ${elapsed}s`);
 }

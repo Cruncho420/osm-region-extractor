@@ -90,6 +90,7 @@ jobs:
             scripts/output/${{ matrix.region }}.json.gz
             scripts/output/${{ matrix.region }}-ways.json.gz
             scripts/output/${{ matrix.region }}-surfaces.json.gz
+            scripts/output/${{ matrix.region }}-builtup.json.gz
             scripts/output/${{ matrix.region }}.sqlite.gz
           retention-days: 1  # Clean up quickly to save storage
 
@@ -168,7 +169,8 @@ jobs:
           - Traffic calming features (speed bumps, dips, bridges, tunnels, speed cameras)
           - Roundabouts (full and mini)
           - Road surfaces (asphalt, gravel, cobblestone, dirt, etc.)
-          - Road ways (dense road geometry for curve detection)
+          - Road ways (dense road geometry for curve detection, incl. maxspeed + legal-context tags)
+          - Built-up areas (landuse/place bboxes for urban-vs-rural speed-limit inference)
 
           **Usage:**
           Download manifest.json first to check versions, then download needed regions.
