@@ -351,33 +351,44 @@ async function extractRegion(regionId: string): Promise<void> {
     // landuse polygons (residential/retail/commercial/industrial) + place nodes
     // (city/town/village), reduced to BBOXES ONLY — the app's occupancy-grid
     // urban test needs nothing more, and bbox-only keeps the payload tiny.
-    console.log(`[builtup 1/3] Filtering built-up areas (landuse + place)...`);
+    // NON-FATAL: built-up data is optional-by-design everywhere downstream (the
+    // app degrades to "urban unknown"), so a failure here must NOT drop the whole
+    // region from the release — log and continue without the builtup file.
     const builtupFilteredPbf = `/tmp/${regionId}-builtup-filtered.osm.pbf`;
     const builtupOutputJson = join(OUTPUT_DIR, `${regionId}-builtup.json`);
     const builtupOutputGz = join(OUTPUT_DIR, `${regionId}-builtup.json.gz`);
+    let builtupGzSize = 0;
+    try {
+      console.log(`[builtup 1/3] Filtering built-up areas (landuse + place)...`);
+      execSync(
+        `osmium tags-filter "${localPbf}" ` +
+          `a/landuse=residential,retail,commercial,industrial ` +
+          `n/place=city,town,village ` +
+          `-o "${builtupFilteredPbf}"`,
+        { stdio: 'inherit' }
+      );
 
-    execSync(
-      `osmium tags-filter "${localPbf}" ` +
-        `a/landuse=residential,retail,commercial,industrial ` +
-        `n/place=city,town,village ` +
-        `-o "${builtupFilteredPbf}"`,
-      { stdio: 'inherit' }
-    );
+      console.log(`[builtup 2/3] Converting built-up areas to GeoJSON sequence...`);
+      execSync(`osmium export "${builtupFilteredPbf}" -f geojsonseq -o "${builtupOutputJson}"`, {
+        stdio: 'inherit',
+      });
 
-    console.log(`[builtup 2/3] Converting built-up areas to GeoJSON sequence...`);
-    execSync(`osmium export "${builtupFilteredPbf}" -f geojsonseq -o "${builtupOutputJson}"`, {
-      stdio: 'inherit',
-    });
+      console.log(`[builtup 3/3] Converting built-up areas to bbox format...`);
+      const builtupTmpOutput = `${builtupOutputJson}.tmp`;
+      const builtupCount = await streamConvertBuiltUp(builtupOutputJson, builtupTmpOutput, regionId);
+      console.log(`      Built-up areas: ${builtupCount}`);
 
-    console.log(`[builtup 3/3] Converting built-up areas to bbox format...`);
-    const builtupTmpOutput = `${builtupOutputJson}.tmp`;
-    const builtupCount = await streamConvertBuiltUp(builtupOutputJson, builtupTmpOutput, regionId);
-    console.log(`      Built-up areas: ${builtupCount}`);
-
-    execSync(`gzip -9 -c "${builtupTmpOutput}" > "${builtupOutputGz}"`, { stdio: 'inherit' });
-    const builtupGzSize = statSync(builtupOutputGz).size / 1024;
-    unlinkSync(builtupTmpOutput);
-    console.log(`      Built-up compressed size: ${builtupGzSize.toFixed(1)} KB\n`);
+      execSync(`gzip -9 -c "${builtupTmpOutput}" > "${builtupOutputGz}"`, { stdio: 'inherit' });
+      builtupGzSize = statSync(builtupOutputGz).size / 1024;
+      unlinkSync(builtupTmpOutput);
+      console.log(`      Built-up compressed size: ${builtupGzSize.toFixed(1)} KB\n`);
+    } catch (builtupError) {
+      console.warn(`      ⚠ Built-up extraction failed for ${regionId} — continuing WITHOUT builtup data (optional):`, builtupError);
+      // Remove any partial builtup outputs so downstream never sees a truncated file
+      [builtupOutputGz, builtupOutputJson, `${builtupOutputJson}.tmp`].forEach((f) => {
+        if (existsSync(f)) { try { unlinkSync(f); } catch { /* ignore */ } }
+      });
+    }
 
     // Clean up all remaining intermediate files
     unlinkSync(localPbf);
@@ -385,8 +396,8 @@ async function extractRegion(regionId: string): Promise<void> {
     unlinkSync(wayOutputJson);
     unlinkSync(surfaceFilteredPbf);
     unlinkSync(surfaceOutputJson);
-    unlinkSync(builtupFilteredPbf);
-    unlinkSync(builtupOutputJson);
+    if (existsSync(builtupFilteredPbf)) unlinkSync(builtupFilteredPbf);
+    if (existsSync(builtupOutputJson)) unlinkSync(builtupOutputJson);
 
     console.log(`\n✓ ${region.name} complete: core + ways + surfaces + builtup`);
     console.log(`  Core: ${(gzSize / 1024).toFixed(2)} MB, Ways: ${(wayGzSize / 1024).toFixed(2)} MB, Surfaces: ${(surfaceGzSize / 1024).toFixed(2)} MB, BuiltUp: ${(builtupGzSize / 1024).toFixed(2)} MB\n`);
@@ -859,10 +870,16 @@ async function streamConvertWays(inputPath: string, outputPath: string, regionId
     // Legal-context tag (inferred-limits tier 2): country-coded values only
     // ("LT:rural", "DE:zone30"). `source:maxspeed` often holds junk ("sign",
     // survey notes) — the pattern filter drops those. Priority: maxspeed:type
-    // (canonical) → zone:maxspeed → source:maxspeed (legacy tagging).
+    // (canonical) → zone:maxspeed → source:maxspeed (legacy) → a country-coded
+    // value in the maxspeed tag ITSELF (`maxspeed=RO:urban` is a common tagging
+    // style; normalizeMaxspeedKmh yields NULL for it, so without this route the
+    // explicit legal context would be dropped entirely).
+    const CC_CONTEXT = /^[A-Za-z]{2}(-[A-Za-z0-9]+)?:.+$/;
     const msType = props['maxspeed:type'] || props['zone:maxspeed'] || props['source:maxspeed'];
-    if (msType && /^[A-Za-z]{2}(-[A-Za-z0-9]+)?:.+$/.test(msType.trim())) {
+    if (msType && CC_CONTEXT.test(msType.trim())) {
       way.maxspeedType = msType.trim();
+    } else if (props.maxspeed && CC_CONTEXT.test(props.maxspeed.trim())) {
+      way.maxspeedType = props.maxspeed.trim();
     }
     ws.write(JSON.stringify(way));
     count++;
