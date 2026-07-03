@@ -90,8 +90,11 @@ jobs:
             scripts/output/${{ matrix.region }}.json.gz
             scripts/output/${{ matrix.region }}-ways.json.gz
             scripts/output/${{ matrix.region }}-surfaces.json.gz
-            scripts/output/${{ matrix.region }}-builtup.json.gz
             scripts/output/${{ matrix.region }}.sqlite.gz
+          # NOTE: -builtup.json.gz is deliberately NOT uploaded. The app never
+          # downloads it (built-up data ships INSIDE the .sqlite); publishing it
+          # pushed the release to 1171 assets, over GitHub's HARD 1000-asset cap,
+          # which truncated the 2026-07-03 upload mid-way. 4 files/region = 937.
           retention-days: 1  # Clean up quickly to save storage
 
   # Job 3: Combine all artifacts, generate manifest, create release
