@@ -36,6 +36,14 @@ name: Valhalla Graph Tiles (Smoke)
 # prefix). Exact steps: see MANIFEST-INTEGRATION.md at the repo root.
 
 on:
+  # TEMPORARY registration shim — REMOVE before merging to main:
+  # GitHub does not register a never-run workflow that exists only on a feature
+  # branch, so workflow_dispatch 404s until an event references the file. This
+  # branch-scoped push trigger registers it; every job below is gated on
+  # github.event_name == 'workflow_dispatch', so push runs skip all jobs.
+  push:
+    branches: [feat/valhalla-tiles]
+    paths: ['.github/workflows/valhalla-tiles.yml']
   workflow_dispatch:
     inputs:
       regions:
@@ -67,6 +75,7 @@ env:
 jobs:
   # Job 1: Resolve the comma-list input to canonical region ids from regions.json
   get-regions:
+    if: github.event_name == 'workflow_dispatch'  # push events only register the workflow
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.resolve.outputs.matrix }}
