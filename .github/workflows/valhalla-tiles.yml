@@ -100,9 +100,9 @@ jobs:
             # Exact id match wins; otherwise match id suffix or geofabrik path fragment
             # (lets "estonia", "bayern", "us/california" resolve to canonical ids).
             MATCHES=$(jq -r --arg t "$tok" '
-              ([.regions[] | select(.id == $t)]
-               | if length > 0 then . else
-                   [.regions[] | select((.id | endswith($t)) or (.geofabrikPath | contains($t)))]
+              [.regions[] | select(.id == $t)] as $exact
+              | (if ($exact | length) > 0 then $exact
+                 else [.regions[] | select((.id | endswith($t)) or (.geofabrikPath | contains($t)))]
                  end)
               | [.[].id] | unique | .[]' scripts/regions.json)
             N=$(printf '%s' "$MATCHES" | grep -c . || true)
