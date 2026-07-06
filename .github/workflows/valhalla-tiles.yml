@@ -1,0 +1,485 @@
+name: Valhalla Graph Tiles (Smoke)
+
+# Purpose: Build Valhalla routing graph tiles for a SMOKE-TEST set of regions (FEAT-033 P1.1).
+# Goal: prove the tile-build recipe in CI on 3 regions before any wider rollout.
+#
+# This workflow is STANDALONE and dispatch-only:
+# - It never touches the monthly `osm-extract` pipeline, its releases, or manifest.json.
+# - It publishes to its own `valhalla-smoke-<run_number>` tag, ALWAYS as a PRERELEASE:
+#   the app and verify-manifest.yml resolve `releases/latest/download/manifest.json`,
+#   and only a prerelease is guaranteed to never become "latest".
+# - Enabling more regions is OWNER-GATED. A region builds only if it has a hardcoded
+#   sanity-route entry below — a pack must never ship unverified.
+#
+# Recipe (proven in the Rods FEAT-033 Track B spike):
+# 1. valhalla_build_config     — tile_dir mode (NEVER tile_extract), concurrency 2,
+#                                max_cache_size 262144000, admin + timezone sqlite paths
+# 2. valhalla_build_timezones  — ONCE (world-wide tz_world.sqlite ~114MB, cached monthly)
+# 3. valhalla_build_admins     — per region (seconds to minutes)
+# 4. valhalla_build_tiles      — per region, with VERIFY-AND-RETRY:
+#    Large regions CRASH at concurrency 2 with "Mismatch in end offset ... Tile file
+#    might be corrupted" (tile-writer race; California reproduced it, clean at c1).
+#    So: PBF > 600MB starts at concurrency 1; ANY failure or corruption marker in the
+#    log wipes the tile dir and retries once at concurrency 1.
+# 5. Ship GRAPH-ONLY tars: only the 0/ 1/ 2/ level dirs. tz_world.sqlite and
+#    admins.sqlite are build-time inputs — including them ~doubles pack size.
+# 6. Gates before an artifact is accepted:
+#    - size band: gz must be 10%..300% of a rough 0.39 x PBF-size estimate
+#    - sanity route: one-shot valhalla_service against tiles RE-EXTRACTED FROM THE
+#      SHIPPED TAR must return "Found route"
+#
+# TODO(P1.1-manifest): manifest integration is deliberately NOT wired here.
+# The monthly release sits at ~937 assets against GitHub's HARD 1000-asset cap
+# (see the -builtup.json.gz note in osm-extract.yml), so 233 valhalla tars can
+# never ride the monthly release — rollout needs its own `valhalla-<date>` release
+# plus additive manifest fields (valhallaSize / valhallaChecksum, 16-hex sha256
+# prefix). Exact steps: see MANIFEST-INTEGRATION.md at the repo root.
+
+on:
+  workflow_dispatch:
+    inputs:
+      regions:
+        description: 'Comma list of regions (region id, id suffix, or geofabrik path fragment)'
+        required: false
+        default: 'estonia,bayern,us/california'
+        type: string
+      upload:
+        description: 'Upload packs to a valhalla-smoke-<run_number> prerelease'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write  # Required for creating the smoke prerelease
+
+env:
+  VALHALLA_IMAGE: ghcr.io/valhalla/valhalla:latest
+  # Hardcoded in-region sanity route endpoints, "lat,lon|lat,lon" (city pairs).
+  # A region WITHOUT an entry here fails fast ON PURPOSE: the sanity route is the
+  # only end-to-end proof the shipped pack can actually route. Generalize this
+  # (e.g. per-region pairs in regions.json) before any wider rollout.
+  SANITY_ROUTES: >-
+    {"europe-estonia":"59.437,24.754|58.378,26.729",
+    "europe-germany-bayern":"48.137,11.575|49.454,11.077",
+    "europe-lithuania":"54.687,25.280|54.897,23.914",
+    "north-america-us-california":"34.05,-118.24|32.72,-117.16"}
+
+jobs:
+  # Job 1: Resolve the comma-list input to canonical region ids from regions.json
+  get-regions:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve region tokens to region ids
+        id: resolve
+        env:
+          REGIONS_INPUT: ${{ inputs.regions }}
+        run: |
+          set -euo pipefail
+          if [ -z "${REGIONS_INPUT// /}" ]; then
+            echo "::error::No regions provided"
+            exit 1
+          fi
+          IDS=""
+          IFS=',' read -ra TOKENS <<< "$REGIONS_INPUT"
+          for tok in "${TOKENS[@]}"; do
+            tok="$(echo "$tok" | tr -d '[:space:]')"
+            [ -z "$tok" ] && continue
+            # Exact id match wins; otherwise match id suffix or geofabrik path fragment
+            # (lets "estonia", "bayern", "us/california" resolve to canonical ids).
+            MATCHES=$(jq -r --arg t "$tok" '
+              ([.regions[] | select(.id == $t)]
+               | if length > 0 then . else
+                   [.regions[] | select((.id | endswith($t)) or (.geofabrikPath | contains($t)))]
+                 end)
+              | [.[].id] | unique | .[]' scripts/regions.json)
+            N=$(printf '%s' "$MATCHES" | grep -c . || true)
+            if [ "$N" -eq 0 ]; then
+              echo "::error::Region token '$tok' matches nothing in scripts/regions.json"
+              exit 1
+            fi
+            if [ "$N" -gt 1 ]; then
+              echo "::error::Region token '$tok' is ambiguous — matches: $(echo $MATCHES | tr '\n' ' ')"
+              exit 1
+            fi
+            IDS="${IDS}${MATCHES}"$'\n'
+          done
+          MATRIX=$(printf '%s' "$IDS" | grep . | sort -u | jq -R . | jq -sc .)
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Resolved regions: $MATRIX"
+
+  # Job 2: Build + verify + package one region per matrix job
+  build:
+    needs: get-regions
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      matrix:
+        region: ${{ fromJson(needs.get-regions.outputs.matrix) }}
+      max-parallel: 3
+      fail-fast: false  # One region failing must not kill the others
+    env:
+      REGION: ${{ matrix.region }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve region metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          GEO_PATH=$(jq -r --arg id "$REGION" '.regions[] | select(.id==$id) | .geofabrikPath' scripts/regions.json)
+          if [ -z "$GEO_PATH" ] || [ "$GEO_PATH" = "null" ]; then
+            echo "::error::Region $REGION not found in scripts/regions.json"
+            exit 1
+          fi
+          COORDS=$(jq -rn --argjson m "$SANITY_ROUTES" --arg id "$REGION" '$m[$id] // empty')
+          if [ -z "$COORDS" ]; then
+            echo "::error::No sanity-route coordinates for $REGION — add a pair to SANITY_ROUTES in valhalla-tiles.yml first (a pack must never ship unverified)"
+            exit 1
+          fi
+          echo "geo_path=$GEO_PATH" >> "$GITHUB_OUTPUT"
+          echo "coords=$COORDS" >> "$GITHUB_OUTPUT"
+          echo "Region: $REGION  PBF: $GEO_PATH  Sanity route: $COORDS"
+
+      - name: Download PBF from Geofabrik
+        id: pbf
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          URL="https://download.geofabrik.de/${{ steps.meta.outputs.geo_path }}"
+          echo "URL: $URL"
+          curl -fL --retry 3 --retry-delay 30 --connect-timeout 30 -o work/region.osm.pbf "$URL"
+          PBF_BYTES=$(stat -c%s work/region.osm.pbf)
+          echo "pbf_bytes=$PBF_BYTES" >> "$GITHUB_OUTPUT"
+          echo "pbf_mb=$((PBF_BYTES / 1024 / 1024))" >> "$GITHUB_OUTPUT"
+          echo "PBF size: $((PBF_BYTES / 1024 / 1024)) MB"
+          df -h / | tail -1
+
+      - name: Pull Valhalla image
+        run: docker pull -q "$VALHALLA_IMAGE"
+
+      - name: Compute timezone cache key (month-scoped)
+        id: tzkey
+        run: echo "month=$(date +'%Y-%m')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore world timezone DB from cache
+        uses: actions/cache@v4
+        with:
+          path: work/tz_world.sqlite
+          key: valhalla-tzdata-${{ steps.tzkey.outputs.month }}
+
+      - name: Ensure world timezone DB (build on cache miss)
+        run: |
+          set -euo pipefail
+          # tz_world.sqlite is world-wide (~114MB) and region-independent: build once,
+          # reuse across regions and runs via the month-scoped cache above.
+          if [ -s work/tz_world.sqlite ] && [ "$(stat -c%s work/tz_world.sqlite)" -ge 50000000 ]; then
+            echo "tz_world.sqlite from cache: $(stat -c%s work/tz_world.sqlite) bytes"
+          else
+            echo "Cache miss — building timezone DB"
+            docker run --rm "$VALHALLA_IMAGE" valhalla_build_timezones > work/tz_world.sqlite
+            SIZE=$(stat -c%s work/tz_world.sqlite)
+            echo "Built tz_world.sqlite: $SIZE bytes"
+            if [ "$SIZE" -lt 50000000 ]; then
+              echo "::error::tz_world.sqlite too small ($SIZE bytes) — timezone build failed"
+              exit 1
+            fi
+          fi
+
+      - name: Generate Valhalla configs (tile_dir mode)
+        run: |
+          set -euo pipefail
+          # tile_dir mode: tile_extract points at a file that never exists, so every
+          # tool and the sanity service read loose tiles from tile_dir.
+          docker run --rm -v "$PWD/work:/data" "$VALHALLA_IMAGE" valhalla_build_config \
+            --mjolnir-tile-dir /data/valhalla_tiles \
+            --mjolnir-tile-extract /data/unused-tile-extract.tar \
+            --mjolnir-timezone /data/tz_world.sqlite \
+            --mjolnir-admin /data/admins.sqlite \
+            > work/valhalla-base.json
+          # Set concurrency/cache via jq (not CLI flags) so a flag-name drift in
+          # valhalla_build_config can never silently leave defaults in place.
+          jq '.mjolnir.concurrency = 2 | .mjolnir.max_cache_size = 262144000' \
+            work/valhalla-base.json > work/valhalla.json
+          jq '.mjolnir.concurrency = 1' work/valhalla.json > work/valhalla-c1.json
+          echo "mjolnir config: $(jq -c '.mjolnir | {tile_dir, tile_extract, concurrency, max_cache_size, admin, timezone}' work/valhalla.json)"
+
+      - name: Build admin DB for ${{ matrix.region }}
+        run: |
+          set -euo pipefail
+          docker run --rm -v "$PWD/work:/data" "$VALHALLA_IMAGE" \
+            valhalla_build_admins -c /data/valhalla.json /data/region.osm.pbf
+          ls -la work/admins.sqlite
+
+      - name: Build graph tiles (verify-and-retry)
+        id: tiles
+        run: |
+          set -euo pipefail
+          PBF_BYTES=${{ steps.pbf.outputs.pbf_bytes }}
+          THRESHOLD=629145600  # 600 MB
+          # Spike-proven: large regions hit a tile-writer race at concurrency 2
+          # ("Mismatch in end offset"); start big PBFs at concurrency 1.
+          if [ "$PBF_BYTES" -gt "$THRESHOLD" ]; then
+            CFG=/data/valhalla-c1.json; CONC=1
+            echo "Initial build concurrency: 1 (PBF $((PBF_BYTES / 1024 / 1024)) MB > 600MB threshold — c1 fallback ENGAGED)"
+          else
+            CFG=/data/valhalla.json; CONC=2
+            echo "Initial build concurrency: 2 (PBF $((PBF_BYTES / 1024 / 1024)) MB <= 600MB threshold)"
+          fi
+
+          build_tiles() {
+            local cfg="$1" log="$2" rc=0
+            set +e
+            docker run --rm -v "$PWD/work:/data" "$VALHALLA_IMAGE" \
+              valhalla_build_tiles -c "$cfg" /data/region.osm.pbf 2>&1 | tee "$log"
+            rc=${PIPESTATUS[0]}
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              echo "valhalla_build_tiles exit code: $rc"
+              return 1
+            fi
+            if grep -qE "Mismatch in end offset|terminate called" "$log"; then
+              echo "Corruption marker found in build log despite exit 0"
+              return 1
+            fi
+            return 0
+          }
+
+          RETRIED=0
+          T0=$(date +%s)
+          if ! build_tiles "$CFG" work/build-attempt1.log; then
+            echo "::warning::[$REGION] first tile build failed or showed corruption markers — wiping tile dir and retrying once at concurrency 1"
+            RETRIED=1
+            CONC=1
+            sudo rm -rf work/valhalla_tiles
+            if ! build_tiles /data/valhalla-c1.json work/build-attempt2.log; then
+              echo "::error::[$REGION] valhalla_build_tiles failed twice — refusing to ship a possibly corrupt pack"
+              exit 1
+            fi
+          fi
+          T1=$(date +%s)
+          echo "tiles_seconds=$((T1 - T0))" >> "$GITHUB_OUTPUT"
+          echo "concurrency=$CONC" >> "$GITHUB_OUTPUT"
+          echo "retried=$RETRIED" >> "$GITHUB_OUTPUT"
+          echo "Tile build wall-time: $((T1 - T0))s (concurrency $CONC, retried=$RETRIED)"
+          df -h / | tail -1
+
+      - name: Package graph-only pack + size gate
+        id: pack
+        run: |
+          set -euo pipefail
+          # PBF no longer needed once tiles exist (retry path is behind us) — free disk
+          sudo rm -f work/region.osm.pbf
+          if [ ! -d work/valhalla_tiles/2 ]; then
+            echo "::error::[$REGION] graph level 2 (local roads) missing — empty/corrupt build"
+            exit 1
+          fi
+          LEVELS=""
+          for d in 0 1 2; do
+            [ -d "work/valhalla_tiles/$d" ] && LEVELS="$LEVELS $d"
+          done
+          echo "Graph levels present:$LEVELS"
+          # GRAPH-ONLY tar: level dirs only. tz_world.sqlite + admins.sqlite are
+          # build-time inputs; shipping them would ~double the pack size.
+          sudo tar -czf "${REGION}.valhalla.tar.gz" -C work/valhalla_tiles $LEVELS
+          sudo chown "$(id -u):$(id -g)" "${REGION}.valhalla.tar.gz"
+          sha256sum "${REGION}.valhalla.tar.gz" > "${REGION}.valhalla.tar.gz.sha256"
+
+          GZ_BYTES=$(stat -c%s "${REGION}.valhalla.tar.gz")
+          PBF_BYTES=${{ steps.pbf.outputs.pbf_bytes }}
+          EST=$((PBF_BYTES * 39 / 100))   # rough gz estimate: 0.39 x PBF size
+          MIN=$((EST / 10))               # <10% of estimate = suspiciously empty
+          MAX=$((EST * 3))                # >300% of estimate = suspiciously bloated
+          echo "Pack: $((GZ_BYTES / 1024 / 1024)) MB (estimate $((EST / 1024 / 1024)) MB, band $((MIN / 1024 / 1024))..$((MAX / 1024 / 1024)) MB)"
+          if [ "$GZ_BYTES" -lt "$MIN" ] || [ "$GZ_BYTES" -gt "$MAX" ]; then
+            echo "::error::[$REGION] pack size $GZ_BYTES outside sanity band [$MIN, $MAX] — possible empty/corrupt output"
+            exit 1
+          fi
+          SHA=$(cut -d' ' -f1 "${REGION}.valhalla.tar.gz.sha256")
+          echo "gz_bytes=$GZ_BYTES" >> "$GITHUB_OUTPUT"
+          echo "gz_mb=$((GZ_BYTES / 1024 / 1024))" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "sha16=${SHA:0:16}" >> "$GITHUB_OUTPUT"
+
+      - name: Sanity route against the SHIPPED pack
+        id: sanity
+        run: |
+          set -euo pipefail
+          # Verify the tar we are about to ship, not the build dir: re-extract it
+          # fresh and route across it. Catches tar/gzip corruption too.
+          sudo rm -rf work/valhalla_tiles
+          mkdir -p work/verify_tiles
+          tar -xzf "${REGION}.valhalla.tar.gz" -C work/verify_tiles
+          jq '.mjolnir.tile_dir = "/data/verify_tiles"' work/valhalla.json > work/valhalla-verify.json
+
+          COORDS='${{ steps.meta.outputs.coords }}'
+          A="${COORDS%|*}"; B="${COORDS#*|}"
+          LAT1="${A%,*}"; LON1="${A#*,}"; LAT2="${B%,*}"; LON2="${B#*,}"
+          REQ="{\"locations\":[{\"lat\":$LAT1,\"lon\":$LON1},{\"lat\":$LAT2,\"lon\":$LON2}],\"costing\":\"auto\"}"
+          echo "Route request: $REQ"
+
+          set +e
+          OUT=$(docker run --rm -v "$PWD/work:/data" "$VALHALLA_IMAGE" \
+            valhalla_service /data/valhalla-verify.json route "$REQ" 2>&1)
+          RC=$?
+          set -e
+          echo "$OUT" | tail -n 20
+          if [ "$RC" -ne 0 ] || ! echo "$OUT" | grep -q "Found route"; then
+            echo "::error::[$REGION] sanity route FAILED (exit $RC) — pack rejected"
+            exit 1
+          fi
+          echo "Sanity route OK: Found route"
+          echo "result=Found route" >> "$GITHUB_OUTPUT"
+          sudo rm -rf work/verify_tiles
+
+      - name: Write region report + job summary
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg region "$REGION" \
+            --argjson pbf_mb "${{ steps.pbf.outputs.pbf_mb }}" \
+            --argjson tiles_seconds "${{ steps.tiles.outputs.tiles_seconds }}" \
+            --argjson gz_bytes "${{ steps.pack.outputs.gz_bytes }}" \
+            --argjson gz_mb "${{ steps.pack.outputs.gz_mb }}" \
+            --arg sha256 "${{ steps.pack.outputs.sha256 }}" \
+            --arg sha16 "${{ steps.pack.outputs.sha16 }}" \
+            --arg sanity "${{ steps.sanity.outputs.result }}" \
+            --argjson concurrency "${{ steps.tiles.outputs.concurrency }}" \
+            --argjson retried "${{ steps.tiles.outputs.retried }}" \
+            '{region: $region, pbf_mb: $pbf_mb, tiles_seconds: $tiles_seconds,
+              gz_bytes: $gz_bytes, gz_mb: $gz_mb, sha256: $sha256, sha16: $sha16,
+              sanity: $sanity, concurrency: $concurrency, retried: $retried}' \
+            > "valhalla-report-${REGION}.json"
+          cat "valhalla-report-${REGION}.json"
+          {
+            echo "### ${REGION}"
+            echo ""
+            echo "| PBF (MB) | Tiles wall-time (s) | Pack (MB) | sha256[0:16] | Sanity route | Concurrency | Retried |"
+            echo "|---:|---:|---:|---|---|---|---|"
+            echo "| ${{ steps.pbf.outputs.pbf_mb }} | ${{ steps.tiles.outputs.tiles_seconds }} | ${{ steps.pack.outputs.gz_mb }} | \`${{ steps.pack.outputs.sha16 }}\` | ${{ steps.sanity.outputs.result }} | c${{ steps.tiles.outputs.concurrency }} | ${{ steps.tiles.outputs.retried }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: valhalla-${{ matrix.region }}
+          path: |
+            ${{ matrix.region }}.valhalla.tar.gz
+            ${{ matrix.region }}.valhalla.tar.gz.sha256
+            valhalla-report-${{ matrix.region }}.json
+          retention-days: 1  # Clean up quickly to save storage (mirrors osm-extract.yml)
+          compression-level: 0  # tar.gz is already compressed
+
+  # Job 3: Collect packs, publish the smoke PRERELEASE, print the size table.
+  # Runs only when every region built AND verified — a partial smoke release has
+  # no value and could mislead consumers.
+  release:
+    needs: [get-regions, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    if: needs.build.result == 'success' && inputs.upload
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: valhalla-*
+          path: all-packs
+          merge-multiple: true
+
+      - name: Stage release files
+        run: |
+          set -euo pipefail
+          mkdir -p release-files reports
+          mv all-packs/valhalla-report-*.json reports/
+          mv all-packs/*.valhalla.tar.gz all-packs/*.valhalla.tar.gz.sha256 release-files/
+          ls -la release-files reports
+
+      - name: Build smoke manifest + summary table
+        id: info
+        run: |
+          set -euo pipefail
+          # One dataVersion stamps all artifacts of the run — same YYYY-MM-DD
+          # convention as the monthly manifest version.
+          VERSION=$(date +'%Y-%m-%d')
+          TAG="valhalla-smoke-${{ github.run_number }}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
+          # Same field conventions as manifest.json (valhallaChecksum = 16-hex
+          # sha256 prefix) so consumers can test against the final schema now.
+          jq -s --arg version "$VERSION" --arg gen "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            '{version: $version, generatedAt: $gen,
+              regions: (map({(.region): {valhallaSize: .gz_bytes, valhallaChecksum: .sha16}}) | add)}' \
+            reports/*.json > release-files/valhalla-manifest.json
+          cat release-files/valhalla-manifest.json
+          {
+            echo "## Valhalla smoke packs — dataVersion $VERSION"
+            echo ""
+            echo "| Region | PBF (MB) | Tiles wall-time (s) | Pack (MB) | sha256[0:16] | Sanity route | Concurrency | Retried |"
+            echo "|---|---:|---:|---:|---|---|---|---|"
+            jq -r '"| \(.region) | \(.pbf_mb) | \(.tiles_seconds) | \(.gz_mb) | `\(.sha16)` | \(.sanity) | c\(.concurrency) | \(.retried) |"' reports/*.json
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create smoke prerelease and upload packs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.info.outputs.tag_name }}"
+
+          # Re-runs of the same run_number replace their own release
+          gh release delete "$TAG" --yes 2>/dev/null || true
+
+          # PRERELEASE is load-bearing: the app + verify-manifest.yml resolve
+          # releases/latest/download/... — a normal release here would hijack
+          # "latest" and 404 every manifest.json fetch.
+          gh release create "$TAG" \
+            --prerelease \
+            --target "${{ github.sha }}" \
+            --title "Valhalla Graph Tiles (smoke) - ${{ steps.info.outputs.version }}" \
+            --notes "SMOKE-TEST Valhalla routing graph packs (FEAT-033 P1.1). Not consumed by any production client yet.
+
+          **dataVersion:** ${{ steps.info.outputs.version }}
+
+          **Contents (per region):**
+          - {region-id}.valhalla.tar.gz - GRAPH-ONLY Valhalla tiles (level 0/1/2 dirs; no tz/admin sqlite)
+          - {region-id}.valhalla.tar.gz.sha256 - full SHA-256 (verify: sha256sum -c)
+          - valhalla-manifest.json - per-region valhallaSize + valhallaChecksum (16-hex sha256 prefix)
+
+          **Verification already performed in CI (per region):**
+          - size band vs 0.39 x PBF estimate
+          - one-shot valhalla_service route across tiles re-extracted from this exact tar -> \"Found route\"
+
+          This tag is a PRERELEASE on purpose - it must never become releases/latest (manifest.json lives on the monthly osm-* releases)."
+
+          cd release-files
+          gh release upload "$TAG" * --clobber
+          echo "All files uploaded."
+
+      - name: Delete older smoke prereleases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Keep only the current valhalla-smoke-* release so stale smoke tags never
+          # pile up (the monthly cleanup counts ALL releases toward keep_latest:3).
+          # Only delete run numbers LOWER than ours — never a newer run's release.
+          CUR=${{ github.run_number }}
+          gh release list --limit 100 --json tagName -q '.[].tagName' \
+            | { grep '^valhalla-smoke-' || true; } \
+            | while read -r t; do
+                n="${t#valhalla-smoke-}"
+                if [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -lt "$CUR" ]; then
+                  echo "Deleting old smoke release $t"
+                  gh release delete "$t" --yes --cleanup-tag || true
+                fi
+              done
+
+      - name: Release summary
+        run: |
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Release: [${{ steps.info.outputs.tag_name }}](../../releases/tag/${{ steps.info.outputs.tag_name }}) (prerelease)" >> "$GITHUB_STEP_SUMMARY"
