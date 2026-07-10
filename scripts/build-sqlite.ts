@@ -470,6 +470,24 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
   console.log('Compressing...');
   execSync(`gzip -9 -k "${sqlitePath}"`, { stdio: 'inherit' });
 
+  // Integrity gate: prove the .gz actually decompresses back to the SQLite BEFORE
+  // we delete the uncompressed source and ship it. `gzip -t` validates the whole
+  // DEFLATE stream + CRC32 + ISIZE footer; the ISIZE cross-check catches a footer
+  // that lies about the length. A truncated/corrupt .gz otherwise gets a
+  // self-consistent size+checksum in the manifest and fails only on the user's
+  // phone — at decompress (Android, Rods BUG-242) or SQLite open (iOS, BUG-243).
+  console.log('Verifying gzip integrity (gzip -t)...');
+  execSync(`gzip -t "${sqliteGzPath}"`, { stdio: 'inherit' });
+  const decompressedSize = Number(
+    execSync(`gzip -dc "${sqliteGzPath}" | wc -c`, { shell: '/bin/bash' }).toString().trim(),
+  );
+  if (decompressedSize !== sqliteSize) {
+    throw new Error(
+      `Integrity FAIL for ${regionId}.sqlite.gz: decompresses to ${decompressedSize} bytes, ` +
+        `expected ${sqliteSize}. Refusing to ship a truncated asset (Rods BUG-242/243).`,
+    );
+  }
+
   // Remove uncompressed SQLite (only keep .sqlite.gz for release)
   unlinkSync(sqlitePath);
 

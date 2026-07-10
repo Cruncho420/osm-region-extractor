@@ -140,6 +140,17 @@ jobs:
             --output ../release-files/manifest.json
           cat ../release-files/manifest.json | head -50
 
+      - name: Verify every asset decompresses BEFORE publishing
+        working-directory: scripts
+        run: |
+          # HARD GATE: decompress-test every region's .sqlite.gz in the assembled
+          # payload before anything is published. A truncated asset passes the
+          # size+checksum recorded in the manifest (both computed over the truncated
+          # bytes) but fails gzip -t here — so a broken map file can never reach
+          # users again (root cause of the 2026-07-03 europe-spain corruption that
+          # hit ~53 users invisibly for a month — Rods BUG-242 / BUG-243).
+          npm run verify-release -- --dir ../release-files --manifest ../release-files/manifest.json
+
       - name: Get release info
         id: release-info
         run: |
@@ -195,6 +206,19 @@ jobs:
             gh release upload "$TAG" "${BATCH[@]}" --clobber
           done
           echo "All files uploaded successfully!"
+
+      - name: Verify published release downloads + decompresses (final gate)
+        working-directory: scripts
+        run: |
+          # Belt-and-suspenders over the pre-publish gate: stream every asset back
+          # DOWN from the freshly-published release and decompress it, catching any
+          # upload-layer truncation (e.g. hitting GitHub's HARD 1000-asset release
+          # cap, which silently truncated the 2026-07-03 upload). Runs BEFORE
+          # "Delete old releases" so the prior good releases are preserved if this
+          # one is bad. This is the "every region downloads correctly before it's
+          # called finished" gate.
+          npm run verify-release -- \
+            --manifest-url "https://github.com/${{ github.repository }}/releases/download/${{ steps.release-info.outputs.tag_name }}/manifest.json"
 
       - name: Delete old releases
         uses: dev-drprasad/delete-older-releases@v0.3.2
