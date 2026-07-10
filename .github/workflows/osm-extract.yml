@@ -88,13 +88,16 @@ jobs:
           name: ${{ matrix.region }}
           path: |
             scripts/output/${{ matrix.region }}.json.gz
-            scripts/output/${{ matrix.region }}-ways.json.gz
-            scripts/output/${{ matrix.region }}-surfaces.json.gz
             scripts/output/${{ matrix.region }}.sqlite.gz
-          # NOTE: -builtup.json.gz is deliberately NOT uploaded. The app never
-          # downloads it (built-up data ships INSIDE the .sqlite); publishing it
-          # pushed the release to 1171 assets, over GitHub's HARD 1000-asset cap,
-          # which truncated the 2026-07-03 upload mid-way. 4 files/region = 937.
+          # Only the core .json.gz (region enumeration for generate-manifest) and the
+          # .sqlite.gz (the ONLY file the app downloads) are uploaded. The -ways /
+          # -surfaces / -builtup .json.gz are DELIBERATELY excluded: all that data
+          # ships INSIDE the .sqlite, and the app never downloads them. Shipping them
+          # made the release job pull ~58GB of artifacts onto a ~14GB-free runner →
+          # disk OVERFLOW truncated large .sqlite.gz in transit (the 2026-07-03
+          # europe-spain + 19-region corruption — Rods BUG-242 / BUG-243). Uploading
+          # only these two cuts the release-job download to ~38GB so large files no
+          # longer truncate. build-sqlite still reads -ways/-surfaces LOCALLY here.
           retention-days: 1  # Clean up quickly to save storage
 
   # Job 3: Combine all artifacts, generate manifest, create release
@@ -107,6 +110,19 @@ jobs:
     if: always() && needs.extract.result != 'cancelled' && inputs.single_region == ''
     steps:
       - uses: actions/checkout@v4
+
+      - name: Free up disk space on the runner
+        run: |
+          echo "Disk before cleanup:"; df -h /
+          # The release job downloads ~38GB of .sqlite.gz onto the runner's ~14GB-free
+          # root disk. Reclaim ~30GB of preinstalled toolchains this job never uses so
+          # large artifacts do NOT truncate mid-download (root cause of Rods BUG-242 /
+          # BUG-243). Runs BEFORE setup-node so removing the tool cache is safe — Node
+          # is (re)installed by the next step.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache /opt/microsoft /usr/local/share/powershell /usr/share/swift 2>/dev/null || true
+          sudo docker image prune -af 2>/dev/null || true
+          sudo apt-get clean 2>/dev/null || true
+          echo "Disk after cleanup:"; df -h /
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
