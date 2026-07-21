@@ -11,11 +11,13 @@
  */
 
 import { execSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, statSync, createReadStream, createWriteStream } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, statSync, createReadStream, createWriteStream, renameSync } from 'fs';
 import { gzipSync } from 'zlib';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createInterface } from 'readline';
+// BUG-278: definitive over/under-bridge detection (grade-separated crossing = no shared node).
+import { computeUnderBridgeCrossings, type BridgeWayGeom, type HighwayWayGeom } from './underBridgeCrossings';
 
 // =============================================================================
 // TYPES
@@ -77,10 +79,17 @@ interface BundledRoadWay {
   surface?: string;
   /** OSM oneway: `'yes'` = forward along polyline, `'-1'` = reverse-only.
    *  Absent = bidirectional (or implicit oneway like motorway, handled by
-   *  walker via highway-class rules). */
+   *  walker via highway-class rules).
+   *  MERGE NOTE: deliberately kept NARROW (`'yes' | '-1'`) rather than the
+   *  identity branch's `string`. This value feeds the Free-Roam way-walker, so
+   *  widening what gets stored could change walker routing → pace-note output →
+   *  a PACE_NOTE_ALGORITHM_VERSION bump. Out of scope for a schema merge. */
   oneway?: 'yes' | '-1';
   /** Diagnostic street name. Used in walker logs and metro traces. */
   name?: string;
+  /** Route reference from OSM `ref` (e.g. "A4", "M1", "E67") — strongest
+   *  identity signal on numbered routes. Additive: nothing reads it yet. */
+  ref?: string;
   /** Restrictive access tag: `private`, `no`, `destination`, `delivery`,
    *  `customers`. Absent = `yes` or `permissive` (public). Walker rejects
    *  ways with restrictive access from drivable candidates. */
@@ -97,6 +106,10 @@ interface BundledRoadWay {
    *  the EXACT legal default when no numeric maxspeed exists (inferred-limits
    *  tier 2). Only country-coded values are kept (`"sign"`, survey notes → dropped). */
   maxspeedType?: string;
+  /** OSM way ID (positive integer) — a STABLE cross-download identity key, unlike
+   *  `road_ways.id`, which is a per-build AUTOINCREMENT rowid and means a
+   *  different road in every extract. Additive: nothing reads it yet. */
+  osmId?: number;
 }
 
 /** Built-up area reduced to its bounding box — all the app's occupancy-grid
@@ -243,10 +256,11 @@ async function extractRegion(regionId: string): Promise<void> {
       readFileSync(outputJson, 'utf-8')
     );
 
-    const bundledData = convertToBundledFormat(geojson, regionId);
+    const { data: bundledData, bridgeWays } = convertToBundledFormat(geojson, regionId);
 
     console.log(`      Traffic calming points: ${bundledData.trafficCalming.length}`);
     console.log(`      Roundabouts: ${bundledData.roundabouts.length}`);
+    console.log(`      Bridge ways (for under-bridge detection): ${bridgeWays.length}`);
 
     // Write the optimized JSON
     const optimizedJson = JSON.stringify(bundledData);
@@ -290,10 +304,33 @@ async function extractRegion(regionId: string): Promise<void> {
     console.log(`      Filtered way size: ${wayFilteredSize.toFixed(2)} MB\n`);
 
     // Step 7: Export ways to GeoJSON sequence (one feature per line — avoids string size limit)
+    // --add-unique-id=type_id includes the OSM way @id ("w12345") in feature.properties,
+    // letting downstream consumers reference ways stably across runs.
     console.log(`[7/11] Converting ways to GeoJSON sequence...`);
-    execSync(`osmium export "${wayFilteredPbf}" -f geojsonseq -o "${wayOutputJson}"`, {
+    execSync(`osmium export "${wayFilteredPbf}" -f geojsonseq --add-unique-id=type_id -o "${wayOutputJson}"`, {
       stdio: 'inherit',
     });
+
+    // BUG-278: under-bridge crossings. The highway geojsonseq now exists — stream the roads
+    // near bridges, compute where a driven road passes UNDER a grade-separated bridge, append
+    // those under_bridge POINTs to the core, and re-compress it (the core was written+compressed
+    // above, before the highway geometry existed).
+    const nearbyHighways = await collectHighwaysNearBridges(wayOutputJson, bridgeWays);
+    const underBridges = computeUnderBridgeCrossings(bridgeWays, nearbyHighways);
+    if (underBridges.length > 0) {
+      for (const ub of underBridges) {
+        bundledData.trafficCalming.push({ lat: ub.lat, lon: ub.lon, type: ub.type, wayId: ub.wayId });
+      }
+      const recompressed = gzipSync(Buffer.from(JSON.stringify(bundledData)), { level: 9 });
+      // Atomic replace: temp file + rename, so a crash mid-write can never leave a
+      // truncated-but-checksum-valid core (the manifest step checksums whatever is on disk).
+      const tmpGz = `${outputGz}.tmp`;
+      writeFileSync(tmpGz, recompressed);
+      renameSync(tmpGz, outputGz);
+      console.log(`      Under-bridge crossings: ${underBridges.length} (core re-compressed → ${bundledData.trafficCalming.length} TC points)`);
+    } else {
+      console.log(`      Under-bridge crossings: 0`);
+    }
 
     // Step 8: Convert to optimized way format (streaming read + streaming write)
     console.log(`[8/11] Converting ways to optimized format...`);
@@ -434,9 +471,13 @@ async function extractRegion(regionId: string): Promise<void> {
 function convertToBundledFormat(
   geojson: GeoJSONFeatureCollection,
   regionId: string
-): BundledOSMData {
+): { data: BundledOSMData; bridgeWays: BridgeWayGeom[] } {
   const trafficCalming: TrafficCalmingPoint[] = [];
   const roundabouts: RoundaboutInfo[] = [];
+  // BUG-278: full-geometry of every bridge=yes way (+ layer), kept for the under-bridge
+  // crossing computation. The trafficCalming entry only keeps the two endpoints; the crossing
+  // join needs the whole polyline to test where a road passes underneath.
+  const bridgeWays: BridgeWayGeom[] = [];
 
   for (const feature of geojson.features) {
     const props = feature.properties as Record<string, string>;
@@ -529,6 +570,16 @@ function convertToBundledFormat(
           // Store way ID for deduplication of multi-segment features
           wayId,
         });
+
+        // BUG-278: keep the full bridge polyline (+ layer) for under-bridge crossing detection.
+        if (props.bridge === 'yes') {
+          const layerRaw = typeof props.layer === 'string' ? parseInt(props.layer, 10) : undefined;
+          bridgeWays.push({
+            wayId,
+            coords: coords.map(([lon, lat]) => [lon, lat] as [number, number]),
+            layer: layerRaw !== undefined && !Number.isNaN(layerRaw) ? layerRaw : undefined,
+          });
+        }
       }
     }
 
@@ -550,10 +601,13 @@ function convertToBundledFormat(
   }
 
   return {
-    version: new Date().toISOString().split('T')[0],
-    region: regionId,
-    trafficCalming,
-    roundabouts,
+    data: {
+      version: new Date().toISOString().split('T')[0],
+      region: regionId,
+      trafficCalming,
+      roundabouts,
+    },
+    bridgeWays,
   };
 }
 
@@ -786,6 +840,87 @@ function convertToSurfaceFormat(
 // =============================================================================
 
 /**
+ * BUG-278: stream the highway GeoJSON-sequence and collect ONLY the motor-vehicle ways whose
+ * geometry passes near a bridge (any vertex in a grid cell the bridge bbox touches, ±1 cell).
+ * Keeps memory ≈ "roads near bridges", not the whole region, then feeds computeUnderBridgeCrossings.
+ * Reads full geometry + layer + tunnel/covered so the crossing join is definitive.
+ */
+async function collectHighwaysNearBridges(
+  inputPath: string,
+  bridges: BridgeWayGeom[],
+): Promise<HighwayWayGeom[]> {
+  const CELL = 0.01; // must match GRID_CELL_DEG in underBridgeCrossings.ts
+  const key = (cx: number, cy: number) => `${cx}:${cy}`;
+
+  // Grid cells within (bridge bbox + 1-cell ring). A road crossing a bridge necessarily has
+  // a vertex in one of these cells.
+  const bridgeCells = new Set<string>();
+  for (const b of bridges) {
+    if (b.coords.length < 2) continue;
+    let minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
+    for (const [lon, lat] of b.coords) {
+      if (lon < minLon) minLon = lon;
+      if (lat < minLat) minLat = lat;
+      if (lon > maxLon) maxLon = lon;
+      if (lat > maxLat) maxLat = lat;
+    }
+    const x0 = Math.floor(minLon / CELL) - 1, x1 = Math.floor(maxLon / CELL) + 1;
+    const y0 = Math.floor(minLat / CELL) - 1, y1 = Math.floor(maxLat / CELL) + 1;
+    for (let cx = x0; cx <= x1; cx++) for (let cy = y0; cy <= y1; cy++) bridgeCells.add(key(cx, cy));
+  }
+  if (bridgeCells.size === 0) return [];
+
+  const parseWayId = (id: unknown): number | undefined => {
+    if (typeof id !== 'string') return undefined;
+    if (id.startsWith('w')) return parseInt(id.substring(1), 10);
+    if (id.startsWith('way/')) return parseInt(id.split('/')[1], 10);
+    return undefined;
+  };
+
+  const highways: HighwayWayGeom[] = [];
+  const rl = createInterface({
+    input: createReadStream(inputPath, { encoding: 'utf-8' }),
+    crlfDelay: Infinity,
+  });
+
+  for await (const line of rl) {
+    const trimmed = line.trim().replace(/^\x1e/, '');
+    if (!trimmed) continue;
+    let feature: GeoJSONFeature & { id?: unknown };
+    try {
+      feature = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    const props = feature.properties as Record<string, string>;
+    const geometry = feature.geometry;
+    if (geometry.type !== 'LineString') continue;
+    const highway = props.highway;
+    if (!highway) continue;
+
+    const coords = geometry.coordinates as [number, number][];
+    if (coords.length < 2) continue;
+
+    let near = false;
+    for (const [lon, lat] of coords) {
+      if (bridgeCells.has(key(Math.floor(lon / CELL), Math.floor(lat / CELL)))) { near = true; break; }
+    }
+    if (!near) continue;
+
+    const layerRaw = typeof props.layer === 'string' ? parseInt(props.layer, 10) : undefined;
+    highways.push({
+      wayId: parseWayId(feature.id),
+      highway,
+      coords: coords.map(([lon, lat]) => [lon, lat] as [number, number]),
+      layer: layerRaw !== undefined && !Number.isNaN(layerRaw) ? layerRaw : undefined,
+      isTunnel: props.tunnel === 'yes' || props.covered === 'yes',
+    });
+  }
+
+  return highways;
+}
+
+/**
  * Stream-read a GeoJSON sequence file and stream-write optimized way JSON.
  * Never holds all ways in memory — reads one feature at a time and writes immediately.
  * Returns the count of processed ways.
@@ -880,6 +1015,20 @@ async function streamConvertWays(inputPath: string, outputPath: string, regionId
       way.maxspeedType = msType.trim();
     } else if (props.maxspeed && CC_CONTEXT.test(props.maxspeed.trim())) {
       way.maxspeedType = props.maxspeed.trim();
+    }
+    // Route reference (`ref`), e.g. "A4"/"E67". Additive identity signal — the
+    // strongest "same road" discriminator on numbered routes. Nothing consumes
+    // it yet; it exists so the app can stop inferring identity from geometry.
+    if (props.ref) way.ref = props.ref;
+
+    // OSM way ID. osmium-export with --add-unique-id=type_id emits the typed
+    // string "w12345" at feature.id (top-level, NOT inside properties). We
+    // strip the "w" prefix and store the numeric ID so downstream SQL can
+    // index it as an INTEGER.
+    const idStr = feature.id;
+    if (typeof idStr === 'string' && idStr.startsWith('w')) {
+      const num = parseInt(idStr.slice(1), 10);
+      if (Number.isFinite(num) && num > 0) way.osmId = num;
     }
     ws.write(JSON.stringify(way));
     count++;

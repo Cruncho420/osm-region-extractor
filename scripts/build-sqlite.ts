@@ -57,6 +57,11 @@ interface BundledRoadWay {
   highway: string;
   surface?: string;
   coords: number[];
+  /** Route reference (`ref`), e.g. "A4"/"E67" — additive identity signal. */
+  ref?: string;
+  /** OSM way ID — a STABLE cross-download identity key, unlike `road_ways.id`
+   *  (a per-build AUTOINCREMENT rowid that means a different road each extract). */
+  osmId?: number;
   /** Phase 2: routing-relevant tags consumed by Free Roam OSM walker.
    *  `oneway` values are only `'yes'` or `'-1'` (other OSM values are
    *  bidirectional). `name` is diagnostic-only. `access` lists only the
@@ -151,12 +156,14 @@ CREATE TABLE IF NOT EXISTS road_ways (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   highway TEXT NOT NULL,
   surface TEXT,
-  oneway TEXT,
   name TEXT,
+  ref TEXT,
+  oneway TEXT,
   access TEXT,
   junction TEXT,
   maxspeed INTEGER,
   maxspeed_type TEXT,
+  osm_id INTEGER,
   coords TEXT NOT NULL,
   min_lat REAL NOT NULL,
   max_lat REAL NOT NULL,
@@ -164,6 +171,7 @@ CREATE TABLE IF NOT EXISTS road_ways (
   max_lon REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ways_bbox ON road_ways(min_lat, max_lat, min_lon, max_lon);
+CREATE INDEX IF NOT EXISTS idx_ways_osm_id ON road_ways(osm_id);
 
 CREATE TABLE IF NOT EXISTS built_up_areas (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -351,7 +359,7 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
     'INSERT INTO road_surfaces (surface, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?)',
   );
   const insertWay = db.prepare(
-    'INSERT INTO road_ways (highway, surface, oneway, name, access, junction, maxspeed, maxspeed_type, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO road_ways (highway, surface, name, ref, oneway, access, junction, maxspeed, maxspeed_type, osm_id, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   );
   const insertBuiltUp = db.prepare(
     'INSERT INTO built_up_areas (kind, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?)',
@@ -414,12 +422,14 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
       insertWay.run(
         rw.highway,
         rw.surface ?? null,
-        rw.oneway ?? null,
         rw.name ?? null,
+        rw.ref ?? null,
+        rw.oneway ?? null,
         rw.access ?? null,
         rw.junction ?? null,
         normalizeMaxspeedKmh(rw.maxspeed),
         rw.maxspeedType ?? null,
+        rw.osmId ?? null,
         JSON.stringify(rw.coords),
         minLat,
         maxLat,
