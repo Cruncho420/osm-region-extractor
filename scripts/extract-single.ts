@@ -18,6 +18,7 @@ import { fileURLToPath } from 'url';
 import { createInterface } from 'readline';
 // BUG-278: definitive over/under-bridge detection (grade-separated crossing = no shared node).
 import { computeUnderBridgeCrossings, type BridgeWayGeom, type HighwayWayGeom } from './underBridgeCrossings';
+import { stitchRoundaboutRings, type RoundaboutPiece } from './roundaboutRings';
 
 // =============================================================================
 // TYPES
@@ -68,6 +69,18 @@ interface RoundaboutInfo {
   lon: number;
   radius?: number;
   type: 'roundabout' | 'mini_roundabout';
+  /** Stable ring identity — the smallest member way id of the stitched ring (BUG-368).
+   *  Absent on mini_roundabout nodes and on exports with no way ids. The bridge/tunnel
+   *  path has carried `wayId` for the same multi-segment reason since BUG-278. */
+  ringId?: number;
+}
+
+/** osmium `--add-unique-id=type_id` emits "w12345"; some exports use "way/12345". */
+function parseOsmWayId(id: unknown): number | undefined {
+  if (typeof id !== 'string') return undefined;
+  if (id.startsWith('way/')) return parseInt(id.split('/')[1], 10);
+  if (id.startsWith('w')) return parseInt(id.substring(1), 10);
+  return undefined;
 }
 
 interface BundledRoadWay {
@@ -474,6 +487,9 @@ function convertToBundledFormat(
 ): { data: BundledOSMData; bridgeWays: BridgeWayGeom[] } {
   const trafficCalming: TrafficCalmingPoint[] = [];
   const roundabouts: RoundaboutInfo[] = [];
+  // BUG-368: every `junction=roundabout` way, collected so the ring can be reassembled from
+  // its pieces after the loop. Emitting per way is what made one roundabout look like 5-8.
+  const roundaboutPieces: RoundaboutPiece[] = [];
   // BUG-278: full-geometry of every bridge=yes way (+ layer), kept for the under-bridge
   // crossing computation. The trafficCalming entry only keeps the two endpoints; the crossing
   // join needs the whole polyline to test where a road passes underneath.
@@ -528,16 +544,11 @@ function convertToBundledFormat(
     if (geometry.type === 'LineString') {
       const coords = geometry.coordinates as [number, number][];
 
-      // Roundabout ways
+      // Roundabout ways — COLLECTED, not emitted. An OSM ring is routinely split into
+      // several ways, so a way is an ARC and its centroid/max-radius describe the arc, not
+      // the ring. Stitched into rings after the feature loop (BUG-368 / ARCH-38).
       if (props.junction === 'roundabout') {
-        const center = calculateCentroid(coords);
-        const radius = calculateMaxRadius(coords, center);
-        roundabouts.push({
-          lat: center[1],
-          lon: center[0],
-          type: 'roundabout',
-          radius: Math.round(radius),
-        });
+        roundaboutPieces.push({ coords, wayId: parseOsmWayId(feature.id) });
       }
 
       // Bridge and tunnel ways - store BOTH endpoints for route traversal verification
@@ -587,18 +598,30 @@ function convertToBundledFormat(
     if (geometry.type === 'Polygon') {
       const coords = (geometry.coordinates as [number, number][][])[0];
 
+      // A closed way is already a whole ring, but it still goes through the stitcher so
+      // every roundabout row is produced by ONE code path and carries a ringId.
       if (props.junction === 'roundabout') {
-        const center = calculateCentroid(coords);
-        const radius = calculateMaxRadius(coords, center);
-        roundabouts.push({
-          lat: center[1],
-          lon: center[0],
-          type: 'roundabout',
-          radius: Math.round(radius),
-        });
+        roundaboutPieces.push({ coords, wayId: parseOsmWayId(feature.id) });
       }
     }
   }
+
+  // One row per PHYSICAL roundabout, with the true centre and true radius. Pieces that
+  // cannot be closed into a ring fall back to the old per-way rows — never dropped.
+  const { rings, stats } = stitchRoundaboutRings(roundaboutPieces);
+  for (const ring of rings) {
+    roundabouts.push({
+      lat: ring.lat,
+      lon: ring.lon,
+      type: ring.type,
+      radius: ring.radius,
+      ringId: ring.ringId,
+    });
+  }
+  console.log(
+    `      Roundabout ways: ${stats.pieces} -> ${stats.rings} rings ` +
+      `(${stats.stitched} stitched, ${stats.unstitchable} way(s) left un-stitchable)`,
+  );
 
   return {
     data: {
