@@ -148,7 +148,94 @@ interface BundledOSMData {
   region: string;
   trafficCalming: TrafficCalmingPoint[];
   roundabouts: RoundaboutInfo[];
+  /** FEAT-051 toll plazas. A SEPARATE array (and a separate SQLite table) rather than a
+   *  `type` inside trafficCalming, because builds before 1.8.10 map an unknown calming type
+   *  to `speed_bump` — a shared-array row would announce a phantom bump at every toll booth
+   *  in Europe on those builds. */
+  tollPoints: TollPoint[];
 }
+
+/** One toll plaza. Points only — a booth has no extent worth storing. */
+interface TollPoint {
+  lat: number;
+  lon: number;
+  tags?: Record<string, string>;
+}
+
+/** Lane-duplicate merge radius, metres.
+ *
+ *  OSM maps ONE `barrier=toll_booth` node PER LANE: Mont Blanc carries 4 nodes inside ~15 m.
+ *  Rendered raw that is four stacked pins on one barrier. 40 m is wide enough to swallow the
+ *  lane spread of a large plaza and far narrower than the ~100 m callout grouping downstream,
+ *  so it can never merge two genuinely distinct plazas that the callout layer would have
+ *  announced separately. */
+const TOLL_CLUSTER_RADIUS_M = 40;
+
+/**
+ * Collapse per-lane toll nodes into one point per plaza.
+ *
+ * TRANSITIVE flood-fill, not a leader-anchored scan. Each unclustered node opens a cluster and
+ * the cluster grows to absorb any node within TOLL_CLUSTER_RADIUS_M of ANY member already in it.
+ * The leader-anchored version measured 40 m from whichever node the GeoJSON scan happened to
+ * reach first — typically an EDGE lane — so it captured 40 m from one side rather than across
+ * the plaza, and a wide motorway plaza (10-20 lanes) split into two clusters and drew two pins.
+ * Chaining cannot run away here: the radius stays far below the ~100 m callout GROUPING_DISTANCE,
+ * and real plazas are bounded, so a chain terminates at the plaza edge.
+ *
+ * Emits the cluster's centroid and keeps the richest tag set in it (the named node, when one
+ * lane carries `name`/`operator` and the rest are bare — the common OSM shape).
+ *
+ * O(n²) worst case, deliberately: this runs OFFLINE in the extractor, once per region, over a
+ * few thousand nodes per country (FR is 1,827) — never on device, never on the GPS path.
+ */
+function clusterTollPoints(points: TollPoint[]): TollPoint[] {
+  const out: TollPoint[] = [];
+  const used = new Array<boolean>(points.length).fill(false);
+
+  for (let i = 0; i < points.length; i++) {
+    if (used[i]) continue;
+    used[i] = true;
+    const members = [points[i]];
+
+    // Flood-fill: re-scan while the cluster keeps growing, so a node reachable only via
+    // another member (a lane at the far side of a wide plaza) is still absorbed.
+    for (let m = 0; m < members.length; m++) {
+      for (let j = i + 1; j < points.length; j++) {
+        if (used[j]) continue;
+        if (haversineMetres(members[m].lat, members[m].lon, points[j].lat, points[j].lon) <= TOLL_CLUSTER_RADIUS_M) {
+          used[j] = true;
+          members.push(points[j]);
+        }
+      }
+    }
+
+    let sumLat = 0;
+    let sumLon = 0;
+    let best: TollPoint = members[0];
+    for (const m of members) {
+      sumLat += m.lat;
+      sumLon += m.lon;
+      if (Object.keys(m.tags ?? {}).length > Object.keys(best.tags ?? {}).length) best = m;
+    }
+    out.push({ lat: sumLat / members.length, lon: sumLon / members.length, tags: best.tags });
+  }
+
+  return out;
+}
+
+/** Great-circle distance in metres. Local copy — this script must not import app code. */
+function haversineMetres(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+
 
 // =============================================================================
 // CONSTANTS
@@ -230,6 +317,7 @@ async function extractRegion(regionId: string): Promise<void> {
     execSync(
       `osmium tags-filter "${localPbf}" ` +
         `n/traffic_calming ` +
+        `n/barrier=toll_booth ` +
         `n/highway=speed_camera ` +
         `n/enforcement=maxspeed ` +
         `w/bridge=yes ` +
@@ -478,6 +566,8 @@ function convertToBundledFormat(
   // crossing computation. The trafficCalming entry only keeps the two endpoints; the crossing
   // join needs the whole polyline to test where a road passes underneath.
   const bridgeWays: BridgeWayGeom[] = [];
+  // Raw per-lane toll nodes; clustered to one point per plaza after the scan (FEAT-051).
+  const rawTollPoints: TollPoint[] = [];
 
   for (const feature of geojson.features) {
     const props = feature.properties as Record<string, string>;
@@ -501,6 +591,11 @@ function convertToBundledFormat(
             });
           }
         }
+      }
+
+      // Toll plazas (FEAT-051) — collected raw here, clustered at 40 m below.
+      if (props.barrier === 'toll_booth') {
+        rawTollPoints.push({ lat, lon, tags: extractRelevantTags(props) });
       }
 
       // Speed cameras
@@ -600,12 +695,16 @@ function convertToBundledFormat(
     }
   }
 
+  // FEAT-051: collapse per-lane booth nodes into one point per plaza BEFORE emitting.
+  const tollPoints = clusterTollPoints(rawTollPoints);
+
   return {
     data: {
       version: new Date().toISOString().split('T')[0],
       region: regionId,
       trafficCalming,
       roundabouts,
+      tollPoints,
     },
     bridgeWays,
   };

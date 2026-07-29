@@ -48,6 +48,13 @@ interface BundledRoundabout {
   type: 'roundabout' | 'mini_roundabout';
 }
 
+/** FEAT-051 toll plaza — one point per plaza, already lane-clustered by extract-single.ts. */
+interface BundledTollPoint {
+  lat: number;
+  lon: number;
+  tags?: Record<string, string>;
+}
+
 interface BundledRoadSurface {
   surface: string;
   coords: number[];
@@ -182,6 +189,14 @@ CREATE TABLE IF NOT EXISTS built_up_areas (
   max_lon REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_builtup_bbox ON built_up_areas(min_lat, max_lat, min_lon, max_lon);
+
+CREATE TABLE IF NOT EXISTS toll_points (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lat REAL NOT NULL,
+  lon REAL NOT NULL,
+  tags TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_toll_lat_lon ON toll_points(lat, lon);
 
 CREATE TABLE IF NOT EXISTS metadata (
   key TEXT PRIMARY KEY,
@@ -361,6 +376,9 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
   const insertWay = db.prepare(
     'INSERT INTO road_ways (highway, surface, name, ref, oneway, access, junction, maxspeed, maxspeed_type, osm_id, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   );
+  const insertToll = db.prepare(
+    'INSERT INTO toll_points (lat, lon, tags) VALUES (?, ?, ?)',
+  );
   const insertBuiltUp = db.prepare(
     'INSERT INTO built_up_areas (kind, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?)',
   );
@@ -395,6 +413,24 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
     raCount++;
   });
   console.log(`  ✓ ${raCount} roundabouts`);
+
+  // Insert toll plazas (FEAT-051).
+  //
+  // A SEPARATE TABLE, not a `type` inside traffic_calming, and that is load-bearing: every
+  // region release is downloaded by every INSTALLED app build, and builds before 1.8.10 map an
+  // unrecognised calming type to `speed_bump`. A `type='toll_booth'` row in the shared table
+  // would announce a phantom "speed bump" at every toll booth in Europe on those builds. A
+  // table they never SELECT from is invisible to them.
+  //
+  // The array is ABSENT on any core file produced before tolls shipped — streamJsonArray simply
+  // yields nothing, so an old core still builds a valid (toll-less) database.
+  let tollCount = 0;
+  console.log('Streaming toll plaza data...');
+  await streamJsonArray<BundledTollPoint>(corePath, 'tollPoints', (tp) => {
+    insertToll.run(tp.lat, tp.lon, tp.tags ? JSON.stringify(tp.tags) : null);
+    tollCount++;
+  });
+  console.log(`  ✓ ${tollCount} toll plazas`);
 
   // Insert surface data
   let surfaceCount = 0;

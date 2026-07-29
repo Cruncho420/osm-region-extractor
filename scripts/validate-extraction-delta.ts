@@ -12,7 +12,8 @@
  * WHAT IT CHECKS (per docs/OSM_DATA_PIPELINE.md gate B in the BUG-278 plan):
  *   1. Manifest completeness — every prior region still present; all size/checksum fields set.
  *   2. Per-region traffic-calming type deltas — existing type counts within tolerance; the only
- *      intended new delta is `under_bridge`. A type collapsing toward 0 or ballooning = FAIL.
+ *      intended new delta is `under_bridge` (and, on the first toll-carrying extract, the
+ *      new `tollPoints` array — FEAT-051). A type collapsing toward 0 or ballooning = FAIL.
  *   3. Roundabout count stable; surfaces & ways file sizes essentially unchanged.
  *   4. Asset integrity — every core gzip decompresses AND parses (not just checksum-valid).
  *
@@ -43,6 +44,8 @@ const KNOWN_TYPES = [
 interface CoreData {
   trafficCalming: Array<{ type: string }>;
   roundabouts: unknown[];
+  /** FEAT-051 — absent on any core produced before tolls shipped, hence optional. */
+  tollPoints?: unknown[];
 }
 
 function arg(name: string): string | undefined {
@@ -140,6 +143,16 @@ async function main() {
       if (rel > COUNT_TOLERANCE_FRAC) {
         fail(`region '${id}' type '${t}' count moved ${o} → ${n} (${(rel * 100).toFixed(0)}% > ${COUNT_TOLERANCE_FRAC * 100}%) — investigate before publishing`);
       }
+    }
+
+    // Toll plazas stable (FEAT-051). Skipped entirely on the FIRST toll-carrying extract,
+    // where the old core has no `tollPoints` at all — 0 -> N there is the intended delta,
+    // exactly like `under_bridge` was. Once both sides have the array it is held to the
+    // same tolerance as everything else, so a plaza set collapsing toward 0 fails.
+    const oT = oldCore.tollPoints?.length;
+    const nT = newCore.tollPoints?.length ?? 0;
+    if (typeof oT === 'number' && oT > 0 && Math.abs(nT - oT) / oT > COUNT_TOLERANCE_FRAC) {
+      fail(`region '${id}' toll plaza count moved ${oT} → ${nT}`);
     }
 
     // Roundabouts stable.
