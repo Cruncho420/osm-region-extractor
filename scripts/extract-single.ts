@@ -162,17 +162,28 @@ interface TollPoint {
   tags?: Record<string, string>;
 }
 
-/** Lane-duplicate merge radius, metres.
+/** Toll-plaza merge radius, metres — DELIBERATELY EQUAL to the callout's GROUPING_DISTANCE
+ *  (config/paceNoteConfig/trafficCalming.ts: 100).
  *
- *  OSM maps ONE `barrier=toll_booth` node PER LANE: Mont Blanc carries 4 nodes inside ~15 m.
- *  Rendered raw that is four stacked pins on one barrier. 40 m is wide enough to swallow the
- *  lane spread of a large plaza and far narrower than the ~100 m callout grouping downstream,
- *  so it can never merge two genuinely distinct plazas that the callout layer would have
- *  announced separately. */
-const TOLL_CLUSTER_RADIUS_M = 40;
+ *  Two problems, one radius:
+ *
+ *  1. PER-LANE NODES. OSM maps ONE `barrier=toll_booth` node PER LANE — Mont Blanc carries 4
+ *     inside ~15 m, and France's 1,827 booths are roughly 400 plazas. Unmerged that is four
+ *     stacked pins on one barrier.
+ *
+ *  2. SEE-VS-HEAR DRIFT, which is why this is 100 and not 40. The callout layer groups toll
+ *     points within 100 m into ONE spoken "toll booth". If extraction merged at a SMALLER
+ *     radius, two plazas 70 m apart would be announced once but drawn as two pins and counted
+ *     as "2 Tolls" on the preview card, the route-list chip and CarPlay — the app contradicting
+ *     itself about the same piece of road. Matching the radii makes one plaza-group produce
+ *     exactly one point, one pin, one count and one callout.
+ *
+ *  Merging two plazas the callout would have announced separately is therefore impossible by
+ *  construction: the thresholds are the same number. */
+const TOLL_CLUSTER_RADIUS_M = 100;
 
 /**
- * Collapse per-lane toll nodes into one point per plaza.
+ * Collapse a plaza-group into ONE point — see TOLL_CLUSTER_RADIUS_M.
  *
  * TRANSITIVE flood-fill, not a leader-anchored scan. Each unclustered node opens a cluster and
  * the cluster grows to absorb any node within TOLL_CLUSTER_RADIUS_M of ANY member already in it.
