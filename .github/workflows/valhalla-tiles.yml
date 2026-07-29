@@ -144,14 +144,16 @@ jobs:
             echo "::error::Region $REGION not found in scripts/regions.json"
             exit 1
           fi
+          # Curated pair if one exists, otherwise EMPTY — the sanity step derives
+          # it from the built tiles (scripts/derive-sanity-route.mjs). This used
+          # to `exit 1` on a missing entry, which meant 230 of 234 regions could
+          # never be built at all. The gate itself is unchanged: a pack still
+          # never ships unverified, the endpoints are just no longer required to
+          # be hand-written.
           COORDS=$(jq -rn --argjson m "$SANITY_ROUTES" --arg id "$REGION" '$m[$id] // empty')
-          if [ -z "$COORDS" ]; then
-            echo "::error::No sanity-route coordinates for $REGION — add a pair to SANITY_ROUTES in valhalla-tiles.yml first (a pack must never ship unverified)"
-            exit 1
-          fi
           echo "geo_path=$GEO_PATH" >> "$GITHUB_OUTPUT"
           echo "coords=$COORDS" >> "$GITHUB_OUTPUT"
-          echo "Region: $REGION  PBF: $GEO_PATH  Sanity route: $COORDS"
+          echo "Region: $REGION  PBF: $GEO_PATH  Sanity route: ${COORDS:-<derive from tiles>}"
 
       - name: Download PBF from Geofabrik
         id: pbf
@@ -325,23 +327,55 @@ jobs:
           jq '.mjolnir.tile_dir = "/data/verify_tiles"' work/valhalla.json > work/valhalla-verify.json
 
           COORDS='${{ steps.meta.outputs.coords }}'
-          A="${COORDS%|*}"; B="${COORDS#*|}"
-          LAT1="${A%,*}"; LON1="${A#*,}"; LAT2="${B%,*}"; LON2="${B#*,}"
-          REQ="{\"locations\":[{\"lat\":$LAT1,\"lon\":$LON1},{\"lat\":$LAT2,\"lon\":$LON2}],\"costing\":\"auto\"}"
-          echo "Route request: $REQ"
+          PAIRS=""
+          if [ -n "$COORDS" ]; then
+            echo "Using curated sanity pair for $REGION"
+            PAIRS="$COORDS"
+          else
+            # Derive from the tiles we are about to ship. Runs against the
+            # RE-EXTRACTED tar, not the build dir, so the endpoints are picked
+            # from the exact artifact under test.
+            echo "Deriving sanity endpoints from the built tiles..."
+            DERIVED=$(node scripts/derive-sanity-route.mjs \
+              --region "$REGION" \
+              --image "$VALHALLA_IMAGE" \
+              --mount "$PWD/work:/data" \
+              --config /data/valhalla-verify.json | tail -n 1)
+            echo "Derived: $DERIVED"
+            LONG=$(echo "$DERIVED" | jq -r '.long')
+            URBAN=$(echo "$DERIVED" | jq -r '.urban // empty')
+            [ -n "$LONG" ] && PAIRS="$LONG"
+            # The long-haul pair only proves the motorway hierarchy connects.
+            # Rods drives secondary roads, so the short intra-urban pair is
+            # verified too when one could be derived.
+            [ -n "$URBAN" ] && PAIRS="$PAIRS $URBAN"
+          fi
 
-          set +e
-          OUT=$(docker run --rm -v "$PWD/work:/data" "$VALHALLA_IMAGE" \
-            valhalla_service /data/valhalla-verify.json route "$REQ" 2>&1)
-          RC=$?
-          set -e
-          echo "$OUT" | tail -n 20
-          if [ "$RC" -ne 0 ] || ! echo "$OUT" | grep -q "Found route"; then
-            echo "::error::[$REGION] sanity route FAILED (exit $RC) — pack rejected"
+          if [ -z "$PAIRS" ]; then
+            echo "::error::[$REGION] no sanity endpoints (curated or derived) — pack rejected"
             exit 1
           fi
-          echo "Sanity route OK: Found route"
-          echo "result=Found route" >> "$GITHUB_OUTPUT"
+
+          PASSED=0
+          for PAIR in $PAIRS; do
+            A="${PAIR%|*}"; B="${PAIR#*|}"
+            LAT1="${A%,*}"; LON1="${A#*,}"; LAT2="${B%,*}"; LON2="${B#*,}"
+            REQ="{\"locations\":[{\"lat\":$LAT1,\"lon\":$LON1},{\"lat\":$LAT2,\"lon\":$LON2}],\"costing\":\"auto\"}"
+            echo "Route request: $REQ"
+            set +e
+            OUT=$(docker run --rm -v "$PWD/work:/data" "$VALHALLA_IMAGE" \
+              valhalla_service /data/valhalla-verify.json route "$REQ" 2>&1)
+            RC=$?
+            set -e
+            echo "$OUT" | tail -n 20
+            if [ "$RC" -ne 0 ] || ! echo "$OUT" | grep -q "Found route"; then
+              echo "::error::[$REGION] sanity route FAILED for $PAIR (exit $RC) — pack rejected"
+              exit 1
+            fi
+            PASSED=$((PASSED + 1))
+          done
+          echo "Sanity route OK: Found route ($PASSED pair(s))"
+          echo "result=Found route (${PASSED}p)" >> "$GITHUB_OUTPUT"
           sudo rm -rf work/verify_tiles
 
       - name: Write region report + job summary
