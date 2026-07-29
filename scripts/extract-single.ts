@@ -217,7 +217,32 @@ function clusterTollPoints(points: TollPoint[]): TollPoint[] {
       sumLon += m.lon;
       if (Object.keys(m.tags ?? {}).length > Object.keys(best.tags ?? {}).length) best = m;
     }
-    out.push({ lat: sumLat / members.length, lon: sumLon / members.length, tags: best.tags });
+    const meanLat = sumLat / members.length;
+    const meanLon = sumLon / members.length;
+
+    // EMIT THE MEDOID, NOT THE MEAN — the real member node nearest the centre.
+    //
+    // The app accepts a POINT feature only within POINT_FEATURE_TOLERANCE = 1 m of the routed
+    // polyline ("the route must pass THROUGH the feature", osmLocalQuery.ts:53-56). A plaza's
+    // booth nodes sit side by side ACROSS the carriageway, so their arithmetic mean is a
+    // synthetic point that need not lie on any lane — on a wide plaza it can fall metres to the
+    // side of the route line and be silently dropped. That would have failed on exactly the
+    // multi-lane plazas this clustering exists for, and it would have been WORSE than no
+    // clustering: unclustered, each lane node is tested separately and the one the route
+    // actually crosses passes.
+    //
+    // A medoid is an actual OSM booth node, so it sits on a real lane by construction, while
+    // still collapsing the plaza to ONE point.
+    let medoid: TollPoint = members[0];
+    let bestD = Infinity;
+    for (const m of members) {
+      const d = haversineMetres(meanLat, meanLon, m.lat, m.lon);
+      if (d < bestD) {
+        bestD = d;
+        medoid = m;
+      }
+    }
+    out.push({ lat: medoid.lat, lon: medoid.lon, tags: best.tags });
   }
 
   return out;
