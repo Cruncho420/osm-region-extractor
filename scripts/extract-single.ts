@@ -629,7 +629,7 @@ function convertToBundledFormat(
         }
       }
 
-      // Toll plazas (FEAT-051) — collected raw here, clustered at 40 m below.
+      // Toll plazas (FEAT-051) — collected raw here, clustered at TOLL_CLUSTER_RADIUS_M below.
       if (props.barrier === 'toll_booth') {
         rawTollPoints.push({ lat, lon, tags: extractRelevantTags(props) });
       }
