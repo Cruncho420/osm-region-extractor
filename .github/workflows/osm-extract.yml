@@ -148,6 +148,57 @@ jobs:
           echo "Total JSON files: $(ls release-files/*.json.gz 2>/dev/null | wc -l)"
           echo "Total SQLite files: $(ls release-files/*.sqlite.gz 2>/dev/null | wc -l)"
 
+      - name: HARD GATE — every expected region must be present BEFORE publishing
+        run: |
+          # THE 2026-07-29 PARTIAL-RELEASE INCIDENT.
+          #
+          # asia-japan (heap OOM in the ways phase) and europe-germany-brandenburg
+          # (corrupt PBF download) failed out of 236 jobs. `fail-fast: false` let the
+          # other 234 finish — correct — but this job's `if: always()` then published a
+          # release with 465 assets instead of 469, and GitHub marked it `latest`.
+          # Every user needing Japan or Brandenburg got a 404 from
+          # releases/latest/download/, which the app turns into an INFINITE
+          # RE-DOWNLOAD LOOP (see docs/OSM_DATA_PIPELINE.md in the Rods repo).
+          #
+          # The existing verify-release gate below only proves the assets that ARE here
+          # decompress. Integrity was guarded; COMPLETENESS was not. This gate closes
+          # that: a release is all-or-nothing.
+          #
+          # Deliberately checks the assembled FILES, not job results — it also catches
+          # an artifact that silently failed to upload or was lost in the flatten step,
+          # which a `needs.extract.result` check would sail straight past.
+          set -euo pipefail
+          jq -r '.regions[].id' scripts/regions.json | sort > /tmp/expected.txt
+          ls release-files/*.sqlite.gz 2>/dev/null | xargs -n1 basename 2>/dev/null \
+            | sed 's/\.sqlite\.gz$//' | sort > /tmp/actual.txt || true
+
+          EXPECTED_N=$(wc -l < /tmp/expected.txt)
+          ACTUAL_N=$(wc -l < /tmp/actual.txt)
+          echo "Expected regions: $EXPECTED_N"
+          echo "Assembled  .sqlite.gz: $ACTUAL_N"
+
+          MISSING=$(comm -23 /tmp/expected.txt /tmp/actual.txt || true)
+          if [ -n "$MISSING" ]; then
+            echo "::error::REFUSING TO PUBLISH — $(echo "$MISSING" | wc -l) region(s) missing from the release payload:"
+            echo "$MISSING" | sed 's/^/::error::  missing: /'
+            echo ""
+            echo "A partial release becomes 'latest' and 404s those regions for every user."
+            echo "Fix the failed region job(s), re-run, and only then publish."
+            exit 1
+          fi
+
+          # Same check for the .json.gz side — the app reads both per region.
+          ls release-files/*.json.gz 2>/dev/null | xargs -n1 basename 2>/dev/null \
+            | sed 's/\.json\.gz$//' | sort > /tmp/actual-json.txt || true
+          MISSING_JSON=$(comm -23 /tmp/expected.txt /tmp/actual-json.txt || true)
+          if [ -n "$MISSING_JSON" ]; then
+            echo "::error::REFUSING TO PUBLISH — region(s) missing their .json.gz:"
+            echo "$MISSING_JSON" | sed 's/^/::error::  missing json: /'
+            exit 1
+          fi
+
+          echo "✓ Completeness gate passed — all $EXPECTED_N regions present in both formats."
+
       - name: Generate manifest
         working-directory: scripts
         run: |
