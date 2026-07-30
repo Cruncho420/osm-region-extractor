@@ -76,7 +76,21 @@ jobs:
         working-directory: scripts
         run: npm run extract-single -- --region ${{ matrix.region }}
         env:
-          NODE_OPTIONS: '--max-old-space-size=7168'
+          # 7168 was not enough for asia-japan: collectHighwaysNearBridges (BUG-278)
+          # accumulates every highway near a bridge for the whole region, so peak memory
+          # scales with region size and the largest region hits the ceiling first. The
+          # redundant per-coordinate array copy that doubled this is removed in
+          # extract-single.ts; this raises headroom for the accumulation that remains.
+          # Runners have 16 GB, so 12 GB leaves room for the process's non-heap memory —
+          # going much higher risks the OS OOM-killer (SIGKILL, no diagnostic) instead of
+          # a clean V8 heap error.
+          #
+          # STRUCTURAL FOLLOW-UP: this is headroom, not a cure. The accumulator is still
+          # unbounded, so a future OSM growth spurt reopens it. The real fix is to bound
+          # it — process bridges in spatial batches so memory is independent of region
+          # size. Tracked separately; not done here because it is a change to BUG-278's
+          # design, not to tolls.
+          NODE_OPTIONS: '--max-old-space-size=12288'
 
       - name: Build SQLite for ${{ matrix.region }}
         working-directory: scripts

@@ -1046,7 +1046,20 @@ async function collectHighwaysNearBridges(
     highways.push({
       wayId: parseWayId(feature.id),
       highway,
-      coords: coords.map(([lon, lat]) => [lon, lat] as [number, number]),
+      // Retain the PARSED array directly — do NOT `.map()` a copy of it.
+      //
+      // `coords` already IS `[number, number][]` off JSON.parse, so the copy was a pure
+      // no-op that allocated a second 2-element array per coordinate. Each of those costs
+      // ~80 bytes of V8 object overhead to hold 16 bytes of data, and this accumulator
+      // retains every highway near a bridge for the whole region — so on asia-japan the
+      // duplication is tens of millions of arrays and it OOM'd the 7 GB heap at
+      // `[7/11] Converting ways to GeoJSON sequence` (2026-07-29 + 2026-07-30 runs, both
+      // reproduced on pre-toll main, so this predates and is unrelated to FEAT-051).
+      //
+      // Keeping the reference does not retain the parent feature: `coords` is its own
+      // array object, so the enclosing GeoJSON object is still collectable. Nothing
+      // downstream mutates these — computeUnderBridgeCrossings only reads them.
+      coords,
       layer: layerRaw !== undefined && !Number.isNaN(layerRaw) ? layerRaw : undefined,
       isTunnel: props.tunnel === 'yes' || props.covered === 'yes',
     });
