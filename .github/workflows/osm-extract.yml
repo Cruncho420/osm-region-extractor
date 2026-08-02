@@ -253,8 +253,9 @@ jobs:
           git tag -d "$TAG" 2>/dev/null || true
           git push origin ":refs/tags/$TAG" 2>/dev/null || true
 
-          # Create the release
+          # Create the release as a DRAFT — see the atomic-publish note below.
           gh release create "$TAG" \
+            --draft \
             --title "$TITLE" \
             --notes "Monthly OSM data extraction.
 
@@ -288,6 +289,52 @@ jobs:
           done
           echo "All files uploaded successfully!"
 
+          # ATOMIC PUBLISH — the 2026-08-01 incident.
+          #
+          # `gh release create` without --draft makes the release `latest` the INSTANT it
+          # is created, and only then does the loop above upload ~470 files (~100 GB) in
+          # batches of 20. For the whole upload window,
+          # releases/latest/download/<region>.sqlite.gz 404s for every region not yet
+          # uploaded — which the app turns into an infinite re-download loop.
+          #
+          # On 2026-08-01 the release JOB was cancelled mid-upload (all 234 extracts had
+          # succeeded). That left osm-2026-08-01 permanently at 69/234 regions while still
+          # tagged `latest` — ~24 h of 404s across 165 regions, including all of France,
+          # Germany, GB and every US state. Recovery was a manual rollback to the previous
+          # complete release.
+          #
+          # The completeness gate added after the 2026-07-29 incident could not catch this:
+          # it verifies the assembled release-files/ directory BEFORE publishing, and the
+          # payload here was fine. Publishing itself was the non-atomic step. Two distinct
+          # failure modes; the payload gate does not imply a safe publish.
+          #
+          # A draft is not public, is never `latest`, and is not resolved by
+          # releases/latest/download/. So a cancelled or failed upload now leaves a
+          # harmless draft instead of a poisoned `latest`. We only flip to published after
+          # verifying what ACTUALLY landed on the release.
+          cd ..
+          echo "Verifying uploaded assets against the expected region list..."
+          jq -r '.regions[].id' scripts/regions.json | sort > /tmp/expected-regions.txt
+          gh release view "$TAG" --json assets -q '.assets[].name' \
+            | grep '\.sqlite\.gz$' | sed 's/\.sqlite\.gz$//' | sort > /tmp/uploaded-regions.txt
+
+          EXPECTED_N=$(wc -l < /tmp/expected-regions.txt)
+          UPLOADED_N=$(wc -l < /tmp/uploaded-regions.txt)
+          echo "Expected: $EXPECTED_N   Uploaded: $UPLOADED_N"
+
+          MISSING=$(comm -23 /tmp/expected-regions.txt /tmp/uploaded-regions.txt || true)
+          if [ -n "$MISSING" ]; then
+            echo "::error::REFUSING TO PUBLISH — $(echo "$MISSING" | wc -l) region(s) did not upload:"
+            echo "$MISSING" | sed 's/^/::error::  missing: /'
+            echo "The release is left as a DRAFT. It is invisible to users and is NOT 'latest'."
+            echo "Re-run the upload, or delete the draft — do not publish it by hand."
+            exit 1
+          fi
+
+          # Everything is on the release. NOW make it visible and current, in one step.
+          gh release edit "$TAG" --draft=false --latest
+          echo "✓ Published $TAG as latest — $UPLOADED_N/$EXPECTED_N regions verified on the release itself."
+
       - name: Verify published release downloads + decompresses (final gate)
         working-directory: scripts
         run: |
@@ -300,6 +347,34 @@ jobs:
           # called finished" gate.
           npm run verify-release -- \
             --manifest-url "https://github.com/${{ github.repository }}/releases/download/${{ steps.release-info.outputs.tag_name }}/manifest.json"
+
+      - name: Un-publish the release if any gate failed
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # The publish flip lives in "Create GitHub Release" because the final gate above
+          # streams assets from the PUBLIC releases/download/ URL, which 404s for a draft —
+          # so the release must be live for that check to mean anything. That leaves a
+          # short window where a release is `latest` but not yet decompress-verified.
+          #
+          # This step closes it: on ANY failure in this job, demote the release back to a
+          # draft. A draft is not public and is never `latest`, so
+          # releases/latest/download/ falls back to the previous COMPLETE release exactly
+          # as the 2026-08-01 manual rollback did — automatically, in seconds, instead of
+          # depending on somebody noticing.
+          #
+          # Safe when the failure happened before the release existed: `gh release edit`
+          # on a missing tag just errors, and `|| true` swallows it. Runs before
+          # "Delete old releases", so the previous good release is still there to fall
+          # back to.
+          TAG="${{ steps.release-info.outputs.tag_name }}"
+          echo "A gate failed — demoting $TAG to draft so it cannot serve users."
+          gh release edit "$TAG" --draft=true 2>&1 || true
+          # `isLatest` is NOT a valid --json field for `gh release view` (it lists the
+          # valid ones and exits non-zero). isDraft is what matters here anyway: a draft
+          # can never be `latest`.
+          gh release view "$TAG" --json isDraft,isPrerelease -q '"draft=\(.isDraft) prerelease=\(.isPrerelease)"' 2>&1 || true
 
       - name: Delete old releases
         uses: dev-drprasad/delete-older-releases@v0.3.2
