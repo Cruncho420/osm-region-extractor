@@ -196,11 +196,27 @@ jobs:
           done
           echo "All files uploaded successfully!"
 
+      # RETENTION IS SCOPED TO osm-* TAGS ON PURPOSE.
+      #
+      # Without delete_tag_pattern this step counts EVERY release in the repo
+      # toward keep_latest, so publishing a monthly OSM extract silently evicted
+      # whatever else happened to be older. That is not hypothetical: on
+      # 2026-08-03 publishing osm-2026-08-02 deleted the `valhalla-smoke-4`
+      # prerelease, destroying the only two Valhalla routing packs that existed
+      # anywhere (europe-lithuania, europe-estonia) and breaking on-device pack
+      # downloads with a 404 that looked, from the app side, like a UI bug.
+      #
+      # The same mechanism would evict real `valhalla-<date>` releases once they
+      # ship, on every monthly run. OSM retention must only ever age out OSM
+      # releases; the Valhalla workflow already prunes its own tags (see
+      # valhalla-tiles.yml "Delete older smoke prereleases").
       - name: Delete old releases
         uses: dev-drprasad/delete-older-releases@v0.3.2
         with:
           keep_latest: 3
           delete_tags: true
+          # Substring match — only tags containing "osm-" are eligible.
+          delete_tag_pattern: osm-
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
