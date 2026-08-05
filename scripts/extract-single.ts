@@ -17,7 +17,12 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createInterface } from 'readline';
 // BUG-278: definitive over/under-bridge detection (grade-separated crossing = no shared node).
-import { computeUnderBridgeCrossings, type BridgeWayGeom, type HighwayWayGeom } from './underBridgeCrossings';
+import {
+  computeUnderBridgeCrossings,
+  type BridgeWayGeom,
+  type HighwayWayGeom,
+  type UnderBridgeStats,
+} from './underBridgeCrossings';
 
 // =============================================================================
 // TYPES
@@ -440,10 +445,38 @@ async function extractRegion(regionId: string): Promise<void> {
     // those under_bridge POINTs to the core, and re-compress it (the core was written+compressed
     // above, before the highway geometry existed).
     const nearbyHighways = await collectHighwaysNearBridges(wayOutputJson, bridgeWays);
-    const underBridges = computeUnderBridgeCrossings(bridgeWays, nearbyHighways);
+    // BUG-422: the extractor is the ONLY place that knows the (deck, road) pair at decision
+    // time — the shipped row records just the deck — so a suppression is invisible downstream
+    // forever unless it is counted right here. Printed unconditionally, including the zero
+    // case: a silent zero is exactly how a whole feature dies unnoticed.
+    const ubStats: UnderBridgeStats = {
+      crossings: 0, emitted: 0, suppressedBridgeBelow: 0,
+      abstainedEqualLevel: 0, rejectedDeckClass: 0, roadBelowIsDeck: 0,
+    };
+    const underBridges = computeUnderBridgeCrossings(bridgeWays, nearbyHighways, ubStats);
+    console.log(
+      `      Under-bridge grade test: ${ubStats.crossings} crossings → ${ubStats.emitted} emitted · ` +
+      `${ubStats.suppressedBridgeBelow} suppressed (deck was BELOW the road) · ` +
+      `${ubStats.abstainedEqualLevel} abstained (equal layer, OSM contradiction) · ` +
+      `${ubStats.rejectedDeckClass} decks rejected by class (footbridge / not built) · ` +
+      `${ubStats.roadBelowIsDeck} where the road below was itself a deck`
+    );
     if (underBridges.length > 0) {
       for (const ub of underBridges) {
-        bundledData.trafficCalming.push({ lat: ub.lat, lon: ub.lon, type: ub.type, wayId: ub.wayId });
+        bundledData.trafficCalming.push({
+          lat: ub.lat,
+          lon: ub.lon,
+          type: ub.type,
+          wayId: ub.wayId,
+          // BUG-422 / ARCH-41: the id of the road that passes UNDERNEATH, so the app can ask
+          // "which of these two ways am I on?" instead of inferring it from heading. Rides the
+          // EXISTING `tags` column — no schema change in either repo, and under_bridge rows
+          // carry no tags today. `rods:` namespaced because this is a derived join key, not an
+          // OSM tag; the colon can never collide with a real key.
+          ...(ub.underWayId !== undefined
+            ? { tags: { 'rods:under_way_id': String(ub.underWayId) } }
+            : {}),
+        });
       }
       const recompressed = gzipSync(Buffer.from(JSON.stringify(bundledData)), { level: 9 });
       // Atomic replace: temp file + rename, so a crash mid-write can never leave a
@@ -709,6 +742,12 @@ function convertToBundledFormat(
             wayId,
             coords: coords.map(([lon, lat]) => [lon, lat] as [number, number]),
             layer: layerRaw !== undefined && !Number.isNaN(layerRaw) ? layerRaw : undefined,
+            // BUG-422: the DECK's own class. `bridge=yes` is taken unfiltered above, so this
+            // batch also holds footbridges, boardwalks, rail viaducts, sign gantries and
+            // flyovers still under construction. isAnnounceableDeck decides which of those a
+            // driver is told about; without these two tags it cannot.
+            highway: typeof props.highway === 'string' ? props.highway : undefined,
+            railway: typeof props.railway === 'string' ? props.railway : undefined,
           });
         }
       }
@@ -1062,6 +1101,10 @@ async function collectHighwaysNearBridges(
       coords,
       layer: layerRaw !== undefined && !Number.isNaN(layerRaw) ? layerRaw : undefined,
       isTunnel: props.tunnel === 'yes' || props.covered === 'yes',
+      // BUG-422: is this road ITSELF a deck? Deliberately looser than the `=== 'yes'` test
+      // that admits a way to bridgeWays above, because this side only ever ABSTAINS: a
+      // `bridge=viaduct` carrying no explicit layer must not be mistaken for the road below.
+      isBridge: typeof props.bridge === 'string' && props.bridge !== 'no',
     });
   }
 

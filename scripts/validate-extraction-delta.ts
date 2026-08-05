@@ -41,6 +41,24 @@ const KNOWN_TYPES = [
   'bridge', 'tunnel', 'chicane', 'narrowing', 'island',
 ];
 
+// `under_bridge` is held to its OWN, DIRECTIONAL bounds rather than added to KNOWN_TYPES above.
+// It is the only type whose emission rule is a chain of vetoes, so its two failure directions
+// are not symmetric and do not deserve one tolerance:
+//   - a DROP means the vetoes over-suppressed and drivers silently stop being warned. Invisible
+//     in production — no telemetry can report a callout that never happened.
+//   - a RISE means a veto stopped working, which is the BUG-278/BUG-400 symptom coming back.
+// Ordinary month-to-month OSM churn on this type is a few percent.
+const UNDER_BRIDGE_MAX_DROP_FRAC = 0.05;
+
+// The ONE escape hatch, and it is deliberately an explicit operator action rather than a
+// number someone widens. BUG-422 tightened the rule (deck class + strict layer ordering) and
+// that is a measured one-time ~30% drop on europe-lithuania — it would trip the bound above on
+// the release that lands it, and only on that release. Set UNDER_BRIDGE_RULE_CHANGE=1 for that
+// run; the drop is then reported LOUDLY as a warning instead of failing, and every other gate
+// still applies. Never set it "to get the release out" — a drop nobody predicted is the exact
+// thing this bound exists to catch.
+const ACKNOWLEDGED_RULE_CHANGE = process.env.UNDER_BRIDGE_RULE_CHANGE === '1';
+
 interface CoreData {
   trafficCalming: Array<{ type: string }>;
   roundabouts: unknown[];
@@ -115,6 +133,7 @@ async function main() {
 
   // 2-4. Per-region content deltas + integrity (sample: all regions present in both).
   let totalNewUnderBridge = 0;
+  let totalOldUnderBridge = 0;
   for (const id of Object.keys(newRegions)) {
     if (!oldRegions[id]) { warn(`region '${id}' is NEW (not in old manifest) — skipping delta`); continue; }
 
@@ -133,6 +152,7 @@ async function main() {
     const oldC = typeCounts(oldCore);
     const newC = typeCounts(newCore);
     totalNewUnderBridge += newC['under_bridge'] ?? 0;
+    totalOldUnderBridge += oldC['under_bridge'] ?? 0;
 
     // Existing traffic-calming types must stay within tolerance.
     for (const t of KNOWN_TYPES) {
@@ -142,6 +162,29 @@ async function main() {
       const rel = o === 0 ? (n > 5 ? 1 : 0) : Math.abs(n - o) / o;
       if (rel > COUNT_TOLERANCE_FRAC) {
         fail(`region '${id}' type '${t}' count moved ${o} → ${n} (${(rel * 100).toFixed(0)}% > ${COUNT_TOLERANCE_FRAC * 100}%) — investigate before publishing`);
+      }
+    }
+
+    // BUG-422: under_bridge, directional. Before this, the type was absent from KNOWN_TYPES
+    // and had NO bound at all in either direction — a region's whole under-bridge set could
+    // halve, or vanish, and this validator would print a happy summary.
+    const oUB = oldC['under_bridge'] ?? 0;
+    const nUB = newC['under_bridge'] ?? 0;
+    if (oUB > 0) {
+      const dropFrac = (oUB - nUB) / oUB;
+      if (dropFrac > UNDER_BRIDGE_MAX_DROP_FRAC) {
+        const msg = `region '${id}' under_bridge dropped ${oUB} → ${nUB} (−${(dropFrac * 100).toFixed(0)}%, bound ${UNDER_BRIDGE_MAX_DROP_FRAC * 100}%)`;
+        if (ACKNOWLEDGED_RULE_CHANGE) {
+          warn(`${msg} — ALLOWED by UNDER_BRIDGE_RULE_CHANGE=1. Confirm this matches the expected rule change before promoting.`);
+        } else {
+          fail(`${msg} — the emission vetoes are over-suppressing; drivers lose warnings silently. Investigate, or set UNDER_BRIDGE_RULE_CHANGE=1 if this drop is a deliberate rule change.`);
+        }
+      }
+      // A RISE is never expected from a veto-tightening change and is not covered by the
+      // acknowledgement — it means a veto stopped working.
+      const riseFrac = (nUB - oUB) / oUB;
+      if (riseFrac > COUNT_TOLERANCE_FRAC) {
+        fail(`region '${id}' under_bridge ROSE ${oUB} → ${nUB} (+${(riseFrac * 100).toFixed(0)}%) — a grade-separation veto has stopped firing`);
       }
     }
 
@@ -170,8 +213,18 @@ async function main() {
     }
   }
 
-  console.log(`\nTotal new under_bridge points across regions: ${totalNewUnderBridge}`);
-  if (totalNewUnderBridge === 0) warn('ZERO under_bridge points emitted anywhere — the extraction change may not have run; verify before publishing.');
+  console.log(`\nTotal under_bridge points across regions: ${totalOldUnderBridge} → ${totalNewUnderBridge}`);
+  if (totalNewUnderBridge === 0) {
+    // BUG-422: promoted from a warning. If the PREVIOUS release carried under-bridge points and
+    // this one carries none anywhere, the feature is dead — a warning in a long CI log is not
+    // enough to stop that being published. A genuine 0 → 0 (before the feature existed) is
+    // still only a warning.
+    if (totalOldUnderBridge > 0) {
+      fail(`ZERO under_bridge points emitted anywhere, down from ${totalOldUnderBridge} — the feature is dead in this build. DO NOT publish.`);
+    } else {
+      warn('ZERO under_bridge points emitted anywhere — the extraction change may not have run; verify before publishing.');
+    }
+  }
 
   if (failures.length > 0) {
     console.error(`\n❌ ${failures.length} data-integrity failure(s) — DO NOT publish this release.`);
