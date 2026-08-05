@@ -44,6 +44,8 @@ interface ManifestRegion {
   builtupChecksum?: string;
   sqliteSize?: number;
   sqliteChecksum?: string;
+  valhallaSize?: number;
+  valhallaChecksum?: string;
 }
 
 interface Manifest {
@@ -166,12 +168,28 @@ function generateManifest(inputDir: string, outputFile: string, overrideVersion?
       // No SQLite file — that's fine, app falls back to JSON pipeline
     }
 
+    // Check for Valhalla routing pack (FEAT-033 P1.6). The tar.gz itself ships on
+    // a separate valhalla-* release (monthly release is near the 1000-asset cap —
+    // see MANIFEST-INTEGRATION.md); copy/download the packs into the input dir
+    // before running this script so size/checksum land in the manifest.
+    // valhallaChecksum uses the same 16-hex sha256 prefix as every other checksum.
+    const valhallaFile = `${regionId}-valhalla.tar.gz`;
+    const valhallaPath = join(inputDir, valhallaFile);
+    try {
+      const valhallaStats = statSync(valhallaPath);
+      region.valhallaSize = valhallaStats.size;
+      region.valhallaChecksum = computeChecksum(valhallaPath);
+    } catch {
+      // No Valhalla pack — that's fine, region simply has no offline routing yet
+    }
+
     manifest.regions[regionId] = region;
 
     const extras = [
       region.surfaceSize ? `surfaces: ${(region.surfaceSize / 1024).toFixed(1)} KB` : null,
       region.waySize ? `ways: ${(region.waySize / 1024).toFixed(1)} KB` : null,
       region.sqliteSize ? `sqlite: ${(region.sqliteSize / 1024 / 1024).toFixed(1)} MB` : null,
+      region.valhallaSize ? `valhalla: ${(region.valhallaSize / 1024 / 1024).toFixed(1)} MB` : null,
     ].filter(Boolean).join(', ');
     console.log(
       `  ${regionId}: ${(stats.size / 1024).toFixed(1)} KB${extras ? ` (${extras})` : ''} - ${regionNames[regionId] || 'Unknown'}`

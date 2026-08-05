@@ -1,30 +1,38 @@
-# TODO(P1.1-manifest): Valhalla pack → manifest integration (owner-gated rollout)
+# Valhalla pack → manifest integration (P1.6 fields DONE; rollout owner-gated)
 
 The smoke workflow (`.github/workflows/valhalla-tiles.yml`) is deliberately standalone:
-it publishes to its own `valhalla-smoke-<run_number>` **prerelease** and never touches
-`manifest.json` or the monthly pipeline. This note is the exact recipe for wiring
-Valhalla packs into the production manifest when the all-regions rollout is approved.
+it publishes to its own `valhalla-smoke-*` **prerelease** and never touches the
+production `manifest.json` or the monthly pipeline. This note tracks what is already
+implemented for the FEAT-033 P1.6 app contract and the exact remaining steps for
+wiring Valhalla packs into the production manifest when the all-regions rollout is
+approved.
 
-## Fields to add (additive only — never change existing fields)
+## P1.6 app contract (IMPLEMENTED)
 
-`scripts/generate-manifest.ts`:
+- Release asset per region named EXACTLY `{regionId}-valhalla.tar.gz` — a gzip of the
+  SINGLE tar produced by `valhalla_build_extract` (index.bin + graph tiles) that
+  `mjolnir.tile_extract` memory-maps. Never a hand-rolled `tar cf` of the tile dir.
+  Engine and extract tool run from ONE digest-pinned valhalla image per CI run.
+- `scripts/generate-manifest.ts` now emits, per region, when
+  `{regionId}-valhalla.tar.gz` sits in its input dir (additive, optional):
+  ```ts
+  valhallaSize?: number;      // {regionId}-valhalla.tar.gz size in bytes
+  valhallaChecksum?: string;  // SHA256 of the tar.gz, first 16 hex chars (computeChecksum)
+  ```
+  The core-file scan filters `*.json.gz`, so `-valhalla.tar.gz` can never become a
+  phantom core region.
+- CI sanity gate runs `valhalla_service` in TILE_EXTRACT mode against the tar
+  gunzipped from the shipped asset — a pack that routes in tile_dir mode but not
+  tile_extract mode fails the job.
+- P1.8 support: each region also ships `{regionId}-corridors.json` — an array of
+  `{name, request, response}` with the full valhalla route response captured during
+  CI verification.
+- Smoke prereleases ship their own `manifest.json` (+ legacy `valhalla-manifest.json`
+  copy) carrying only the valhalla fields — safe because a prerelease can never
+  become `releases/latest`.
 
-1. `ManifestRegion` interface: add
-   ```ts
-   valhallaSize?: number;      // {regionId}.valhalla.tar.gz size in bytes
-   valhallaChecksum?: string;  // SHA256 of the tar.gz, first 16 hex chars (computeChecksum)
-   ```
-2. In the per-region loop, after the `.sqlite.gz` block, add the same
-   `statSync`/`computeChecksum` try/catch pattern keyed on `${regionId}.valhalla.tar.gz`.
-   Populate the two fields **only when the file exists** — regions without a pack keep
-   an unchanged manifest entry.
-3. No change needed to the core-file scan: it filters `*.json.gz`, so `.valhalla.tar.gz`
-   can never become a phantom core region.
-
-App side (Rods repo): add the same two optional fields to the manifest interface in
-`services/osm/types.ts`. Additive-only — existing consumers ignore unknown JSON keys.
-Smoke releases already ship a `valhalla-manifest.json` using these exact field names,
-so app-side code can be tested against real assets before rollout.
+App side (Rods repo): the manifest interface in `services/osm/types.ts` carries the
+same two optional fields. Additive-only — existing consumers ignore unknown JSON keys.
 
 ## HARD CONSTRAINT: the 1000-asset release cap
 
@@ -39,9 +47,9 @@ Rollout shape that fits:
   stamp for all artifacts of the run, matching the existing version convention).
 - `manifest.json` (still on the monthly release) carries `valhallaSize`/
   `valhallaChecksum`; clients derive the download URL from the shared date:
-  `releases/download/valhalla-<version>/<regionId>.valhalla.tar.gz`.
+  `releases/download/valhalla-<version>/<regionId>-valhalla.tar.gz`.
 - To generate those fields, download/copy the tars into the manifest input dir
-  before `generate-manifest` runs (the same-directory scan from step 2 then works).
+  before `generate-manifest` runs (the same-directory scan is already implemented).
 - Consider dropping the per-region `.sha256` sidecars at rollout (the manifest is the
   checksum source of truth) to halve the new release's asset count.
 

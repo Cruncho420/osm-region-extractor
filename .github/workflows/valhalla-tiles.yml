@@ -11,8 +11,8 @@ name: Valhalla Graph Tiles (Smoke)
 # - Enabling more regions is OWNER-GATED. A region builds only if it has a hardcoded
 #   sanity-route entry below — a pack must never ship unverified.
 #
-# Recipe (proven in the Rods FEAT-033 Track B spike):
-# 1. valhalla_build_config     — tile_dir mode (NEVER tile_extract), concurrency 2,
+# Recipe (proven in the Rods FEAT-033 Track B spike; P1.6 app contract on top):
+# 1. valhalla_build_config     — tile_dir mode for BUILDING, concurrency 2,
 #                                max_cache_size 262144000, admin + timezone sqlite paths
 # 2. valhalla_build_timezones  — ONCE (world-wide tz_world.sqlite ~114MB, cached monthly)
 # 3. valhalla_build_admins     — per region (seconds to minutes)
@@ -21,19 +21,29 @@ name: Valhalla Graph Tiles (Smoke)
 #    might be corrupted" (tile-writer race; California reproduced it, clean at c1).
 #    So: PBF > 600MB starts at concurrency 1; ANY failure or corruption marker in the
 #    log wipes the tile dir and retries once at concurrency 1.
-# 5. Ship GRAPH-ONLY tars: only the 0/ 1/ 2/ level dirs. tz_world.sqlite and
-#    admins.sqlite are build-time inputs — including them ~doubles pack size.
+# 5. Package with valhalla_build_extract (P1.6 contract): the shipped asset
+#    {regionId}-valhalla.tar.gz is a gzip of the SINGLE tar that mjolnir.tile_extract
+#    memory-maps — build_extract writes the index.bin the engine expects, so a
+#    hand-rolled `tar cf` of the tile dir is FORBIDDEN. Engine and extract tool both
+#    run from ONE digest-pinned image ($VALHALLA_REF, resolved at pull time).
+#    Still GRAPH-ONLY: tz_world.sqlite / admins.sqlite are build-time inputs.
 # 6. Gates before an artifact is accepted:
+#    - extract structure: index.bin present + at least one .gph tile in the tar
 #    - size band: gz must be 10%..300% of a rough 0.39 x PBF-size estimate
-#    - sanity route: one-shot valhalla_service against tiles RE-EXTRACTED FROM THE
-#      SHIPPED TAR must return "Found route"
+#    - sanity route: one-shot valhalla_service in TILE_EXTRACT mode against the tar
+#      GUNZIPPED FROM THE SHIPPED ASSET must return "Found route" (a pack that routes
+#      in tile_dir mode but not tile_extract mode must fail the job)
+# 7. P1.8 corridors: the full verified route response ships as
+#    {regionId}-corridors.json (array of {name, request, response}).
 #
-# TODO(P1.1-manifest): manifest integration is deliberately NOT wired here.
-# The monthly release sits at ~937 assets against GitHub's HARD 1000-asset cap
-# (see the -builtup.json.gz note in osm-extract.yml), so 233 valhalla tars can
-# never ride the monthly release — rollout needs its own `valhalla-<date>` release
-# plus additive manifest fields (valhallaSize / valhallaChecksum, 16-hex sha256
-# prefix). Exact steps: see MANIFEST-INTEGRATION.md at the repo root.
+# Manifest: the smoke release ships its own manifest.json (+ legacy copy
+# valhalla-manifest.json) with per-region valhallaSize / valhallaChecksum — the
+# 16-hex sha256 prefix, EXACTLY like computeChecksum() in scripts/generate-manifest.ts
+# (which now also emits these fields when {regionId}-valhalla.tar.gz sits in its
+# input dir). The monthly release sits at ~937 assets against GitHub's HARD
+# 1000-asset cap (see the -builtup.json.gz note in osm-extract.yml), so 233 valhalla
+# tars can never ride the monthly release — production rollout needs its own
+# `valhalla-<date>` release. Exact steps: see MANIFEST-INTEGRATION.md at the repo root.
 
 on:
   # TEMPORARY registration shim — REMOVE before merging to main:
@@ -53,6 +63,16 @@ on:
         type: string
       upload:
         description: 'Upload packs to a valhalla-smoke-<run_number> prerelease'
+        required: false
+        default: true
+        type: boolean
+      tag:
+        description: 'Prerelease tag override (must start with valhalla-smoke-). Empty = valhalla-smoke-<run_number>'
+        required: false
+        default: ''
+        type: string
+      prune_old_smoke:
+        description: 'Delete older valhalla-smoke-* prereleases after upload'
         required: false
         default: true
         type: boolean
@@ -169,8 +189,21 @@ jobs:
           echo "PBF size: $((PBF_BYTES / 1024 / 1024)) MB"
           df -h / | tail -1
 
-      - name: Pull Valhalla image
-        run: docker pull -q "$VALHALLA_IMAGE"
+      - name: Pull Valhalla image and pin its digest
+        run: |
+          set -euo pipefail
+          # P1.6 contract: valhalla_build_tiles, valhalla_build_extract AND the
+          # verifying valhalla_service must all come from ONE image SHA — a :latest
+          # tag moving mid-job could pair an engine with a foreign extract format.
+          # Pin the pulled digest once and use $VALHALLA_REF everywhere below.
+          docker pull -q "$VALHALLA_IMAGE"
+          VALHALLA_REF=$(docker inspect --format '{{index .RepoDigests 0}}' "$VALHALLA_IMAGE")
+          if [ -z "$VALHALLA_REF" ]; then
+            echo "::error::Could not resolve digest for $VALHALLA_IMAGE"
+            exit 1
+          fi
+          echo "VALHALLA_REF=$VALHALLA_REF" >> "$GITHUB_ENV"
+          echo "Pinned Valhalla image: $VALHALLA_REF"
 
       - name: Compute timezone cache key (month-scoped)
         id: tzkey
@@ -191,7 +224,7 @@ jobs:
             echo "tz_world.sqlite from cache: $(stat -c%s work/tz_world.sqlite) bytes"
           else
             echo "Cache miss — building timezone DB"
-            docker run --rm "$VALHALLA_IMAGE" valhalla_build_timezones > work/tz_world.sqlite
+            docker run --rm "$VALHALLA_REF" valhalla_build_timezones > work/tz_world.sqlite
             SIZE=$(stat -c%s work/tz_world.sqlite)
             echo "Built tz_world.sqlite: $SIZE bytes"
             if [ "$SIZE" -lt 50000000 ]; then
@@ -205,7 +238,7 @@ jobs:
           set -euo pipefail
           # tile_dir mode: tile_extract points at a file that never exists, so every
           # tool and the sanity service read loose tiles from tile_dir.
-          docker run --rm -v "$PWD/work:/data" "$VALHALLA_IMAGE" valhalla_build_config \
+          docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" valhalla_build_config \
             --mjolnir-tile-dir /data/valhalla_tiles \
             --mjolnir-tile-extract /data/unused-tile-extract.tar \
             --mjolnir-timezone /data/tz_world.sqlite \
@@ -221,7 +254,7 @@ jobs:
       - name: Build admin DB for ${{ matrix.region }}
         run: |
           set -euo pipefail
-          docker run --rm -v "$PWD/work:/data" "$VALHALLA_IMAGE" \
+          docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" \
             valhalla_build_admins -c /data/valhalla.json /data/region.osm.pbf
           ls -la work/admins.sqlite
 
@@ -244,7 +277,7 @@ jobs:
           build_tiles() {
             local cfg="$1" log="$2" rc=0
             set +e
-            docker run --rm -v "$PWD/work:/data" "$VALHALLA_IMAGE" \
+            docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" \
               valhalla_build_tiles -c "$cfg" /data/region.osm.pbf 2>&1 | tee "$log"
             rc=${PIPESTATUS[0]}
             set -e
@@ -278,7 +311,7 @@ jobs:
           echo "Tile build wall-time: $((T1 - T0))s (concurrency $CONC, retried=$RETRIED)"
           df -h / | tail -1
 
-      - name: Package graph-only pack + size gate
+      - name: Package via valhalla_build_extract + size gate
         id: pack
         run: |
           set -euo pipefail
@@ -293,13 +326,43 @@ jobs:
             [ -d "work/valhalla_tiles/$d" ] && LEVELS="$LEVELS $d"
           done
           echo "Graph levels present:$LEVELS"
-          # GRAPH-ONLY tar: level dirs only. tz_world.sqlite + admins.sqlite are
-          # build-time inputs; shipping them would ~double the pack size.
-          sudo tar -czf "${REGION}.valhalla.tar.gz" -C work/valhalla_tiles $LEVELS
-          sudo chown "$(id -u):$(id -g)" "${REGION}.valhalla.tar.gz"
-          sha256sum "${REGION}.valhalla.tar.gz" > "${REGION}.valhalla.tar.gz.sha256"
 
-          GZ_BYTES=$(stat -c%s "${REGION}.valhalla.tar.gz")
+          # P1.6 contract: the shipped tar MUST come from valhalla_build_extract —
+          # it writes the index the engine memory-maps in mjolnir.tile_extract mode.
+          # A hand-rolled `tar cf` of the tile dir has no index and is FORBIDDEN.
+          # Same digest-pinned image ($VALHALLA_REF) as the tile build: engine and
+          # extract tool from ONE SHA. Still GRAPH-ONLY (tz/admin sqlite never ship).
+          rm -f work/valhalla_extract.tar
+          jq '.mjolnir.tile_extract = "/data/valhalla_extract.tar"' \
+            work/valhalla.json > work/valhalla-extract.json
+          docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" \
+            valhalla_build_extract -c /data/valhalla-extract.json -v
+          if [ ! -s work/valhalla_extract.tar ]; then
+            echo "::error::[$REGION] valhalla_build_extract produced no tar"
+            exit 1
+          fi
+
+          # Structural gate: the extract must carry index.bin + graph tiles
+          sudo tar -tf work/valhalla_extract.tar > extract-toc.txt
+          if ! grep -qE '(^|/)index\.bin$' extract-toc.txt; then
+            echo "::error::[$REGION] extract tar has no index.bin — not a valid tile_extract"
+            exit 1
+          fi
+          GPH_COUNT=$(grep -cE '\.gph$' extract-toc.txt || true)
+          if [ "$GPH_COUNT" -eq 0 ]; then
+            echo "::error::[$REGION] extract tar contains no .gph tiles"
+            exit 1
+          fi
+          echo "Extract structure OK: index.bin + $GPH_COUNT .gph tiles"
+
+          # Loose tiles no longer needed — the extract IS the artifact; free disk
+          sudo rm -rf work/valhalla_tiles
+          sudo gzip -f work/valhalla_extract.tar
+          sudo mv work/valhalla_extract.tar.gz "${REGION}-valhalla.tar.gz"
+          sudo chown "$(id -u):$(id -g)" "${REGION}-valhalla.tar.gz"
+          sha256sum "${REGION}-valhalla.tar.gz" > "${REGION}-valhalla.tar.gz.sha256"
+
+          GZ_BYTES=$(stat -c%s "${REGION}-valhalla.tar.gz")
           PBF_BYTES=${{ steps.pbf.outputs.pbf_bytes }}
           EST=$((PBF_BYTES * 39 / 100))   # rough gz estimate: 0.39 x PBF size
           MIN=$((EST / 10))               # <10% of estimate = suspiciously empty
@@ -309,22 +372,27 @@ jobs:
             echo "::error::[$REGION] pack size $GZ_BYTES outside sanity band [$MIN, $MAX] — possible empty/corrupt output"
             exit 1
           fi
-          SHA=$(cut -d' ' -f1 "${REGION}.valhalla.tar.gz.sha256")
+          SHA=$(cut -d' ' -f1 "${REGION}-valhalla.tar.gz.sha256")
           echo "gz_bytes=$GZ_BYTES" >> "$GITHUB_OUTPUT"
           echo "gz_mb=$((GZ_BYTES / 1024 / 1024))" >> "$GITHUB_OUTPUT"
+          echo "gph_count=$GPH_COUNT" >> "$GITHUB_OUTPUT"
           echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
           echo "sha16=${SHA:0:16}" >> "$GITHUB_OUTPUT"
 
-      - name: Sanity route against the SHIPPED pack
+      - name: Sanity route against the SHIPPED pack (tile_extract mode)
         id: sanity
         run: |
           set -euo pipefail
-          # Verify the tar we are about to ship, not the build dir: re-extract it
-          # fresh and route across it. Catches tar/gzip corruption too.
-          sudo rm -rf work/valhalla_tiles
-          mkdir -p work/verify_tiles
-          tar -xzf "${REGION}.valhalla.tar.gz" -C work/verify_tiles
-          jq '.mjolnir.tile_dir = "/data/verify_tiles"' work/valhalla.json > work/valhalla-verify.json
+          # Verify the EXACT artifact we ship, in the EXACT mode the app runs it:
+          # gunzip the shipped .tar.gz and serve it via mjolnir.tile_extract
+          # (memory-mapped tar). tile_dir points at a path that does not exist and
+          # the loose tile dir was already deleted, so the service can ONLY answer
+          # from the extract — a pack that routes in tile_dir mode but not
+          # tile_extract mode fails RIGHT HERE. Catches gzip corruption too.
+          gunzip -c "${REGION}-valhalla.tar.gz" > work/verify_extract.tar
+          jq '.mjolnir.tile_extract = "/data/verify_extract.tar"
+              | .mjolnir.tile_dir = "/data/no_such_tile_dir"' \
+            work/valhalla.json > work/valhalla-verify.json
 
           COORDS='${{ steps.meta.outputs.coords }}'
           PAIRS=""
@@ -336,9 +404,13 @@ jobs:
             # RE-EXTRACTED tar, not the build dir, so the endpoints are picked
             # from the exact artifact under test.
             echo "Deriving sanity endpoints from the built tiles..."
+            # VALHALLA_REF (the resolved digest), not VALHALLA_IMAGE (:latest):
+            # endpoints must be derived by the SAME image that then verifies them,
+            # or a tag moving mid-job could pick endpoints one build can route and
+            # another cannot — which would read as a bad pack.
             DERIVED=$(node scripts/derive-sanity-route.mjs \
               --region "$REGION" \
-              --image "$VALHALLA_IMAGE" \
+              --image "$VALHALLA_REF" \
               --mount "$PWD/work:/data" \
               --config /data/valhalla-verify.json | tail -n 1)
             echo "Derived: $DERIVED"
@@ -351,31 +423,72 @@ jobs:
             [ -n "$URBAN" ] && PAIRS="$PAIRS $URBAN"
           fi
 
+          # MERGE NOTE (2026-08-05): both sides of this hunk were load-bearing and
+          # neither survives alone. LEG 3.1 (this branch) made the endpoints
+          # DERIVED and plural, so a pack is verified on the motorway hierarchy
+          # AND on a short intra-urban pair — the long-haul route alone proves
+          # only that trunk roads connect, and Rods drives secondary roads. The
+          # P1.6/P1.8 contract (origin) made a single check TRUSTWORTHY: pinned
+          # image digest, stdout/stderr split to files, the response parsed out of
+          # log noise, an actual `.trip.legs` assertion rather than grepping for a
+          # success string, and the verified response shipped as the corridors
+          # asset. Taking either side alone would have silently dropped the other's
+          # guarantee, so the loop below is the plural form of the strict check.
           if [ -z "$PAIRS" ]; then
             echo "::error::[$REGION] no sanity endpoints (curated or derived) — pack rejected"
             exit 1
           fi
 
           PASSED=0
+          IDX=0
+          CORRIDORS='[]'
           for PAIR in $PAIRS; do
             A="${PAIR%|*}"; B="${PAIR#*|}"
             LAT1="${A%,*}"; LON1="${A#*,}"; LAT2="${B%,*}"; LON2="${B#*,}"
             REQ="{\"locations\":[{\"lat\":$LAT1,\"lon\":$LON1},{\"lat\":$LAT2,\"lon\":$LON2}],\"costing\":\"auto\"}"
-            echo "Route request: $REQ"
+            # First pair is the long-haul one (derive-sanity-route emits it first,
+            # and a curated COORDS entry is a single long pair), so it keeps the
+            # name the app fixtures already reference.
+            if [ "$IDX" -eq 0 ]; then NAME=primary; else NAME=urban; fi
+            echo "Route request ($NAME): $REQ"
             set +e
-            OUT=$(docker run --rm -v "$PWD/work:/data" "$VALHALLA_IMAGE" \
-              valhalla_service /data/valhalla-verify.json route "$REQ" 2>&1)
+            docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" \
+              valhalla_service /data/valhalla-verify.json route "$REQ" \
+              > work/route-stdout.log 2> work/route-stderr.log
             RC=$?
             set -e
-            echo "$OUT" | tail -n 20
-            if [ "$RC" -ne 0 ] || ! echo "$OUT" | grep -q "Found route"; then
-              echo "::error::[$REGION] sanity route FAILED for $PAIR (exit $RC) — pack rejected"
+            tail -n 15 work/route-stderr.log || true
+            # The response is the last stdout line that is a JSON object — valhalla
+            # log lines start with a timestamp, never '{'.
+            grep -E '^\{' work/route-stdout.log | tail -n 1 > work/route-response.json || true
+            # Three independent checks. "Found route" in the log is NOT sufficient
+            # on its own — it can appear while the response carries no legs.
+            if [ "$RC" -ne 0 ] \
+               || ! cat work/route-stdout.log work/route-stderr.log | grep -q "Found route" \
+               || ! jq -e '(.trip.legs | length) > 0' work/route-response.json > /dev/null 2>&1; then
+              echo "::error::[$REGION] sanity route FAILED for $NAME pair in tile_extract mode (exit $RC) — pack rejected"
               exit 1
             fi
+            echo "Sanity route OK ($NAME): $(jq -c '.trip.summary | {length, time}' work/route-response.json)"
+            CORRIDORS=$(jq -n --argjson acc "$CORRIDORS" --arg name "$NAME" \
+              --argjson req "$REQ" --slurpfile resp work/route-response.json \
+              '$acc + [{name: $name, request: $req, response: $resp[0]}]')
             PASSED=$((PASSED + 1))
+            IDX=$((IDX + 1))
           done
-          echo "Sanity route OK: Found route ($PASSED pair(s))"
+          echo "Sanity route OK (tile_extract mode): $PASSED pair(s) verified"
           echo "result=Found route (${PASSED}p)" >> "$GITHUB_OUTPUT"
+
+          # P1.8: ship the full verified responses as {regionId}-corridors.json —
+          # array of {name, request, response}. Public map data only, no secrets.
+          # `>= 1`, not `== 1`: the array now carries one entry per verified pair.
+          # Checked 2026-08-05 — nothing in the Rods repo parses this file with a
+          # length assumption, so widening it breaks no consumer.
+          echo "$CORRIDORS" > "${REGION}-corridors.json"
+          jq -e 'type == "array" and length >= 1 and (.[0].response.trip != null)' \
+            "${REGION}-corridors.json" > /dev/null
+          echo "Corridor asset written: ${REGION}-corridors.json ($(stat -c%s "${REGION}-corridors.json") bytes)"
+          rm -f work/verify_extract.tar
           sudo rm -rf work/verify_tiles
 
       - name: Write region report + job summary
@@ -392,9 +505,12 @@ jobs:
             --arg sanity "${{ steps.sanity.outputs.result }}" \
             --argjson concurrency "${{ steps.tiles.outputs.concurrency }}" \
             --argjson retried "${{ steps.tiles.outputs.retried }}" \
+            --argjson gph_count "${{ steps.pack.outputs.gph_count }}" \
+            --arg image "$VALHALLA_REF" \
             '{region: $region, pbf_mb: $pbf_mb, tiles_seconds: $tiles_seconds,
               gz_bytes: $gz_bytes, gz_mb: $gz_mb, sha256: $sha256, sha16: $sha16,
-              sanity: $sanity, concurrency: $concurrency, retried: $retried}' \
+              sanity: $sanity, concurrency: $concurrency, retried: $retried,
+              gph_count: $gph_count, image: $image}' \
             > "valhalla-report-${REGION}.json"
           cat "valhalla-report-${REGION}.json"
           {
@@ -410,8 +526,9 @@ jobs:
         with:
           name: valhalla-${{ matrix.region }}
           path: |
-            ${{ matrix.region }}.valhalla.tar.gz
-            ${{ matrix.region }}.valhalla.tar.gz.sha256
+            ${{ matrix.region }}-valhalla.tar.gz
+            ${{ matrix.region }}-valhalla.tar.gz.sha256
+            ${{ matrix.region }}-corridors.json
             valhalla-report-${{ matrix.region }}.json
           retention-days: 1  # Clean up quickly to save storage (mirrors osm-extract.yml)
           compression-level: 0  # tar.gz is already compressed
@@ -439,7 +556,8 @@ jobs:
           set -euo pipefail
           mkdir -p release-files reports
           mv all-packs/valhalla-report-*.json reports/
-          mv all-packs/*.valhalla.tar.gz all-packs/*.valhalla.tar.gz.sha256 release-files/
+          mv all-packs/*-valhalla.tar.gz all-packs/*-valhalla.tar.gz.sha256 \
+             all-packs/*-corridors.json release-files/
           ls -la release-files reports
 
       - name: Build smoke manifest + summary table
@@ -449,16 +567,32 @@ jobs:
           # One dataVersion stamps all artifacts of the run — same YYYY-MM-DD
           # convention as the monthly manifest version.
           VERSION=$(date +'%Y-%m-%d')
-          TAG="valhalla-smoke-${{ github.run_number }}"
+          # Tag override lets a dispatch pick its own valhalla-smoke-* tag (e.g. a
+          # contract-verification run that must not collide with run_number tags).
+          # The prefix check is load-bearing: any other tag shape could hijack
+          # releases/latest or the monthly osm-* namespace.
+          TAG_INPUT="${{ inputs.tag }}"
+          if [ -n "$TAG_INPUT" ]; then
+            case "$TAG_INPUT" in
+              valhalla-smoke-*) TAG="$TAG_INPUT" ;;
+              *) echo "::error::tag input '$TAG_INPUT' must start with 'valhalla-smoke-'"; exit 1 ;;
+            esac
+          else
+            TAG="valhalla-smoke-${{ github.run_number }}"
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
-          # Same field conventions as manifest.json (valhallaChecksum = 16-hex
-          # sha256 prefix) so consumers can test against the final schema now.
+          # P1.6 contract manifest: regions carry valhallaSize (bytes of the
+          # .tar.gz) + valhallaChecksum (sha256 FIRST 16 HEX — exactly how
+          # computeChecksum() truncates in scripts/generate-manifest.ts). Shipped
+          # as manifest.json on this PRERELEASE only (never becomes releases/latest)
+          # plus a legacy valhalla-manifest.json copy for earlier app-side tests.
           jq -s --arg version "$VERSION" --arg gen "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
             '{version: $version, generatedAt: $gen,
               regions: (map({(.region): {valhallaSize: .gz_bytes, valhallaChecksum: .sha16}}) | add)}' \
-            reports/*.json > release-files/valhalla-manifest.json
-          cat release-files/valhalla-manifest.json
+            reports/*.json > release-files/manifest.json
+          cp release-files/manifest.json release-files/valhalla-manifest.json
+          cat release-files/manifest.json
           {
             echo "## Valhalla smoke packs — dataVersion $VERSION"
             echo ""
@@ -474,44 +608,59 @@ jobs:
           set -euo pipefail
           TAG="${{ steps.info.outputs.tag_name }}"
 
-          # Re-runs of the same run_number replace their own release
+          # Re-runs of the same tag replace their own release
           gh release delete "$TAG" --yes 2>/dev/null || true
 
           # PRERELEASE is load-bearing: the app + verify-manifest.yml resolve
           # releases/latest/download/... — a normal release here would hijack
-          # "latest" and 404 every manifest.json fetch.
+          # "latest" and 404 every manifest.json fetch (this release DOES carry a
+          # manifest.json asset, which is safe only because a prerelease can never
+          # become releases/latest).
           gh release create "$TAG" \
             --prerelease \
             --target "${{ github.sha }}" \
-            --title "Valhalla Graph Tiles (smoke) - ${{ steps.info.outputs.version }}" \
-            --notes "SMOKE-TEST Valhalla routing graph packs (FEAT-033 P1.1). Not consumed by any production client yet.
+            --title "Valhalla Routing Packs (smoke) - ${{ steps.info.outputs.version }}" \
+            --notes "SMOKE-TEST Valhalla routing packs (FEAT-033 P1.6 app contract). Not consumed by any production client yet.
 
           **dataVersion:** ${{ steps.info.outputs.version }}
 
           **Contents (per region):**
-          - {region-id}.valhalla.tar.gz - GRAPH-ONLY Valhalla tiles (level 0/1/2 dirs; no tz/admin sqlite)
-          - {region-id}.valhalla.tar.gz.sha256 - full SHA-256 (verify: sha256sum -c)
-          - valhalla-manifest.json - per-region valhallaSize + valhallaChecksum (16-hex sha256 prefix)
+          - {region-id}-valhalla.tar.gz - gzip of the SINGLE valhalla_build_extract tar (index.bin + graph tiles) that mjolnir.tile_extract memory-maps; GRAPH-ONLY (no tz/admin sqlite)
+          - {region-id}-valhalla.tar.gz.sha256 - full SHA-256 (verify: sha256sum -c)
+          - {region-id}-corridors.json - P1.8 corridor fixtures: array of {name, request, response} with the FULL valhalla route response from CI verification
+          - manifest.json - regions carry valhallaSize + valhallaChecksum (sha256 first 16 hex, same truncation as generate-manifest.ts computeChecksum)
+          - valhalla-manifest.json - legacy copy of manifest.json (pre-P1.6 name)
 
-          **Verification already performed in CI (per region):**
+          **Verification already performed in CI (per region, all from ONE digest-pinned valhalla image):**
+          - extract structure: index.bin present + .gph tiles in the tar
           - size band vs 0.39 x PBF estimate
-          - one-shot valhalla_service route across tiles re-extracted from this exact tar -> \"Found route\"
+          - one-shot valhalla_service in TILE_EXTRACT mode against the tar gunzipped from this exact asset -> \"Found route\"
 
-          This tag is a PRERELEASE on purpose - it must never become releases/latest (manifest.json lives on the monthly osm-* releases)."
+          This tag is a PRERELEASE on purpose - it must never become releases/latest (the production manifest.json lives on the monthly osm-* releases)."
 
           cd release-files
           gh release upload "$TAG" * --clobber
           echo "All files uploaded."
 
       - name: Delete older smoke prereleases
+        if: inputs.prune_old_smoke
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           # Keep only the current valhalla-smoke-* release so stale smoke tags never
           # pile up (the monthly cleanup counts ALL releases toward keep_latest:3).
-          # Only delete run numbers LOWER than ours — never a newer run's release.
-          CUR=${{ github.run_number }}
+          # Opt-out via the prune_old_smoke input when an older smoke release must
+          # survive (e.g. a still-referenced contract-verification tag).
+          # CUR comes from the EFFECTIVE tag (which may be an override, not
+          # run_number) and only numerically LOWER tags are deleted — never a newer
+          # run's release, never the current one, never non-numeric tags.
+          CUR_TAG="${{ steps.info.outputs.tag_name }}"
+          CUR="${CUR_TAG#valhalla-smoke-}"
+          if ! [[ "$CUR" =~ ^[0-9]+$ ]]; then
+            echo "Current tag $CUR_TAG has a non-numeric suffix — skipping prune"
+            exit 0
+          fi
           gh release list --limit 100 --json tagName -q '.[].tagName' \
             | { grep '^valhalla-smoke-' || true; } \
             | while read -r t; do
