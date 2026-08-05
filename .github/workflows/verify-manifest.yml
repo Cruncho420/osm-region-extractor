@@ -47,20 +47,56 @@ jobs:
                   return f"err:{e}"
 
           def check(item):
+              """Check EVERY asset this manifest pins for one region.
+
+              Returns a LIST, not a single verdict. A region ships more than one
+              file, and collapsing them into one result lets a healthy .sqlite.gz
+              mask a missing routing pack — which is the one failure the app can
+              never report, because a manifest with no valhallaSize makes the pack
+              download return early and the app then uses Mapbox forever without
+              complaining.
+              """
               k, v = item
+              out = []
+
               expected = v.get('sqliteSize')
               if not expected:
-                  return (k, 'no_sqliteSize', None, None)
-              url = f"https://github.com/Cruncho420/osm-region-extractor/releases/latest/download/{k}.sqlite.gz"
-              actual = head_size(url)
-              if isinstance(actual, str) or actual is None:
-                  return (k, 'err', expected, actual)
-              return (k, 'ok' if actual == expected else 'MISMATCH', expected, actual)
+                  out.append((k, 'no_sqliteSize', None, None))
+              else:
+                  url = f"https://github.com/Cruncho420/osm-region-extractor/releases/latest/download/{k}.sqlite.gz"
+                  actual = head_size(url)
+                  if isinstance(actual, str) or actual is None:
+                      out.append((k, 'err', expected, actual))
+                  else:
+                      out.append((k, 'ok' if actual == expected else 'MISMATCH', expected, actual))
+
+              # Valhalla packs live on their OWN dated release and are pinned by
+              # version, NOT fetched from `latest`. That is not a style choice:
+              # the valhalla release is a PRERELEASE, so it can never BE `latest`,
+              # and a `releases/latest/download` URL here could only ever 404.
+              # Same shape the app builds (buildValhallaPackUrl), so this checks
+              # the URL a device will really request.
+              vexpected = v.get('valhallaSize')
+              if vexpected:
+                  vurl = (f"https://github.com/Cruncho420/osm-region-extractor/releases/download/"
+                          f"valhalla-{m['version']}/{k}-valhalla.tar.gz")
+                  vactual = head_size(vurl)
+                  label = f"{k} [valhalla]"
+                  if isinstance(vactual, str) or vactual is None:
+                      out.append((label, 'err', vexpected, vactual))
+                  else:
+                      out.append((label, 'ok' if vactual == vexpected else 'MISMATCH', vexpected, vactual))
+              # A region with no valhallaSize is NOT an error — most regions
+              # legitimately ship without a routing pack until the all-regions
+              # build lands. Flagging them would make the report useless noise
+              # exactly while it matters most.
+
+              return out
 
           results = []
           with concurrent.futures.ThreadPoolExecutor(max_workers=20) as ex:
               for res in ex.map(check, m['regions'].items()):
-                  results.append(res)
+                  results.extend(res)
 
           mismatch = [r for r in results if r[1] == 'MISMATCH']
           errors = [r for r in results if r[1] not in ('ok', 'MISMATCH')]

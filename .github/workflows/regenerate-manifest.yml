@@ -55,7 +55,28 @@ jobs:
             -D release-assets \
             --pattern '*.sqlite.gz' \
             --pattern '*.json.gz'
-          echo "Downloaded $(ls release-assets | wc -l) assets"
+          echo "Downloaded $(ls release-assets | wc -l) assets from ${{ inputs.release_tag }}"
+
+          # The Valhalla routing packs live on a SEPARATE release tag — the
+          # monthly OSM release is near GitHub's 1000-asset cap, so the tars were
+          # split off (see generate-manifest.ts:172). generate-manifest builds the
+          # manifest purely from what is in --input, and it looks for
+          # {regionId}-valhalla.tar.gz by name, so without this download it finds
+          # none, emits no valhallaSize/valhallaChecksum, and REGENERATING THE
+          # MANIFEST SILENTLY TURNS OFF OFFLINE ROUTING FOR EVERY DEVICE. The
+          # app's pack download returns early when the field is absent.
+          VALHALLA_TAG="valhalla-${{ steps.ver.outputs.version }}"
+          if gh release view "$VALHALLA_TAG" > /dev/null 2>&1; then
+            gh release download "$VALHALLA_TAG" \
+              -D release-assets \
+              --pattern '*-valhalla.tar.gz'
+            echo "Downloaded $(ls release-assets/*-valhalla.tar.gz 2>/dev/null | wc -l) valhalla packs from $VALHALLA_TAG"
+          else
+            # Not fatal on its own — a manifest that never had these fields is
+            # regenerated correctly without them. The guard after the diff is what
+            # refuses to DROP fields that were previously there.
+            echo "::warning::No release tagged $VALHALLA_TAG — regenerating without valhalla fields."
+          fi
 
       - name: Capture current manifest for diff
         env:
@@ -95,7 +116,7 @@ jobs:
               if rid not in b.get('regions', {}):
                   changed.append(f"  REMOVED: {rid}")
                   continue
-              for field in ('size','checksum','surfaceSize','surfaceChecksum','waySize','wayChecksum','sqliteSize','sqliteChecksum'):
+              for field in ('size','checksum','surfaceSize','surfaceChecksum','waySize','wayChecksum','sqliteSize','sqliteChecksum','valhallaSize','valhallaChecksum'):
                   av, bv = a['regions'][rid].get(field), b['regions'][rid].get(field)
                   if av != bv:
                       changed.append(f"  {rid}.{field}: {av} -> {bv}")
@@ -107,6 +128,38 @@ jobs:
               print(c)
           if len(changed) > 50:
               print(f"  ... and {len(changed) - 50} more")
+
+          # REFUSE TO DROP A FIELD THAT WAS ALREADY PUBLISHED.
+          #
+          # The diff above only PRINTS; nothing downstream reads it, and the very
+          # next step uploads the regenerated manifest with --clobber. So a
+          # regeneration that silently loses a field ships that loss to every
+          # device, and the only evidence is a line in a log nobody opens.
+          #
+          # This is not hypothetical for valhallaSize: the packs live on a
+          # separate release tag, so before the download added above, ANY
+          # regeneration would have stripped them and turned off offline routing
+          # fleet-wide — the app treats a missing valhallaSize as "no pack
+          # exists" and returns early.
+          #
+          # Written per-FIELD rather than as a valhalla special case: the same
+          # split-asset trap applies to surface/way fields, and a guard that only
+          # knows today's field names stops working the next time one is added.
+          lost = {}
+          for rid, before in a.get('regions', {}).items():
+              after = b.get('regions', {}).get(rid, {})
+              for field, value in before.items():
+                  if value not in (None, '') and after.get(field) in (None, ''):
+                      lost.setdefault(field, 0)
+                      lost[field] += 1
+          if lost:
+              print("")
+              print("::error::Regenerated manifest DROPPED fields that the published one had:")
+              for field, n in sorted(lost.items()):
+                  print(f"::error::  {field}: present on {n} region(s) before, absent now")
+              print("::error::Refusing to upload. The usual cause is an asset that lives on a")
+              print("::error::different release tag and was not downloaded into --input.")
+              raise SystemExit(1)
           PY
           else
             echo "No prior manifest to diff against."
