@@ -159,10 +159,18 @@ const NOT_A_STRUCTURE_RAILWAY_TYPES = new Set([
  */
 function isAnnounceableDeck(bridge: BridgeWayGeom): boolean {
   const { highway, railway } = bridge;
-  if (highway !== undefined && NOT_A_STRUCTURE_HIGHWAY_TYPES.has(highway)) return false;
-  if (railway !== undefined && NOT_A_STRUCTURE_RAILWAY_TYPES.has(railway)) return false;
-  if (highway !== undefined && MOTOR_VEHICLE_HIGHWAY_TYPES.has(highway)) return true;
+  // The deck's OWN highway class decides first, in both directions. A drivable road deck is a
+  // structure no matter what used to run over it: rail-trail conversions routinely leave a bare
+  // `railway=razed`/`dismantled` on the road way instead of lifecycle-prefixing it
+  // (`razed:railway=*`), and consulting the railway lifecycle first would delete a live road
+  // bridge over a live road. Order matters here — this is the ONLY reason these two checks are
+  // not adjacent.
+  if (highway !== undefined) {
+    if (NOT_A_STRUCTURE_HIGHWAY_TYPES.has(highway)) return false;
+    if (MOTOR_VEHICLE_HIGHWAY_TYPES.has(highway)) return true;
+  }
   if (railway !== undefined) {
+    if (NOT_A_STRUCTURE_RAILWAY_TYPES.has(railway)) return false;
     return IN_SERVICE_RAILWAY_TYPES.has(railway) || STANDING_DISUSED_RAILWAY_TYPES.has(railway);
   }
   return false;
