@@ -46,14 +46,17 @@ name: Valhalla Graph Tiles (Smoke)
 # `valhalla-<date>` release. Exact steps: see MANIFEST-INTEGRATION.md at the repo root.
 
 on:
-  # TEMPORARY registration shim — REMOVE before merging to main:
-  # GitHub does not register a never-run workflow that exists only on a feature
-  # branch, so workflow_dispatch 404s until an event references the file. This
-  # branch-scoped push trigger registers it; every job below is gated on
-  # github.event_name == 'workflow_dispatch', so push runs skip all jobs.
-  push:
-    branches: [feat/valhalla-tiles]
-    paths: ['.github/workflows/valhalla-tiles.yml']
+  # The branch-scoped `push` registration shim that lived here was REMOVED at the
+  # merge to main, as its own comment instructed. It existed because GitHub will
+  # not register workflow_dispatch for a workflow that has only ever existed on a
+  # feature branch; a workflow on the DEFAULT branch is registered by definition,
+  # so the shim has no remaining purpose and would only leave a trigger pointing
+  # at a branch that gets deleted.
+  #
+  # Dispatch-only is a property this workflow depends on, not an accident: a build
+  # here is hours long and publishes a release, so it must never be startable by a
+  # commit. Every job is additionally gated on
+  # `github.event_name == 'workflow_dispatch'`; keep both.
   workflow_dispatch:
     inputs:
       regions:
