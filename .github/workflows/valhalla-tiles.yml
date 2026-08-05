@@ -89,11 +89,62 @@ env:
   # A region WITHOUT an entry here fails fast ON PURPOSE: the sanity route is the
   # only end-to-end proof the shipped pack can actually route. Generalize this
   # (e.g. per-region pairs in regions.json) before any wider rollout.
+  # Curated sanity pairs. A region listed here SKIPS derivation entirely
+  # (scripts/derive-sanity-route.mjs); anything not listed derives its own.
+  #
+  # WHEN A REGION NEEDS AN ENTRY HERE — two distinct reasons, and the second one
+  # is invisible until it bites:
+  #
+  # 1. GRID SAMPLING CANNOT FIND THE ROADS. Derivation drops a grid over the
+  #    region's bounding box. For an ocean-dominated region almost every sample
+  #    lands in water — north-america-us-hawaii's bbox is 223 deg² and over 99%
+  #    open Pacific. Densifying does not rescue it: measured, a 21×21 grid still
+  #    steps over Oahu.
+  #
+  # 2. THE TWO POINTS LAND ON LANDMASSES WITH NO ROAD BETWEEN THEM. This one no
+  #    sampler can ever fix, however good, because the pair is individually valid
+  #    and jointly unroutable — and it fails identically to a broken pack, so it
+  #    would send someone to debug tile generation for tiles that are fine.
+  #    Real cases, all of them ferry-or-air only by road:
+  #      japan        Hokkaido ↔ Honshu — the Seikan tunnel is RAIL ONLY
+  #      new-zealand  North ↔ South Island — Cook Strait ferry
+  #      australia    Tasmania ↔ mainland
+  #      canada       Iqaluit and most of Nunavut are fly-in
+  #      russia       Norilsk, Magadan and much of the far north are fly-in
+  #      us-hawaii / philippines / indonesia / greece / croatia / denmark /
+  #      us-virgin-islands — archipelagos throughout
+  #
+  # So every pair below is deliberately BOTH ENDS ON ONE ROAD-CONNECTED LANDMASS
+  # (named in the comment), far enough apart to traverse the graph rather than
+  # sit in one city. Each coordinate was checked to fall inside that region's own
+  # bbox in scripts/regions.json.
   SANITY_ROUTES: >-
     {"europe-estonia":"59.437,24.754|58.378,26.729",
     "europe-germany-bayern":"48.137,11.575|49.454,11.077",
     "europe-lithuania":"54.687,25.280|54.897,23.914",
-    "north-america-us-california":"34.05,-118.24|32.72,-117.16"}
+    "north-america-us-california":"34.05,-118.24|32.72,-117.16",
+    "north-america-us-hawaii":"21.307,-157.858|21.593,-158.104",
+    "asia-indonesia":"-6.208,106.846|-6.917,107.619",
+    "asia-philippines":"14.599,120.984|16.402,120.596",
+    "asia-japan":"35.690,139.692|34.694,135.502",
+    "australia-oceania-new-zealand":"-36.848,174.763|-37.787,175.279",
+    "australia-oceania-australia":"-33.868,151.209|-35.282,149.128",
+    "europe-greece":"37.983,23.727|40.640,22.944",
+    "europe-croatia":"45.815,15.982|43.508,16.440",
+    "europe-denmark":"56.162,10.204|57.048,9.922",
+    "europe-cyprus":"35.185,33.382|34.707,33.022",
+    "north-america-us-us-virgin-islands":"17.747,-64.703|17.714,-64.883",
+    "north-america-us-alaska":"61.218,-149.900|64.838,-147.716",
+    "north-america-canada":"43.653,-79.383|45.421,-75.697",
+    "asia-russia":"55.756,37.617|56.297,43.936"}
+  # Landmass per pair, for the record:
+  #   hawaii Oahu (Honolulu→Haleiwa) · indonesia Java (Jakarta→Bandung)
+  #   philippines Luzon (Manila→Baguio) · japan Honshu (Tokyo→Osaka)
+  #   new-zealand North Is (Auckland→Hamilton) · australia mainland (Sydney→Canberra)
+  #   greece mainland (Athens→Thessaloniki) · croatia mainland (Zagreb→Split)
+  #   denmark Jutland (Aarhus→Aalborg) · cyprus south (Nicosia→Limassol)
+  #   us-virgin-islands St Croix · alaska road system (Anchorage→Fairbanks)
+  #   canada Ontario (Toronto→Ottawa) · russia west (Moscow→Nizhny Novgorod)
 
 jobs:
   # Job 1: Resolve the comma-list input to canonical region ids from regions.json
