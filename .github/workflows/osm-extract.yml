@@ -76,7 +76,21 @@ jobs:
         working-directory: scripts
         run: npm run extract-single -- --region ${{ matrix.region }}
         env:
-          NODE_OPTIONS: '--max-old-space-size=7168'
+          # 7168 was not enough for asia-japan: collectHighwaysNearBridges (BUG-278)
+          # accumulates every highway near a bridge for the whole region, so peak memory
+          # scales with region size and the largest region hits the ceiling first. The
+          # redundant per-coordinate array copy that doubled this is removed in
+          # extract-single.ts; this raises headroom for the accumulation that remains.
+          # Runners have 16 GB, so 12 GB leaves room for the process's non-heap memory —
+          # going much higher risks the OS OOM-killer (SIGKILL, no diagnostic) instead of
+          # a clean V8 heap error.
+          #
+          # STRUCTURAL FOLLOW-UP: this is headroom, not a cure. The accumulator is still
+          # unbounded, so a future OSM growth spurt reopens it. The real fix is to bound
+          # it — process bridges in spatial batches so memory is independent of region
+          # size. Tracked separately; not done here because it is a change to BUG-278's
+          # design, not to tolls.
+          NODE_OPTIONS: '--max-old-space-size=12288'
 
       - name: Build SQLite for ${{ matrix.region }}
         working-directory: scripts
@@ -88,13 +102,16 @@ jobs:
           name: ${{ matrix.region }}
           path: |
             scripts/output/${{ matrix.region }}.json.gz
-            scripts/output/${{ matrix.region }}-ways.json.gz
-            scripts/output/${{ matrix.region }}-surfaces.json.gz
             scripts/output/${{ matrix.region }}.sqlite.gz
-          # NOTE: -builtup.json.gz is deliberately NOT uploaded. The app never
-          # downloads it (built-up data ships INSIDE the .sqlite); publishing it
-          # pushed the release to 1171 assets, over GitHub's HARD 1000-asset cap,
-          # which truncated the 2026-07-03 upload mid-way. 4 files/region = 937.
+          # Only the core .json.gz (region enumeration for generate-manifest) and the
+          # .sqlite.gz (the ONLY file the app downloads) are uploaded. The -ways /
+          # -surfaces / -builtup .json.gz are DELIBERATELY excluded: all that data
+          # ships INSIDE the .sqlite, and the app never downloads them. Shipping them
+          # made the release job pull ~58GB of artifacts onto a ~14GB-free runner →
+          # disk OVERFLOW truncated large .sqlite.gz in transit (the 2026-07-03
+          # europe-spain + 19-region corruption — Rods BUG-242 / BUG-243). Uploading
+          # only these two cuts the release-job download to ~38GB so large files no
+          # longer truncate. build-sqlite still reads -ways/-surfaces LOCALLY here.
           retention-days: 1  # Clean up quickly to save storage
 
   # Job 3: Combine all artifacts, generate manifest, create release
@@ -107,6 +124,19 @@ jobs:
     if: always() && needs.extract.result != 'cancelled' && inputs.single_region == ''
     steps:
       - uses: actions/checkout@v4
+
+      - name: Free up disk space on the runner
+        run: |
+          echo "Disk before cleanup:"; df -h /
+          # The release job downloads ~38GB of .sqlite.gz onto the runner's ~14GB-free
+          # root disk. Reclaim ~30GB of preinstalled toolchains this job never uses so
+          # large artifacts do NOT truncate mid-download (root cause of Rods BUG-242 /
+          # BUG-243). Runs BEFORE setup-node so removing the tool cache is safe — Node
+          # is (re)installed by the next step.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache /opt/microsoft /usr/local/share/powershell /usr/share/swift 2>/dev/null || true
+          sudo docker image prune -af 2>/dev/null || true
+          sudo apt-get clean 2>/dev/null || true
+          echo "Disk after cleanup:"; df -h /
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -132,6 +162,57 @@ jobs:
           echo "Total JSON files: $(ls release-files/*.json.gz 2>/dev/null | wc -l)"
           echo "Total SQLite files: $(ls release-files/*.sqlite.gz 2>/dev/null | wc -l)"
 
+      - name: HARD GATE — every expected region must be present BEFORE publishing
+        run: |
+          # THE 2026-07-29 PARTIAL-RELEASE INCIDENT.
+          #
+          # asia-japan (heap OOM in the ways phase) and europe-germany-brandenburg
+          # (corrupt PBF download) failed out of 236 jobs. `fail-fast: false` let the
+          # other 234 finish — correct — but this job's `if: always()` then published a
+          # release with 465 assets instead of 469, and GitHub marked it `latest`.
+          # Every user needing Japan or Brandenburg got a 404 from
+          # releases/latest/download/, which the app turns into an INFINITE
+          # RE-DOWNLOAD LOOP (see docs/OSM_DATA_PIPELINE.md in the Rods repo).
+          #
+          # The existing verify-release gate below only proves the assets that ARE here
+          # decompress. Integrity was guarded; COMPLETENESS was not. This gate closes
+          # that: a release is all-or-nothing.
+          #
+          # Deliberately checks the assembled FILES, not job results — it also catches
+          # an artifact that silently failed to upload or was lost in the flatten step,
+          # which a `needs.extract.result` check would sail straight past.
+          set -euo pipefail
+          jq -r '.regions[].id' scripts/regions.json | sort > /tmp/expected.txt
+          ls release-files/*.sqlite.gz 2>/dev/null | xargs -n1 basename 2>/dev/null \
+            | sed 's/\.sqlite\.gz$//' | sort > /tmp/actual.txt || true
+
+          EXPECTED_N=$(wc -l < /tmp/expected.txt)
+          ACTUAL_N=$(wc -l < /tmp/actual.txt)
+          echo "Expected regions: $EXPECTED_N"
+          echo "Assembled  .sqlite.gz: $ACTUAL_N"
+
+          MISSING=$(comm -23 /tmp/expected.txt /tmp/actual.txt || true)
+          if [ -n "$MISSING" ]; then
+            echo "::error::REFUSING TO PUBLISH — $(echo "$MISSING" | wc -l) region(s) missing from the release payload:"
+            echo "$MISSING" | sed 's/^/::error::  missing: /'
+            echo ""
+            echo "A partial release becomes 'latest' and 404s those regions for every user."
+            echo "Fix the failed region job(s), re-run, and only then publish."
+            exit 1
+          fi
+
+          # Same check for the .json.gz side — the app reads both per region.
+          ls release-files/*.json.gz 2>/dev/null | xargs -n1 basename 2>/dev/null \
+            | sed 's/\.json\.gz$//' | sort > /tmp/actual-json.txt || true
+          MISSING_JSON=$(comm -23 /tmp/expected.txt /tmp/actual-json.txt || true)
+          if [ -n "$MISSING_JSON" ]; then
+            echo "::error::REFUSING TO PUBLISH — region(s) missing their .json.gz:"
+            echo "$MISSING_JSON" | sed 's/^/::error::  missing json: /'
+            exit 1
+          fi
+
+          echo "✓ Completeness gate passed — all $EXPECTED_N regions present in both formats."
+
       - name: Generate manifest
         working-directory: scripts
         run: |
@@ -139,6 +220,17 @@ jobs:
             --input ../release-files \
             --output ../release-files/manifest.json
           cat ../release-files/manifest.json | head -50
+
+      - name: Verify every asset decompresses BEFORE publishing
+        working-directory: scripts
+        run: |
+          # HARD GATE: decompress-test every region's .sqlite.gz in the assembled
+          # payload before anything is published. A truncated asset passes the
+          # size+checksum recorded in the manifest (both computed over the truncated
+          # bytes) but fails gzip -t here — so a broken map file can never reach
+          # users again (root cause of the 2026-07-03 europe-spain corruption that
+          # hit ~53 users invisibly for a month — Rods BUG-242 / BUG-243).
+          npm run verify-release -- --dir ../release-files --manifest ../release-files/manifest.json
 
       - name: Get release info
         id: release-info
@@ -161,8 +253,9 @@ jobs:
           git tag -d "$TAG" 2>/dev/null || true
           git push origin ":refs/tags/$TAG" 2>/dev/null || true
 
-          # Create the release
+          # Create the release as a DRAFT — see the atomic-publish note below.
           gh release create "$TAG" \
+            --draft \
             --title "$TITLE" \
             --notes "Monthly OSM data extraction.
 
@@ -195,6 +288,93 @@ jobs:
             gh release upload "$TAG" "${BATCH[@]}" --clobber
           done
           echo "All files uploaded successfully!"
+
+          # ATOMIC PUBLISH — the 2026-08-01 incident.
+          #
+          # `gh release create` without --draft makes the release `latest` the INSTANT it
+          # is created, and only then does the loop above upload ~470 files (~100 GB) in
+          # batches of 20. For the whole upload window,
+          # releases/latest/download/<region>.sqlite.gz 404s for every region not yet
+          # uploaded — which the app turns into an infinite re-download loop.
+          #
+          # On 2026-08-01 the release JOB was cancelled mid-upload (all 234 extracts had
+          # succeeded). That left osm-2026-08-01 permanently at 69/234 regions while still
+          # tagged `latest` — ~24 h of 404s across 165 regions, including all of France,
+          # Germany, GB and every US state. Recovery was a manual rollback to the previous
+          # complete release.
+          #
+          # The completeness gate added after the 2026-07-29 incident could not catch this:
+          # it verifies the assembled release-files/ directory BEFORE publishing, and the
+          # payload here was fine. Publishing itself was the non-atomic step. Two distinct
+          # failure modes; the payload gate does not imply a safe publish.
+          #
+          # A draft is not public, is never `latest`, and is not resolved by
+          # releases/latest/download/. So a cancelled or failed upload now leaves a
+          # harmless draft instead of a poisoned `latest`. We only flip to published after
+          # verifying what ACTUALLY landed on the release.
+          cd ..
+          echo "Verifying uploaded assets against the expected region list..."
+          jq -r '.regions[].id' scripts/regions.json | sort > /tmp/expected-regions.txt
+          gh release view "$TAG" --json assets -q '.assets[].name' \
+            | grep '\.sqlite\.gz$' | sed 's/\.sqlite\.gz$//' | sort > /tmp/uploaded-regions.txt
+
+          EXPECTED_N=$(wc -l < /tmp/expected-regions.txt)
+          UPLOADED_N=$(wc -l < /tmp/uploaded-regions.txt)
+          echo "Expected: $EXPECTED_N   Uploaded: $UPLOADED_N"
+
+          MISSING=$(comm -23 /tmp/expected-regions.txt /tmp/uploaded-regions.txt || true)
+          if [ -n "$MISSING" ]; then
+            echo "::error::REFUSING TO PUBLISH — $(echo "$MISSING" | wc -l) region(s) did not upload:"
+            echo "$MISSING" | sed 's/^/::error::  missing: /'
+            echo "The release is left as a DRAFT. It is invisible to users and is NOT 'latest'."
+            echo "Re-run the upload, or delete the draft — do not publish it by hand."
+            exit 1
+          fi
+
+          # Everything is on the release. NOW make it visible and current, in one step.
+          gh release edit "$TAG" --draft=false --latest
+          echo "✓ Published $TAG as latest — $UPLOADED_N/$EXPECTED_N regions verified on the release itself."
+
+      - name: Verify published release downloads + decompresses (final gate)
+        working-directory: scripts
+        run: |
+          # Belt-and-suspenders over the pre-publish gate: stream every asset back
+          # DOWN from the freshly-published release and decompress it, catching any
+          # upload-layer truncation (e.g. hitting GitHub's HARD 1000-asset release
+          # cap, which silently truncated the 2026-07-03 upload). Runs BEFORE
+          # "Delete old releases" so the prior good releases are preserved if this
+          # one is bad. This is the "every region downloads correctly before it's
+          # called finished" gate.
+          npm run verify-release -- \
+            --manifest-url "https://github.com/${{ github.repository }}/releases/download/${{ steps.release-info.outputs.tag_name }}/manifest.json"
+
+      - name: Un-publish the release if any gate failed
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # The publish flip lives in "Create GitHub Release" because the final gate above
+          # streams assets from the PUBLIC releases/download/ URL, which 404s for a draft —
+          # so the release must be live for that check to mean anything. That leaves a
+          # short window where a release is `latest` but not yet decompress-verified.
+          #
+          # This step closes it: on ANY failure in this job, demote the release back to a
+          # draft. A draft is not public and is never `latest`, so
+          # releases/latest/download/ falls back to the previous COMPLETE release exactly
+          # as the 2026-08-01 manual rollback did — automatically, in seconds, instead of
+          # depending on somebody noticing.
+          #
+          # Safe when the failure happened before the release existed: `gh release edit`
+          # on a missing tag just errors, and `|| true` swallows it. Runs before
+          # "Delete old releases", so the previous good release is still there to fall
+          # back to.
+          TAG="${{ steps.release-info.outputs.tag_name }}"
+          echo "A gate failed — demoting $TAG to draft so it cannot serve users."
+          gh release edit "$TAG" --draft=true 2>&1 || true
+          # `isLatest` is NOT a valid --json field for `gh release view` (it lists the
+          # valid ones and exits non-zero). isDraft is what matters here anyway: a draft
+          # can never be `latest`.
+          gh release view "$TAG" --json isDraft,isPrerelease -q '"draft=\(.isDraft) prerelease=\(.isPrerelease)"' 2>&1 || true
 
       # RETENTION IS SCOPED TO osm-* TAGS ON PURPOSE.
       #

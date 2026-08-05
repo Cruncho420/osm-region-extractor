@@ -7,7 +7,8 @@
     "extract-single": "tsx extract-single.ts",
     "build-sqlite": "tsx build-sqlite.ts",
     "generate-manifest": "tsx generate-manifest.ts",
-    "generate-regions": "tsx generate-regions.ts"
+    "generate-regions": "tsx generate-regions.ts",
+    "verify-release": "tsx verify-release.ts"
   },
   "dependencies": {
     "better-sqlite3": "^11.0.0",

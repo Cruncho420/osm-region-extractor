@@ -1,11 +1,16 @@
 name: Verify Latest Release Manifest
 
-# Purpose: Catch manifest/asset drift within 24h of it happening.
-# Context: the 2026-04-03 release had two regions whose .sqlite.gz were re-uploaded
-# manually without regenerating manifest.json. The resulting size/checksum
-# mismatch caused clients to reject the download and retry forever.
-# This workflow HEAD-checks every asset's Content-Length against the manifest's
-# sqliteSize field and opens an issue if any region drifts.
+# Purpose: Catch a broken map file in the latest release within 24h.
+# It DECOMPRESSES every region's .sqlite.gz (gzip -t = whole DEFLATE stream +
+# CRC32 + ISIZE) and also HEAD-checks Content-Length against the manifest.
+#
+# Why decompress and not just size: the 2026-07-03 release shipped a TRUNCATED
+# europe-spain.sqlite.gz whose size + checksum matched manifest.json (both were
+# computed over the already-truncated bytes). A size-only check reported "ok" for
+# a month while ~53 users could not unpack the file (Rods BUG-242 / BUG-243). The
+# only way to catch a truncated-but-self-consistent asset is to actually inflate
+# it. This also still catches the original 2026-04-03 drift case (asset re-uploaded
+# without regenerating the manifest) via the HEAD size check.
 
 on:
   schedule:
@@ -14,150 +19,65 @@ on:
 
 permissions:
   contents: read
-  issues: write  # Required to open an issue on mismatch
+  issues: write  # Required to open an issue on failure
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch manifest and verify against assets
-        id: verify
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: scripts
+        run: npm install
+
+      - name: Decompress-test every region in the latest release
+        working-directory: scripts
+        run: |
+          set -o pipefail
+          # Streams every published .sqlite.gz and runs gzip -t (whole DEFLATE
+          # stream + CRC32 + ISIZE), plus a HEAD Content-Length check for manifest/
+          # asset DRIFT. Replaces the old HEAD-size-only check, which passed a
+          # truncated-but-size-consistent asset (europe-spain, 2026-07-03) straight
+          # through to users because the manifest size was itself computed over the
+          # truncated bytes — Rods BUG-242 / BUG-243. A non-zero exit fails the job.
+          npm run verify-release -- \
+            --manifest-url "https://github.com/${{ github.repository }}/releases/latest/download/manifest.json" \
+            2>&1 | tee verify-output.txt
+
+      - name: Open issue on failure
+        if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -e
-          python3 <<'PY' > verify-output.txt
-          import urllib.request, json, subprocess, concurrent.futures, re, sys
-
-          URL = "https://github.com/Cruncho420/osm-region-extractor/releases/latest/download/manifest.json"
-          m = json.loads(urllib.request.urlopen(URL).read())
-          print(f"manifest version: {m['version']}")
-          print(f"regions: {len(m['regions'])}")
-
-          def head_size(url):
-              try:
-                  out = subprocess.run(
-                      ['curl', '-sLI', '--max-time', '20', url],
-                      capture_output=True, text=True, timeout=25
-                  ).stdout
-                  sizes = [int(v) for v in re.findall(r'(?im)^content-length:\s*(\d+)', out)]
-                  sizes = [s for s in sizes if s > 0]
-                  return sizes[-1] if sizes else None
-              except Exception as e:
-                  return f"err:{e}"
-
-          def check(item):
-              """Check EVERY asset this manifest pins for one region.
-
-              Returns a LIST, not a single verdict. A region ships more than one
-              file, and collapsing them into one result lets a healthy .sqlite.gz
-              mask a missing routing pack — which is the one failure the app can
-              never report, because a manifest with no valhallaSize makes the pack
-              download return early and the app then uses Mapbox forever without
-              complaining.
-              """
-              k, v = item
-              out = []
-
-              expected = v.get('sqliteSize')
-              if not expected:
-                  out.append((k, 'no_sqliteSize', None, None))
-              else:
-                  url = f"https://github.com/Cruncho420/osm-region-extractor/releases/latest/download/{k}.sqlite.gz"
-                  actual = head_size(url)
-                  if isinstance(actual, str) or actual is None:
-                      out.append((k, 'err', expected, actual))
-                  else:
-                      out.append((k, 'ok' if actual == expected else 'MISMATCH', expected, actual))
-
-              # Valhalla packs live on their OWN dated release and are pinned by
-              # version, NOT fetched from `latest`. That is not a style choice:
-              # the valhalla release is a PRERELEASE, so it can never BE `latest`,
-              # and a `releases/latest/download` URL here could only ever 404.
-              # Same shape the app builds (buildValhallaPackUrl), so this checks
-              # the URL a device will really request.
-              vexpected = v.get('valhallaSize')
-              if vexpected:
-                  vurl = (f"https://github.com/Cruncho420/osm-region-extractor/releases/download/"
-                          f"valhalla-{m['version']}/{k}-valhalla.tar.gz")
-                  vactual = head_size(vurl)
-                  label = f"{k} [valhalla]"
-                  if isinstance(vactual, str) or vactual is None:
-                      out.append((label, 'err', vexpected, vactual))
-                  else:
-                      out.append((label, 'ok' if vactual == vexpected else 'MISMATCH', vexpected, vactual))
-              # A region with no valhallaSize is NOT an error — most regions
-              # legitimately ship without a routing pack until the all-regions
-              # build lands. Flagging them would make the report useless noise
-              # exactly while it matters most.
-
-              return out
-
-          results = []
-          with concurrent.futures.ThreadPoolExecutor(max_workers=20) as ex:
-              for res in ex.map(check, m['regions'].items()):
-                  results.extend(res)
-
-          mismatch = [r for r in results if r[1] == 'MISMATCH']
-          errors = [r for r in results if r[1] not in ('ok', 'MISMATCH')]
-
-          print(f"ok: {sum(1 for r in results if r[1] == 'ok')}")
-          print(f"MISMATCH: {len(mismatch)}")
-          print(f"errors: {len(errors)}")
-
-          if mismatch:
-              print("\n### Mismatches\n")
-              for k, _, exp, act in mismatch:
-                  print(f"- `{k}`: manifest says {exp}, actual asset is {act} (diff {act-exp:+})")
-          if errors:
-              print("\n### Errors (HEAD failed)\n")
-              for k, status, exp, act in errors:
-                  print(f"- `{k}`: {status} ({act})")
-
-          # Write exit marker for the next step
-          with open('verify-status.txt', 'w') as f:
-              if mismatch or errors:
-                  f.write('FAIL\n')
-              else:
-                  f.write('PASS\n')
-          PY
-          cat verify-output.txt
-          echo ""
-          echo "status=$(cat verify-status.txt)"
-          echo "status=$(cat verify-status.txt)" >> $GITHUB_OUTPUT
-
-      - name: Open issue on mismatch
-        if: steps.verify.outputs.status == 'FAIL'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Deduplicate: if an open issue already exists with the same title, update it instead of opening a new one
-          TITLE="Manifest/asset drift detected in latest release"
+          # Deduplicate: update the existing open issue instead of opening a new one.
+          TITLE="Release integrity failure in latest release"
           EXISTING=$(gh issue list --state open --search "$TITLE in:title" --json number --jq '.[0].number // empty')
 
           BODY=$(cat <<EOF
-          The nightly \`verify-manifest\` workflow detected that one or more assets
-          in the latest release have sizes that disagree with \`manifest.json\`.
-          Clients validating downloads against the manifest will reject these files
-          and retry forever.
+          The \`verify-manifest\` workflow decompress-tested every region in the latest
+          release and one or more assets are **truncated / corrupt / missing** or their
+          size disagrees with \`manifest.json\`. Affected clients reject the download and
+          retry forever, or fail on-device at decompress / SQLite open (Rods BUG-242 /
+          BUG-243).
 
-          ### Output
+          ### Output (tail)
           \`\`\`
-          $(cat verify-output.txt)
+          $(tail -c 6000 scripts/verify-output.txt 2>/dev/null || echo "see workflow logs")
           \`\`\`
 
           ### How to fix
-          Run the \`regenerate-manifest\` workflow against the affected release tag
-          (dispatch it with the release tag as input), or manually run:
-          \`\`\`bash
-          cd scripts
-          npm install
-          mkdir -p ./output
-          gh release download <TAG> -D ./output
-          npm run generate-manifest -- --input ./output --output ./output/manifest.json --version <DATE>
-          gh release upload <TAG> ./output/manifest.json --clobber
-          \`\`\`
-          (where \`<DATE>\` matches the release's existing \`version\` field — DO NOT bump it.)
+          Re-run the **Monthly OSM Data Extraction** workflow as a FULL run (not a
+          single-region dispatch — single-region runs never publish). Extraction now
+          decompress-tests every region both before and after publishing, so a truncated
+          asset cannot ship. A pure manifest/size drift (asset re-uploaded without
+          regenerating the manifest) can instead be repaired via the
+          \`regenerate-manifest\` workflow against the affected tag.
 
           _Detected automatically by \`.github/workflows/verify-manifest.yml\`._
           EOF
@@ -170,4 +90,3 @@ jobs:
             echo "Opening new issue"
             gh issue create --title "$TITLE" --body "$BODY" --label "bug"
           fi
-          exit 1  # fail the workflow so the red X is visible on the actions tab

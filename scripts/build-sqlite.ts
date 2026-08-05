@@ -48,6 +48,13 @@ interface BundledRoundabout {
   type: 'roundabout' | 'mini_roundabout';
 }
 
+/** FEAT-051 toll plaza — one point per plaza, already lane-clustered by extract-single.ts. */
+interface BundledTollPoint {
+  lat: number;
+  lon: number;
+  tags?: Record<string, string>;
+}
+
 interface BundledRoadSurface {
   surface: string;
   coords: number[];
@@ -57,6 +64,11 @@ interface BundledRoadWay {
   highway: string;
   surface?: string;
   coords: number[];
+  /** Route reference (`ref`), e.g. "A4"/"E67" — additive identity signal. */
+  ref?: string;
+  /** OSM way ID — a STABLE cross-download identity key, unlike `road_ways.id`
+   *  (a per-build AUTOINCREMENT rowid that means a different road each extract). */
+  osmId?: number;
   /** Phase 2: routing-relevant tags consumed by Free Roam OSM walker.
    *  `oneway` values are only `'yes'` or `'-1'` (other OSM values are
    *  bidirectional). `name` is diagnostic-only. `access` lists only the
@@ -151,12 +163,14 @@ CREATE TABLE IF NOT EXISTS road_ways (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   highway TEXT NOT NULL,
   surface TEXT,
-  oneway TEXT,
   name TEXT,
+  ref TEXT,
+  oneway TEXT,
   access TEXT,
   junction TEXT,
   maxspeed INTEGER,
   maxspeed_type TEXT,
+  osm_id INTEGER,
   coords TEXT NOT NULL,
   min_lat REAL NOT NULL,
   max_lat REAL NOT NULL,
@@ -164,6 +178,7 @@ CREATE TABLE IF NOT EXISTS road_ways (
   max_lon REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ways_bbox ON road_ways(min_lat, max_lat, min_lon, max_lon);
+CREATE INDEX IF NOT EXISTS idx_ways_osm_id ON road_ways(osm_id);
 
 CREATE TABLE IF NOT EXISTS built_up_areas (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,6 +189,14 @@ CREATE TABLE IF NOT EXISTS built_up_areas (
   max_lon REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_builtup_bbox ON built_up_areas(min_lat, max_lat, min_lon, max_lon);
+
+CREATE TABLE IF NOT EXISTS toll_points (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  lat REAL NOT NULL,
+  lon REAL NOT NULL,
+  tags TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_toll_lat_lon ON toll_points(lat, lon);
 
 CREATE TABLE IF NOT EXISTS metadata (
   key TEXT PRIMARY KEY,
@@ -351,7 +374,10 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
     'INSERT INTO road_surfaces (surface, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?)',
   );
   const insertWay = db.prepare(
-    'INSERT INTO road_ways (highway, surface, oneway, name, access, junction, maxspeed, maxspeed_type, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO road_ways (highway, surface, name, ref, oneway, access, junction, maxspeed, maxspeed_type, osm_id, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  );
+  const insertToll = db.prepare(
+    'INSERT INTO toll_points (lat, lon, tags) VALUES (?, ?, ?)',
   );
   const insertBuiltUp = db.prepare(
     'INSERT INTO built_up_areas (kind, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?)',
@@ -388,6 +414,24 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
   });
   console.log(`  ✓ ${raCount} roundabouts`);
 
+  // Insert toll plazas (FEAT-051).
+  //
+  // A SEPARATE TABLE, not a `type` inside traffic_calming, and that is load-bearing: every
+  // region release is downloaded by every INSTALLED app build, and builds before 1.8.10 map an
+  // unrecognised calming type to `speed_bump`. A `type='toll_booth'` row in the shared table
+  // would announce a phantom "speed bump" at every toll booth in Europe on those builds. A
+  // table they never SELECT from is invisible to them.
+  //
+  // The array is ABSENT on any core file produced before tolls shipped — streamJsonArray simply
+  // yields nothing, so an old core still builds a valid (toll-less) database.
+  let tollCount = 0;
+  console.log('Streaming toll plaza data...');
+  await streamJsonArray<BundledTollPoint>(corePath, 'tollPoints', (tp) => {
+    insertToll.run(tp.lat, tp.lon, tp.tags ? JSON.stringify(tp.tags) : null);
+    tollCount++;
+  });
+  console.log(`  ✓ ${tollCount} toll plazas`);
+
   // Insert surface data
   let surfaceCount = 0;
   let hasSurfaceData = false;
@@ -414,12 +458,14 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
       insertWay.run(
         rw.highway,
         rw.surface ?? null,
-        rw.oneway ?? null,
         rw.name ?? null,
+        rw.ref ?? null,
+        rw.oneway ?? null,
         rw.access ?? null,
         rw.junction ?? null,
         normalizeMaxspeedKmh(rw.maxspeed),
         rw.maxspeedType ?? null,
+        rw.osmId ?? null,
         JSON.stringify(rw.coords),
         minLat,
         maxLat,
@@ -469,6 +515,24 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
   // Compress with gzip
   console.log('Compressing...');
   execSync(`gzip -9 -k "${sqlitePath}"`, { stdio: 'inherit' });
+
+  // Integrity gate: prove the .gz actually decompresses back to the SQLite BEFORE
+  // we delete the uncompressed source and ship it. `gzip -t` validates the whole
+  // DEFLATE stream + CRC32 + ISIZE footer; the ISIZE cross-check catches a footer
+  // that lies about the length. A truncated/corrupt .gz otherwise gets a
+  // self-consistent size+checksum in the manifest and fails only on the user's
+  // phone — at decompress (Android, Rods BUG-242) or SQLite open (iOS, BUG-243).
+  console.log('Verifying gzip integrity (gzip -t)...');
+  execSync(`gzip -t "${sqliteGzPath}"`, { stdio: 'inherit' });
+  const decompressedSize = Number(
+    execSync(`gzip -dc "${sqliteGzPath}" | wc -c`, { shell: '/bin/bash' }).toString().trim(),
+  );
+  if (decompressedSize !== sqliteSize) {
+    throw new Error(
+      `Integrity FAIL for ${regionId}.sqlite.gz: decompresses to ${decompressedSize} bytes, ` +
+        `expected ${sqliteSize}. Refusing to ship a truncated asset (Rods BUG-242/243).`,
+    );
+  }
 
   // Remove uncompressed SQLite (only keep .sqlite.gz for release)
   unlinkSync(sqlitePath);
