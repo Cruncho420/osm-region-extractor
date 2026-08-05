@@ -84,60 +84,131 @@ function valhalla(action, payload) {
  * point that snaps to a road across the border would produce a "sanity route"
  * the tiles cannot serve.
  */
-const GRID = 7;
-const candidates = [];
-for (let i = 0; i < GRID; i++) {
-  for (let j = 0; j < GRID; j++) {
-    candidates.push({
-      lat: minLat + ((maxLat - minLat) * (i + 1)) / (GRID + 1),
-      lon: minLon + ((maxLon - minLon) * (j + 1)) / (GRID + 1),
-    });
+/**
+ * Sample densities, tried in order until two distinct road points are found.
+ *
+ * WHY ESCALATING AND NOT ONE FIXED NUMBER: a single fixed grid assumes roads are
+ * spread roughly evenly through the bounding box. That holds for a compact
+ * country and collapses for anything ocean-dominated or mostly uninhabited —
+ * north-america-us-hawaii's bbox spans ~23° of longitude and is over 99% open
+ * Pacific, so at 7×7 essentially no sample lands within Valhalla's ~35 km search
+ * cutoff of a road. The same applies to asia-indonesia (778 deg²), asia-japan
+ * (661), north-america-us-alaska (991), north-america-canada (3,662) and
+ * asia-russia (6,522) — archipelagos and mostly-empty landmasses, several of
+ * them regions we actually care about.
+ *
+ * Raising the fixed grid instead would be the wrong fix twice over: it would
+ * still fail the next sparse region, and it would charge all 234 regions the
+ * dense probe to rescue the handful that need it. Escalating means the common
+ * case pays exactly what it paid before (49 points, 4 `locate` calls) and only a
+ * region that comes up short pays for more.
+ *
+ * ⚠️ WHAT THIS DOES NOT FIX, MEASURED NOT ASSUMED. Escalation rescues regions
+ * whose roads are merely THIN (large interiors: Canada, Russia, Alaska). It does
+ * NOT rescue an extreme archipelago. Simulated against a Hawaii-shaped bbox with
+ * an Oahu-sized landmass, 21×21 still yields ONE distinct point: the spacing at
+ * that density is ~1.07° of longitude, still wider than the island. Chasing it
+ * with more density is the wrong instrument — grid sampling asks "where is the
+ * box?" when the question is "where are the roads?". Those regions need either a
+ * curated SANITY_ROUTES entry (what the error below now tells the operator) or a
+ * sampler seeded from the region's own road data rather than its bounds.
+ *
+ * Bounded deliberately: three steps, worst case 441 points ≈ 30 docker calls, on
+ * the failure path only. An unbounded search would turn one bad region into a
+ * job that burns the 6-hour cap.
+ */
+const GRID_STEPS = [7, 13, 21];
+
+function gridCandidates(n) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      out.push({
+        lat: minLat + ((maxLat - minLat) * (i + 1)) / (n + 1),
+        lon: minLon + ((maxLon - minLon) * (j + 1)) / (n + 1),
+      });
+    }
   }
+  return out;
 }
 
-// Batched because `locate` is subject to service_limits.max_locations, and a
-// single oversized request would fail the whole derivation rather than degrade.
-const snapped = [];
-for (let i = 0; i < candidates.length; i += 15) {
-  const batch = candidates.slice(i, i + 15);
-  let out;
-  try {
-    out = valhalla('locate', { locations: batch, costing: 'auto' });
-  } catch {
-    continue; // a batch with no routable point at all returns non-zero — expected
+/** Snap a batch of candidates onto real edges. Batched because `locate` is
+ *  subject to service_limits.max_locations, and one oversized request would fail
+ *  the whole derivation rather than degrade. */
+function snapAll(candidates) {
+  const snapped = [];
+  for (let i = 0; i < candidates.length; i += 15) {
+    const batch = candidates.slice(i, i + 15);
+    let out;
+    try {
+      out = valhalla('locate', { locations: batch, costing: 'auto' });
+    } catch {
+      continue; // a batch with no routable point at all returns non-zero — expected
+    }
+    const start = out.indexOf('[');
+    if (start === -1) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(out.slice(start));
+    } catch {
+      continue;
+    }
+    for (const loc of parsed) {
+      const edge = loc?.edges?.[0];
+      if (!edge || edge.correlated_lat === undefined) continue;
+      snapped.push({
+        lat: Number(edge.correlated_lat.toFixed(6)),
+        lon: Number(edge.correlated_lon.toFixed(6)),
+      });
+    }
   }
-  const start = out.indexOf('[');
-  if (start === -1) continue;
-  let parsed;
-  try {
-    parsed = JSON.parse(out.slice(start));
-  } catch {
-    continue;
-  }
-  for (const loc of parsed) {
-    const edge = loc?.edges?.[0];
-    if (!edge || edge.correlated_lat === undefined) continue;
-    snapped.push({
-      lat: Number(edge.correlated_lat.toFixed(6)),
-      lon: Number(edge.correlated_lon.toFixed(6)),
-    });
-  }
+  return snapped;
 }
 
-// Dedupe — neighbouring grid points often snap to the same edge.
-const seen = new Set();
-const points = snapped.filter((p) => {
-  const k = `${p.lat},${p.lon}`;
-  if (seen.has(k)) return false;
-  seen.add(k);
-  return true;
-});
+let points = [];
+let probed = 0;
+let anySnapped = false;
+for (const n of GRID_STEPS) {
+  const candidates = gridCandidates(n);
+  probed = candidates.length;
+  const snapped = snapAll(candidates);
+  if (snapped.length > 0) anySnapped = true;
+  // Dedupe — neighbouring grid points often snap to the same edge, and on a
+  // small region a whole grid can collapse onto one road.
+  const seen = new Set();
+  points = snapped.filter((p) => {
+    const k = `${p.lat},${p.lon}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  if (points.length >= 2) {
+    if (n !== GRID_STEPS[0]) {
+      console.error(`derive-sanity-route: ${region} needed a ${n}×${n} grid (${points.length} distinct points)`);
+    }
+    break;
+  }
+  if (n !== GRID_STEPS[GRID_STEPS.length - 1]) {
+    console.error(`derive-sanity-route: ${region} yielded ${points.length} point(s) at ${n}×${n} — densifying`);
+  }
+}
 
 if (points.length < 2) {
-  console.error(
-    `::error::derive-sanity-route: only ${points.length} of ${candidates.length} grid points ` +
-    `snapped to a road in ${region}. Cannot derive a pair — the tiles are probably empty.`,
-  );
+  // Two genuinely different faults, and conflating them sent the last operator
+  // to debug tile generation for a region whose tiles were fine. Say which.
+  if (!anySnapped) {
+    console.error(
+      `::error::derive-sanity-route: NOT ONE of ${probed} probes snapped to a road in ${region}. ` +
+      `The tiles are the suspect — check that the build produced routable edges, not just .gph files.`,
+    );
+  } else {
+    console.error(
+      `::error::derive-sanity-route: only ${points.length} distinct road point(s) from ${probed} probes ` +
+      `in ${region}. The TILES ARE FINE — the region's roads are too sparse relative to its bounding ` +
+      `box for grid sampling to find a pair. Add a curated entry to SANITY_ROUTES in ` +
+      `.github/workflows/valhalla-tiles.yml for this region.`,
+    );
+  }
   process.exit(1);
 }
 
