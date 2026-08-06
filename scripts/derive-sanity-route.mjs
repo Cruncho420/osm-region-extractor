@@ -263,6 +263,10 @@ console.log(JSON.stringify({
   urban: urban ? fmt(urban) : null,
   urbanKm: urban ? Math.round(haversine(urban[0], urban[1]) / 1000) : null,
   candidates: points.length,
-  gridTried: candidates.length,
+  // `probed`, not `candidates.length`: the grid array is scoped to the
+  // escalation loop that builds it, so it does not exist out here. `probed`
+  // carries the size of the grid that actually ran, which is the number this
+  // field was always reporting.
+  gridTried: probed,
   splitAxis: splitOnLat ? 'lat' : 'lon',
 }));

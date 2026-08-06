@@ -136,7 +136,10 @@ env:
     "north-america-us-us-virgin-islands":"17.747,-64.703|17.714,-64.883",
     "north-america-us-alaska":"61.218,-149.900|64.838,-147.716",
     "north-america-canada":"43.653,-79.383|45.421,-75.697",
-    "asia-russia":"55.756,37.617|56.297,43.936"}
+    "asia-russia":"55.756,37.617|56.297,43.936",
+    "europe-italy":"41.903,12.496|45.464,9.190",
+    "europe-spain":"40.417,-3.704|41.385,2.173",
+    "europe-great-britain":"51.507,-0.128|53.480,-2.243"}
   # Landmass per pair, for the record:
   #   hawaii Oahu (Honolulu→Haleiwa) · indonesia Java (Jakarta→Bandung)
   #   philippines Luzon (Manila→Baguio) · japan Honshu (Tokyo→Osaka)
@@ -145,6 +148,15 @@ env:
   #   denmark Jutland (Aarhus→Aalborg) · cyprus south (Nicosia→Limassol)
   #   us-virgin-islands St Croix · alaska road system (Anchorage→Fairbanks)
   #   canada Ontario (Toronto→Ottawa) · russia west (Moscow→Nizhny Novgorod)
+  #   italy mainland (Rome→Milan) · spain mainland (Madrid→Barcelona)
+  #   great-britain the GB island (London→Manchester)
+  #
+  # Italy/Spain/GB are mainland-plus-islands, added 2026-08-06 after the runner-
+  # budget run: Sardinia and Sicily have no road to the Italian mainland, the
+  # Balearics none to Spain, and the GB extract carries Wight/Hebrides/Orkney. A
+  # derived pair can legitimately straddle one of those and be unroutable.
+  # FRANCE deliberately absent: it is split into sub-regions and Corsica is its
+  # OWN region, so no French region contains two disconnected landmasses.
 
 jobs:
   # Job 1: Resolve the comma-list input to canonical region ids from regions.json
