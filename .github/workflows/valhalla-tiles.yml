@@ -608,10 +608,24 @@ jobs:
       - name: Stage release files
         run: |
           set -euo pipefail
-          mkdir -p release-files reports
+          mkdir -p release-files reports sidecars
           mv all-packs/valhalla-report-*.json reports/
-          mv all-packs/*-valhalla.tar.gz all-packs/*-valhalla.tar.gz.sha256 \
-             all-packs/*-corridors.json release-files/
+          mv all-packs/*-valhalla.tar.gz all-packs/*-corridors.json release-files/
+          # .sha256 sidecars are BUILT but NOT PUBLISHED (LEG 3.4).
+          #
+          # They are still produced per region and still read inside the build job
+          # (the `sha256=` output that becomes valhallaChecksum comes from cutting
+          # this file), so nothing about checksum provenance changes — they simply
+          # stop being release assets.
+          #
+          # Why: a GitHub release caps at 1000 assets and the monthly one already
+          # sits near it. At 233 regions the sidecars are 233 assets buying nothing:
+          # the manifest is the checksum source of truth and the app verifies the
+          # downloaded tar against `valhallaChecksum` from the manifest
+          # (valhallaPackManager.ts), never against a sidecar. Grepped before
+          # removing — no workflow, script or client reads the published file.
+          mv all-packs/*-valhalla.tar.gz.sha256 sidecars/ 2>/dev/null || true
+          echo "release assets: $(ls release-files | wc -l)   unpublished sidecars: $(ls sidecars | wc -l)"
           ls -la release-files reports
 
       - name: Build smoke manifest + summary table
@@ -620,20 +634,41 @@ jobs:
           set -euo pipefail
           # One dataVersion stamps all artifacts of the run — same YYYY-MM-DD
           # convention as the monthly manifest version.
-          VERSION=$(date +'%Y-%m-%d')
-          # Tag override lets a dispatch pick its own valhalla-smoke-* tag (e.g. a
-          # contract-verification run that must not collide with run_number tags).
-          # The prefix check is load-bearing: any other tag shape could hijack
-          # releases/latest or the monthly osm-* namespace.
+          # Two tag shapes, and the VERSION rule differs between them — this is the
+          # whole of LEG 3.4 and getting it wrong 404s every download.
+          #
+          #   valhalla-smoke-<n>      throwaway CI proof. VERSION = today.
+          #   valhalla-<YYYY-MM-DD>   PRODUCTION packs. VERSION = THE DATE IN THE TAG.
+          #
+          # Why production takes its version from the tag instead of the clock: the
+          # app and verify-release build their download URL as
+          # `releases/download/valhalla-${manifestVersion}/{region}-valhalla.tar.gz`,
+          # where manifestVersion is the MONTHLY manifest's version. That monthly
+          # release is cut on its own date, and this job may run days later. Stamping
+          # today's date would publish `valhalla-2026-08-06` while every client asks
+          # for `valhalla-2026-08-02` — a 404 for every region, from a run that
+          # reported success. The tag IS the contract; the clock is not.
+          #
+          # The prefix check stays load-bearing either way: any other tag shape could
+          # hijack releases/latest or the monthly osm-* namespace.
           TAG_INPUT="${{ inputs.tag }}"
           if [ -n "$TAG_INPUT" ]; then
             case "$TAG_INPUT" in
-              valhalla-smoke-*) TAG="$TAG_INPUT" ;;
-              *) echo "::error::tag input '$TAG_INPUT' must start with 'valhalla-smoke-'"; exit 1 ;;
+              valhalla-smoke-*)
+                TAG="$TAG_INPUT"; VERSION=$(date +'%Y-%m-%d'); CHANNEL=smoke ;;
+              valhalla-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
+                TAG="$TAG_INPUT"; VERSION="${TAG_INPUT#valhalla-}"; CHANNEL=production ;;
+              *)
+                echo "::error::tag input '$TAG_INPUT' must be 'valhalla-smoke-<n>' or 'valhalla-<YYYY-MM-DD>'"
+                exit 1 ;;
             esac
           else
             TAG="valhalla-smoke-${{ github.run_number }}"
+            VERSION=$(date +'%Y-%m-%d')
+            CHANNEL=smoke
           fi
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "Channel: $CHANNEL   Tag: $TAG   dataVersion: $VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
           # P1.6 contract manifest: regions carry valhallaSize (bytes of the
@@ -670,17 +705,33 @@ jobs:
           # "latest" and 404 every manifest.json fetch (this release DOES carry a
           # manifest.json asset, which is safe only because a prerelease can never
           # become releases/latest).
+          # --prerelease on BOTH channels, production included. This is not a
+          # leftover from the smoke days: the production manifest.json lives on the
+          # monthly osm-* release and clients resolve it through
+          # releases/latest/download/manifest.json. This release also carries a
+          # manifest.json asset, so the moment it stopped being a prerelease it
+          # would become `latest` and every client would fetch THIS manifest —
+          # which lists only valhalla fields — instead of the real one. Nothing
+          # here needs `latest`: the pack URL is version-pinned by tag.
+          CHANNEL="${{ steps.info.outputs.channel }}"
+          if [ "$CHANNEL" = production ]; then
+            TITLE="Valhalla Routing Packs - ${{ steps.info.outputs.version }}"
+            LEAD="PRODUCTION Valhalla routing packs (FEAT-033). Consumed by the app: the pack URL is built as releases/download/$TAG/{region}-valhalla.tar.gz, pinned to the manifest version, so this tag MUST match the monthly manifest's version."
+          else
+            TITLE="Valhalla Routing Packs (smoke) - ${{ steps.info.outputs.version }}"
+            LEAD="SMOKE-TEST Valhalla routing packs (FEAT-033 P1.6 app contract). Not consumed by any production client."
+          fi
           gh release create "$TAG" \
             --prerelease \
             --target "${{ github.sha }}" \
-            --title "Valhalla Routing Packs (smoke) - ${{ steps.info.outputs.version }}" \
-            --notes "SMOKE-TEST Valhalla routing packs (FEAT-033 P1.6 app contract). Not consumed by any production client yet.
+            --title "$TITLE" \
+            --notes "$LEAD
 
           **dataVersion:** ${{ steps.info.outputs.version }}
 
           **Contents (per region):**
           - {region-id}-valhalla.tar.gz - gzip of the SINGLE valhalla_build_extract tar (index.bin + graph tiles) that mjolnir.tile_extract memory-maps; GRAPH-ONLY (no tz/admin sqlite)
-          - {region-id}-valhalla.tar.gz.sha256 - full SHA-256 (verify: sha256sum -c)
+          - (no .sha256 sidecars: the manifest's valhallaChecksum is the checksum of record, and 233 sidecars would burn a quarter of GitHub's 1000-asset cap for nothing)
           - {region-id}-corridors.json - P1.8 corridor fixtures: array of {name, request, response} with the FULL valhalla route response from CI verification
           - manifest.json - regions carry valhallaSize + valhallaChecksum (sha256 first 16 hex, same truncation as generate-manifest.ts computeChecksum)
           - valhalla-manifest.json - legacy copy of manifest.json (pre-P1.6 name)
