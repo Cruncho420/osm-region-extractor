@@ -8,7 +8,9 @@
     "build-sqlite": "tsx build-sqlite.ts",
     "generate-manifest": "tsx generate-manifest.ts",
     "generate-regions": "tsx generate-regions.ts",
-    "verify-release": "tsx verify-release.ts"
+    "verify-release": "tsx verify-release.ts",
+    "merge-valhalla-fields": "node merge-valhalla-fields.mjs",
+    "test": "node --test"
   },
   "dependencies": {
     "better-sqlite3": "^11.0.0",
