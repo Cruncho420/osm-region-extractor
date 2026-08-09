@@ -1,0 +1,56 @@
+name: Scripts Tests
+
+# Purpose: run the scripts/ unit tests on every change to them.
+#
+# WHY THIS EXISTS: scripts/merge-valhalla-fields.mjs is the only thing standing
+# between a rollout and a damaged production manifest.json — the file EVERY app
+# install reads to download road data. Its guard refuses any merge that is not
+# strictly additive (same version, same region set, every pre-existing field
+# byte-identical). A guard that only runs when someone remembers to run it is not
+# a guard, and until this workflow existed nothing in CI ran `npm test` at all.
+#
+# node --test, no test-runner dependency: the whole point of these scripts is to
+# be runnable from a bare runner with `npm install` and nothing exotic.
+
+on:
+  push:
+    paths:
+      - 'scripts/**'
+      - '.github/workflows/scripts-tests.yml'
+  pull_request:
+    paths:
+      - 'scripts/**'
+      - '.github/workflows/scripts-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # `npm install`, not `npm ci`: scripts/ ships no lockfile today, and adding
+      # one here would be an unrelated change to how every other workflow installs.
+      - name: Install dependencies
+        working-directory: scripts
+        run: npm install
+
+      - name: Run tests
+        working-directory: scripts
+        run: npm test
+
+      # The merge script is what edits production manifest.json, so a syntax
+      # error in it must fail here rather than mid-rollout. `--check` parses
+      # without executing; the file guards its CLI behind an import.meta check,
+      # but not executing at all is stronger than relying on that guard.
+      - name: Syntax-check the merge script
+        working-directory: scripts
+        run: node --check merge-valhalla-fields.mjs

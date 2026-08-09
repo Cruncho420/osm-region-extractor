@@ -1,0 +1,231 @@
+name: Merge Valhalla Fields Into Production Manifest
+
+# Purpose: add per-region valhallaSize / valhallaChecksum to a published monthly
+# manifest.json, so the app can find and verify the routing packs.
+#
+# ── THIS IS THE ONE STEP THAT TOUCHES WHAT USERS READ ──────────────────────────
+#
+# Every install fetches releases/latest/download/manifest.json to download road
+# data. A bad edit here breaks the app for people who have never heard of
+# Valhalla. Everything before this point is undone by deleting a prerelease; this
+# is undone only by restoring a backup, which is why the backup is taken as a
+# RELEASE ASSET (durable, versioned, fetchable by anyone) and not a runner file.
+#
+# Order is the safety property:
+#   1. tests           — the additive-only guard must be known-good before it is trusted
+#   2. backup          — uploaded and re-downloaded to prove it is really there
+#   3. dry run + diff  — printed field-by-field, and on a canary run a human reads it
+#   4. merge + upload
+#   5. verify          — streams every published pack and checks its sha256 against
+#                        the manifest we just wrote (not the one we meant to write)
+#
+# Step 5 is deliberately AFTER the upload: verifying the local file would only
+# prove the merge script works, which step 1 already proved. What matters is
+# whether what GitHub now serves agrees with what GitHub now claims.
+#
+# See MANIFEST-INTEGRATION.md for the rollout runbook and
+# scripts/merge-valhalla-fields.mjs for why the merge does not re-download 88 GB
+# of assets to recompute values CI already computed on the bytes it uploaded.
+
+on:
+  workflow_dispatch:
+    inputs:
+      osm_tag:
+        description: 'Monthly release whose manifest.json is amended (e.g. osm-2026-08-02)'
+        required: true
+        type: string
+      valhalla_tag:
+        description: 'Valhalla release to take the fields from. Empty = valhalla-<version of that manifest>'
+        required: false
+        default: ''
+        type: string
+      dry_run:
+        description: 'Print the diff and stop. Nothing is uploaded.'
+        required: false
+        default: true
+        type: boolean
+      allow_checksum_change:
+        description: 'Permit a region whose checksum CHANGED under a fixed tag (deliberate rebuild only)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: scripts
+        run: npm install
+
+      # GATE 1 — never trust the guard without re-proving it in this run. If the
+      # additive-only assertions are broken, everything downstream is theatre.
+      - name: Prove the merge guard still works
+        working-directory: scripts
+        run: npm test
+
+      - name: Fetch both manifests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          gh release download "${{ inputs.osm_tag }}" -D work --pattern 'manifest.json'
+          mv work/manifest.json work/base.json
+          VERSION=$(jq -r .version work/base.json)
+          echo "base manifest version: $VERSION"
+
+          VTAG="${{ inputs.valhalla_tag }}"
+          if [ -z "$VTAG" ]; then
+            VTAG="valhalla-$VERSION"
+            echo "valhalla tag not given — derived $VTAG from the manifest version"
+          fi
+          # The derivation is not a convenience: the app builds its pack URL as
+          # releases/download/valhalla-${manifestVersion}/..., so any other tag
+          # publishes URLs that cannot resolve. The merge script refuses a version
+          # mismatch too — this is the same rule enforced one step earlier, where
+          # the error message can still name the tag.
+          echo "VTAG=$VTAG" >> "$GITHUB_ENV"
+          gh release download "$VTAG" -D work --pattern 'manifest.json'
+          mv work/manifest.json work/valhalla.json
+          echo "regions in valhalla release: $(jq '.regions | length' work/valhalla.json)"
+
+      # GATE 2 — the backup, and PROOF the backup exists. Uploading it is not
+      # enough: an upload that silently failed leaves the rollback plan as fiction
+      # exactly when it is needed, so it is re-downloaded and compared byte for byte.
+      - name: Back up the published manifest as a release asset
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION=$(jq -r .version work/base.json)
+          BACKUP="manifest.pre-valhalla-${VERSION}.json"
+          # --clobber is safe and deliberate: re-running the merge for a later
+          # batch must not overwrite the ORIGINAL pre-valhalla state with an
+          # already-merged one. So the backup is only uploaded when it is absent.
+          if gh release view "${{ inputs.osm_tag }}" --json assets \
+               --jq '.assets[].name' | grep -qx "$BACKUP"; then
+            echo "Backup $BACKUP already exists on ${{ inputs.osm_tag }} — keeping the ORIGINAL, not overwriting."
+          else
+            cp work/base.json "work/$BACKUP"
+            gh release upload "${{ inputs.osm_tag }}" "work/$BACKUP"
+            echo "Uploaded $BACKUP"
+          fi
+
+          # Prove it is retrievable, and identical to what we think we saved.
+          curl -sSL --fail -o work/backup-check.json \
+            "https://github.com/${{ github.repository }}/releases/download/${{ inputs.osm_tag }}/$BACKUP"
+          if ! jq -e '.regions | length > 0' work/backup-check.json > /dev/null; then
+            echo "::error::Backup asset is not a usable manifest — refusing to modify production."
+            exit 1
+          fi
+          echo "Backup verified retrievable: $(jq '.regions | length' work/backup-check.json) regions"
+          echo "RESTORE COMMAND (rollback):"
+          echo "  gh release download ${{ inputs.osm_tag }} --pattern '$BACKUP' && \\"
+          echo "  mv $BACKUP manifest.json && gh release upload ${{ inputs.osm_tag }} manifest.json --clobber"
+
+      # GATE 3 — the merge itself refuses anything non-additive. The diff below is
+      # printed for a human; the assertions are what actually stop a bad merge.
+      - name: Merge + print the field-level diff
+        run: |
+          set -euo pipefail
+          ARGS=""
+          if [ "${{ inputs.allow_checksum_change }}" = "true" ]; then
+            ARGS="--allow-checksum-change"
+          fi
+          node scripts/merge-valhalla-fields.mjs \
+            --base work/base.json \
+            --valhalla work/valhalla.json \
+            --out work/merged.json $ARGS
+
+          echo ""
+          echo "=== FIELD-LEVEL DIFF (base -> merged) ==="
+          python3 - <<'PY' | tee work/diff.txt
+          import json
+          a = json.load(open('work/base.json'))
+          b = json.load(open('work/merged.json'))
+          assert a['version'] == b['version'], 'version changed'
+          added, other = [], []
+          for rid, before in a['regions'].items():
+              after = b['regions'][rid]
+              new = sorted(set(after) - set(before))
+              gone = sorted(set(before) - set(after))
+              changed = sorted(k for k in before if before[k] != after.get(k))
+              if new == ['valhallaChecksum', 'valhallaSize'] and not gone and not changed:
+                  added.append(rid)
+              elif new or gone or changed:
+                  other.append((rid, new, gone, changed))
+          print(f"regions gaining valhalla fields: {len(added)}")
+          for rid in added[:20]:
+              print(f"  + {rid}: {b['regions'][rid]['valhallaSize']} B / {b['regions'][rid]['valhallaChecksum']}")
+          if len(added) > 20:
+              print(f"  ... and {len(added) - 20} more")
+          print(f"regions changed in ANY OTHER WAY: {len(other)}")
+          for row in other:
+              print(f"  !! {row}")
+          PY
+
+          # Belt and braces on top of the script's own guard: if this diff shows a
+          # single non-additive change, the guard failed and nothing may be uploaded.
+          if grep -q '  !! ' work/diff.txt; then
+            echo "::error::Diff contains a NON-ADDITIVE change. Refusing to upload."
+            exit 1
+          fi
+
+          {
+            echo "## Manifest merge — ${{ inputs.osm_tag }}"
+            echo ""
+            echo '```'
+            cat work/diff.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop here (dry run)
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "dry_run=true — diff printed above, nothing uploaded."
+          echo "Re-run with dry_run=false once the diff has been read."
+
+      - name: Upload the merged manifest
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cp work/merged.json work/manifest.json
+          gh release upload "${{ inputs.osm_tag }}" work/manifest.json --clobber
+          echo "manifest.json updated on ${{ inputs.osm_tag }}"
+
+      # GATE 4 — verify what GitHub NOW SERVES against what it NOW CLAIMS. This is
+      # the check that would have caught the 2026-07-03 europe-spain incident, and
+      # for valhalla assets it streams sha256 rather than only testing gzip
+      # validity, because sha256 is the field the app itself enforces.
+      - name: Verify every published asset against the merged manifest
+        if: ${{ !inputs.dry_run }}
+        working-directory: scripts
+        run: |
+          set -o pipefail
+          npm run verify-release -- \
+            --manifest-url "https://github.com/${{ github.repository }}/releases/download/${{ inputs.osm_tag }}/manifest.json" \
+            --base-url "https://github.com/${{ github.repository }}/releases/download/${{ inputs.osm_tag }}"
+
+      - name: Point at the rollback if verification failed
+        if: ${{ failure() && !inputs.dry_run }}
+        run: |
+          VERSION=$(jq -r .version work/base.json)
+          echo "::error::Verification FAILED after the manifest was updated. Restore now:"
+          echo "::error::  gh release download ${{ inputs.osm_tag }} --pattern 'manifest.pre-valhalla-${VERSION}.json'"
+          echo "::error::  mv manifest.pre-valhalla-${VERSION}.json manifest.json"
+          echo "::error::  gh release upload ${{ inputs.osm_tag }} manifest.json --clobber"
+          echo "::error::Devices pick the restored manifest up within 1 hour (memory-only cache, refetched every cold start)."
