@@ -206,15 +206,138 @@ jobs:
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
           echo "Resolved regions: $MATRIX"
 
+  # Job 1b: resolve the tag ONCE and make sure the release exists before any
+  # region finishes, because each build job now uploads its own asset.
+  #
+  # ── WHY THE PUBLISH SHAPE CHANGED (LEG 3.7, 2026-08-09) ────────────────────
+  #
+  # This used to be: every region uploads a build ARTIFACT, then one release job
+  # downloads them all and publishes. Three properties of that shape are invisible
+  # at 3-region smoke scale and fatal at 234:
+  #
+  #   1. `if: needs.build.result == 'success'` — fail-fast is false, so ONE failed
+  #      region still marks the matrix failed, and after ~20 hours of building
+  #      NOTHING gets published.
+  #   2. The release job downloaded every artifact onto one runner. At 234 regions
+  #      that is ~45 GB against a runner with far less free disk.
+  #   3. `gh release delete "$TAG"` ran first, so a second batch against the same
+  #      tag DELETED the first batch's assets.
+  #
+  # So each build job uploads its own tar the moment it has passed the sanity
+  # gate, and the final job only collects the tiny per-region report JSONs. A
+  # failed region now costs that region, not the run; re-running dispatches just
+  # the failed ids and --clobber replaces them in place.
+  prepare-release:
+    needs: get-regions
+    # NOT gated on inputs.upload. `build` needs this job, and a SKIPPED dependency
+    # skips the dependent — so gating here would make `upload: false` (the
+    # measure-only mode the 2026-08-06 timing run used) build nothing at all.
+    # Resolving the tag costs seconds and is harmless; only the release CREATION
+    # below is gated.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.info.outputs.tag_name }}
+      version: ${{ steps.info.outputs.version }}
+      channel: ${{ steps.info.outputs.channel }}
+    steps:
+      - name: Resolve tag + dataVersion
+        id: info
+        run: |
+          set -euo pipefail
+          # Two tag shapes, and the VERSION rule differs between them — this is the
+          # whole of LEG 3.4 and getting it wrong 404s every download.
+          #
+          #   valhalla-smoke-<n>      throwaway CI proof. VERSION = today.
+          #   valhalla-<YYYY-MM-DD>   PRODUCTION packs. VERSION = THE DATE IN THE TAG.
+          #
+          # Why production takes its version from the tag instead of the clock: the
+          # app and verify-release build their download URL as
+          # `releases/download/valhalla-${manifestVersion}/{region}-valhalla.tar.gz`,
+          # where manifestVersion is the MONTHLY manifest's version. That monthly
+          # release is cut on its own date, and this job may run days later. Stamping
+          # today's date would publish `valhalla-2026-08-06` while every client asks
+          # for `valhalla-2026-08-02` — a 404 for every region, from a run that
+          # reported success. The tag IS the contract; the clock is not.
+          TAG_INPUT="${{ inputs.tag }}"
+          if [ -n "$TAG_INPUT" ]; then
+            case "$TAG_INPUT" in
+              valhalla-smoke-*)
+                TAG="$TAG_INPUT"; VERSION=$(date +'%Y-%m-%d'); CHANNEL=smoke ;;
+              valhalla-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
+                TAG="$TAG_INPUT"; VERSION="${TAG_INPUT#valhalla-}"; CHANNEL=production ;;
+              *)
+                echo "::error::tag input '$TAG_INPUT' must be 'valhalla-smoke-<n>' or 'valhalla-<YYYY-MM-DD>'"
+                exit 1 ;;
+            esac
+          else
+            TAG="valhalla-smoke-${{ github.run_number }}"
+            VERSION=$(date +'%Y-%m-%d')
+            CHANNEL=smoke
+          fi
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Channel: $CHANNEL   Tag: $TAG   dataVersion: $VERSION"
+
+      - name: Create the release if it does not exist
+        if: inputs.upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.info.outputs.tag_name }}"
+          # NEVER `gh release delete` here. Batched dispatches against one
+          # production tag are the intended workflow, and deleting would discard
+          # every region a previous batch published. Existing = reuse, always.
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "Release $TAG already exists — appending to it."
+            exit 0
+          fi
+          if [ "${{ steps.info.outputs.channel }}" = production ]; then
+            TITLE="Valhalla Routing Packs - ${{ steps.info.outputs.version }}"
+            LEAD="PRODUCTION Valhalla routing packs (FEAT-033). Consumed by the app: the pack URL is built as releases/download/$TAG/{region}-valhalla.tar.gz, pinned to the manifest version, so this tag MUST match the monthly manifest's version."
+          else
+            TITLE="Valhalla Routing Packs (smoke) - ${{ steps.info.outputs.version }}"
+            LEAD="SMOKE-TEST Valhalla routing packs (FEAT-033 P1.6 app contract). Not consumed by any production client."
+          fi
+          # --prerelease on BOTH channels, production included. The app and
+          # verify-manifest.yml resolve releases/latest/download/manifest.json, and
+          # this release also carries a manifest.json asset — the moment it stopped
+          # being a prerelease it would become `latest` and every client would fetch
+          # THIS manifest, which lists only valhalla fields, instead of the real one.
+          # Nothing here needs `latest`: the pack URL is version-pinned by tag.
+          gh release create "$TAG" \
+            --prerelease \
+            --target "${{ github.sha }}" \
+            --title "$TITLE" \
+            --notes "$LEAD
+
+          **dataVersion:** ${{ steps.info.outputs.version }}
+
+          Assets are uploaded per region as each build job finishes. A region missing from this release FAILED to build — see the workflow run summary.
+
+          **Contents (per region):**
+          - {region-id}-valhalla.tar.gz - gzip of the SINGLE valhalla_build_extract tar (index.bin + graph tiles) that mjolnir.tile_extract memory-maps; GRAPH-ONLY (no tz/admin sqlite)
+          - {region-id}-corridors.json - P1.8 corridor fixtures: array of {name, request, response} with the FULL valhalla route response from CI verification
+          - manifest.json / valhalla-manifest.json - per-region valhallaSize + valhallaChecksum (sha256 first 16 hex), written by the finalize job once every region has reported"
+          echo "Created $TAG"
+
   # Job 2: Build + verify + package one region per matrix job
   build:
-    needs: get-regions
+    needs: [get-regions, prepare-release]
     runs-on: ubuntu-latest
     timeout-minutes: 330
     strategy:
       matrix:
         region: ${{ fromJson(needs.get-regions.outputs.matrix) }}
-      max-parallel: 3
+      # 6, not 3. Measured 2026-08-06: the largest region (asia-russia) takes
+      # 37 min, ~10% of the 6 h job cap, so the per-job risk of more parallelism
+      # is nil — but at 234 regions the SERIAL cost is the whole run, roughly
+      # 16 h of build time. Public-repo runners allow 20 concurrent jobs; 6
+      # halves the wall clock while leaving headroom for the monthly extract to
+      # run alongside without queueing behind this.
+      max-parallel: 6
       fail-fast: false  # One region failing must not kill the others
     env:
       REGION: ${{ matrix.region }}
@@ -587,102 +710,145 @@ jobs:
             echo "| ${{ steps.pbf.outputs.pbf_mb }} | ${{ steps.tiles.outputs.tiles_seconds }} | ${{ steps.pack.outputs.gz_mb }} | \`${{ steps.pack.outputs.sha16 }}\` | ${{ steps.sanity.outputs.result }} | c${{ steps.tiles.outputs.concurrency }} | ${{ steps.tiles.outputs.retried }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload artifact
+      # ── L3 of the upload accuracy chain ───────────────────────────────────
+      # Upload THIS region's assets now, from the job that built and verified
+      # them, and then prove the bytes GitHub is serving are the bytes we sent.
+      #
+      # The HEAD check is the link nothing else covers: the sanity gate proves
+      # the local file routes, and verify-release later proves the SERVED file
+      # matches the manifest — but between them sits an upload that can truncate.
+      # Catching it here names the region while its logs are still in front of
+      # you, instead of surfacing as a mystery checksum failure hours later.
+      #
+      # .sha256 sidecars are BUILT but NOT PUBLISHED. They are still produced and
+      # still read inside this job (the `sha256=` output that becomes
+      # valhallaChecksum comes from cutting the file), so checksum provenance is
+      # unchanged — they simply stop being release assets. A release caps at 1000
+      # assets; at 234 regions the sidecars would be 234 of them buying nothing,
+      # since the manifest is the checksum source of truth and the app verifies
+      # against valhallaChecksum from the manifest, never a sidecar.
+      - name: Upload this region to the release + verify the upload
+        if: inputs.upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare-release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" \
+            "${REGION}-valhalla.tar.gz" \
+            "${REGION}-corridors.json" \
+            --clobber
+          echo "Uploaded ${REGION} to $TAG"
+
+          EXPECTED="${{ steps.pack.outputs.gz_bytes }}"
+          URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${REGION}-valhalla.tar.gz"
+          # Retry: a just-uploaded asset can 404 briefly while the CDN catches up,
+          # which is not the same thing as a bad upload and must not fail the region.
+          SERVED=""
+          for attempt in 1 2 3 4 5; do
+            # Last Content-Length wins: the request follows redirects to the CDN,
+            # so several header blocks come back and only the final one is the asset.
+            SERVED=$(curl -sSLI --fail "$URL" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="content-length:"{v=$2} END{print v}' || echo "")
+            [ -n "$SERVED" ] && break
+            echo "HEAD not ready yet (attempt $attempt) — waiting"
+            sleep 10
+          done
+          if [ -z "$SERVED" ]; then
+            echo "::error::[$REGION] uploaded asset is not reachable at $URL — refusing to report success"
+            exit 1
+          fi
+          if [ "$SERVED" != "$EXPECTED" ]; then
+            echo "::error::[$REGION] TRUNCATED UPLOAD — served $SERVED B, built $EXPECTED B. Asset must be re-uploaded."
+            exit 1
+          fi
+          echo "Upload verified: served Content-Length $SERVED B == built $EXPECTED B"
+
+      # Only the report JSON travels as an artifact — a few hundred bytes per
+      # region. The tar deliberately does NOT: shipping 45 GB through the artifact
+      # store just to hand it to a publish job is what made the old shape
+      # undeployable at 234 regions.
+      - name: Upload region report
         uses: actions/upload-artifact@v4
         with:
-          name: valhalla-${{ matrix.region }}
-          path: |
-            ${{ matrix.region }}-valhalla.tar.gz
-            ${{ matrix.region }}-valhalla.tar.gz.sha256
-            ${{ matrix.region }}-corridors.json
-            valhalla-report-${{ matrix.region }}.json
-          retention-days: 1  # Clean up quickly to save storage (mirrors osm-extract.yml)
-          compression-level: 0  # tar.gz is already compressed
+          name: valhalla-report-${{ matrix.region }}
+          path: valhalla-report-${{ matrix.region }}.json
+          retention-days: 1
 
   # Job 3: Collect packs, publish the smoke PRERELEASE, print the size table.
   # Runs only when every region built AND verified — a partial smoke release has
   # no value and could mislead consumers.
-  release:
-    needs: [get-regions, build]
+  # Job 3: write the release's manifest from the per-region reports, and say
+  # plainly which regions are missing.
+  #
+  # `!cancelled()` and NOT `needs.build.result == 'success'`: with 234 regions a
+  # run where every single one succeeds is not the common case, and the old gate
+  # meant one archipelago with an unroutable sanity pair discarded a ~20-hour
+  # build. Regions that succeeded have already uploaded themselves; this job's
+  # duty is to describe what is actually there, failures included.
+  finalize:
+    needs: [get-regions, prepare-release, build]
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    if: needs.build.result == 'success' && inputs.upload
+    if: ${{ !cancelled() && inputs.upload }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download all artifacts
+      - name: Download region reports
         uses: actions/download-artifact@v4
         with:
-          pattern: valhalla-*
-          path: all-packs
+          pattern: valhalla-report-*
+          path: all-reports
           merge-multiple: true
 
-      - name: Stage release files
+      - name: Stage reports + name the regions that did not report
         run: |
           set -euo pipefail
-          mkdir -p release-files reports sidecars
-          mv all-packs/valhalla-report-*.json reports/
-          mv all-packs/*-valhalla.tar.gz all-packs/*-corridors.json release-files/
-          # .sha256 sidecars are BUILT but NOT PUBLISHED (LEG 3.4).
-          #
-          # They are still produced per region and still read inside the build job
-          # (the `sha256=` output that becomes valhallaChecksum comes from cutting
-          # this file), so nothing about checksum provenance changes — they simply
-          # stop being release assets.
-          #
-          # Why: a GitHub release caps at 1000 assets and the monthly one already
-          # sits near it. At 233 regions the sidecars are 233 assets buying nothing:
-          # the manifest is the checksum source of truth and the app verifies the
-          # downloaded tar against `valhallaChecksum` from the manifest
-          # (valhallaPackManager.ts), never against a sidecar. Grepped before
-          # removing — no workflow, script or client reads the published file.
-          mv all-packs/*-valhalla.tar.gz.sha256 sidecars/ 2>/dev/null || true
-          echo "release assets: $(ls release-files | wc -l)   unpublished sidecars: $(ls sidecars | wc -l)"
-          ls -la release-files reports
+          mkdir -p reports release-files
+          mv all-reports/valhalla-report-*.json reports/ 2>/dev/null || true
+          REPORTED=$(ls reports/ 2>/dev/null | wc -l | tr -d ' ')
+          echo "regions reporting: $REPORTED"
+          if [ "$REPORTED" -eq 0 ]; then
+            echo "::error::No region produced a report — nothing to publish."
+            exit 1
+          fi
+          # A region in the dispatch that produced no report FAILED. Listing them
+          # by name is the difference between "re-run the 234" and "re-run these
+          # three", which at ~16 h of build time is the entire cost of a retry.
+          echo '${{ needs.get-regions.outputs.matrix }}' | jq -r '.[]' | sort > /tmp/requested.txt
+          ls reports/ | sed 's/^valhalla-report-//; s/\.json$//' | sort > /tmp/reported.txt
+          comm -23 /tmp/requested.txt /tmp/reported.txt > /tmp/failed.txt || true
+          if [ -s /tmp/failed.txt ]; then
+            {
+              echo "### ⚠ Regions that FAILED and are NOT in this release"
+              echo ""
+              sed 's/^/- /' /tmp/failed.txt
+              echo ""
+              echo "Re-dispatch with \`regions\` set to just these ids; the upload uses --clobber, so a rebuild replaces in place."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::$(wc -l < /tmp/failed.txt | tr -d ' ') region(s) failed: $(tr '\n' ' ' < /tmp/failed.txt)"
+          fi
 
-      - name: Build smoke manifest + summary table
+      - name: Build the release manifest + summary table
         id: info
         run: |
           set -euo pipefail
-          # One dataVersion stamps all artifacts of the run — same YYYY-MM-DD
-          # convention as the monthly manifest version.
-          # Two tag shapes, and the VERSION rule differs between them — this is the
-          # whole of LEG 3.4 and getting it wrong 404s every download.
-          #
-          #   valhalla-smoke-<n>      throwaway CI proof. VERSION = today.
-          #   valhalla-<YYYY-MM-DD>   PRODUCTION packs. VERSION = THE DATE IN THE TAG.
-          #
-          # Why production takes its version from the tag instead of the clock: the
-          # app and verify-release build their download URL as
-          # `releases/download/valhalla-${manifestVersion}/{region}-valhalla.tar.gz`,
-          # where manifestVersion is the MONTHLY manifest's version. That monthly
-          # release is cut on its own date, and this job may run days later. Stamping
-          # today's date would publish `valhalla-2026-08-06` while every client asks
-          # for `valhalla-2026-08-02` — a 404 for every region, from a run that
-          # reported success. The tag IS the contract; the clock is not.
-          #
-          # The prefix check stays load-bearing either way: any other tag shape could
-          # hijack releases/latest or the monthly osm-* namespace.
-          TAG_INPUT="${{ inputs.tag }}"
-          if [ -n "$TAG_INPUT" ]; then
-            case "$TAG_INPUT" in
-              valhalla-smoke-*)
-                TAG="$TAG_INPUT"; VERSION=$(date +'%Y-%m-%d'); CHANNEL=smoke ;;
-              valhalla-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9])
-                TAG="$TAG_INPUT"; VERSION="${TAG_INPUT#valhalla-}"; CHANNEL=production ;;
-              *)
-                echo "::error::tag input '$TAG_INPUT' must be 'valhalla-smoke-<n>' or 'valhalla-<YYYY-MM-DD>'"
-                exit 1 ;;
-            esac
-          else
-            TAG="valhalla-smoke-${{ github.run_number }}"
-            VERSION=$(date +'%Y-%m-%d')
-            CHANNEL=smoke
+          # Tag and dataVersion come from prepare-release, which resolved them ONCE
+          # before any region built. They are not re-derived here: the build jobs
+          # uploaded against that exact tag, so a second derivation would be a
+          # second source of truth for the one value that 404s every download if it
+          # drifts. (The rules — smoke takes today's date, production takes the date
+          # out of the tag — are documented in full at prepare-release.)
+          TAG="${{ needs.prepare-release.outputs.tag_name }}"
+          VERSION="${{ needs.prepare-release.outputs.version }}"
+          CHANNEL="${{ needs.prepare-release.outputs.channel }}"
+          if [ -z "$TAG" ] || [ -z "$VERSION" ]; then
+            echo "::error::prepare-release produced no tag/version — refusing to publish a manifest that cannot be addressed"
+            exit 1
           fi
           echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
-          echo "Channel: $CHANNEL   Tag: $TAG   dataVersion: $VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Channel: $CHANNEL   Tag: $TAG   dataVersion: $VERSION"
           # P1.6 contract manifest: regions carry valhallaSize (bytes of the
           # .tar.gz) + valhallaChecksum (sha256 FIRST 16 HEX — exactly how
           # computeChecksum() truncates in scripts/generate-manifest.ts). Shipped
@@ -702,16 +868,19 @@ jobs:
             jq -r '"| \(.region) | \(.pbf_mb) | \(.tiles_seconds) | \(.gz_mb) | `\(.sha16)` | \(.sanity) | c\(.concurrency) | \(.retried) |"' reports/*.json
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Create smoke prerelease and upload packs
+      - name: Upload the manifests + finalize the release notes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           TAG="${{ steps.info.outputs.tag_name }}"
 
-          # Re-runs of the same tag replace their own release
-          gh release delete "$TAG" --yes 2>/dev/null || true
-
+          # NO `gh release delete` here. It used to run first, so a second batch
+          # against the same tag destroyed the previous batch's assets — which is
+          # exactly how a 234-region rollout is done (in batches, appending). The
+          # release already exists: prepare-release made it before any region built,
+          # and every build job has been uploading its own tar into it since.
+          #
           # PRERELEASE is load-bearing: the app + verify-manifest.yml resolve
           # releases/latest/download/... — a normal release here would hijack
           # "latest" and 404 every manifest.json fetch (this release DOES carry a
@@ -733,9 +902,11 @@ jobs:
             TITLE="Valhalla Routing Packs (smoke) - ${{ steps.info.outputs.version }}"
             LEAD="SMOKE-TEST Valhalla routing packs (FEAT-033 P1.6 app contract). Not consumed by any production client."
           fi
-          gh release create "$TAG" \
+          # EDIT, not create: the release exists already. Writing the notes here
+          # rather than at creation means they describe what actually landed —
+          # a run where 6 regions failed says so, instead of promising 234.
+          gh release edit "$TAG" \
             --prerelease \
-            --target "${{ github.sha }}" \
             --title "$TITLE" \
             --notes "$LEAD
 
@@ -755,9 +926,11 @@ jobs:
 
           This tag is a PRERELEASE on purpose - it must never become releases/latest (the production manifest.json lives on the monthly osm-* releases)."
 
+          # Only the manifests: every tar and corridors.json was uploaded by the
+          # build job that produced it, right after its sanity gate.
           cd release-files
-          gh release upload "$TAG" * --clobber
-          echo "All files uploaded."
+          gh release upload "$TAG" manifest.json valhalla-manifest.json --clobber
+          echo "Manifests uploaded to $TAG."
 
       - name: Delete older smoke prereleases
         if: inputs.prune_old_smoke
