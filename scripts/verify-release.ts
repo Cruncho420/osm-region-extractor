@@ -78,7 +78,10 @@ interface Manifest {
   regions: Record<string, ManifestRegion>;
 }
 
-type Status = 'ok' | 'MISSING' | 'SIZE_MISMATCH' | 'CORRUPT';
+// CHECKSUM_MISMATCH is deliberately distinct from CORRUPT: corrupt means the
+// bytes are damaged, mismatch means they are intact but are not the file the
+// manifest promises — different cause, different fix (re-upload vs re-merge).
+type Status = 'ok' | 'MISSING' | 'SIZE_MISMATCH' | 'CORRUPT' | 'CHECKSUM_MISMATCH';
 interface Result {
   regionId: string;
   status: Status;
@@ -126,16 +129,24 @@ async function loadManifest(): Promise<{ manifest: Manifest; baseUrl: string | n
 // -----------------------------------------------------------------------------
 
 /** Run a shell command; resolve with exit code + captured stderr (never rejects). */
-function runShell(command: string): Promise<{ code: number; stderr: string }> {
+function runShell(command: string): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn('bash', ['-c', command], { stdio: ['ignore', 'ignore', 'pipe'] });
+    // stdout is PIPED, not ignored: the valhalla checksum test needs the digest
+    // the pipeline prints. Every command run here emits at most a few bytes on
+    // stdout (a hash, or nothing) — the multi-GB asset stream never reaches
+    // node, it is consumed inside the shell pipeline.
+    const child = spawn('bash', ['-c', command], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
     let stderr = '';
+    child.stdout.on('data', (d) => {
+      stdout = (stdout + d.toString()).slice(-2000);
+    });
     child.stderr.on('data', (d) => {
       // Keep only the tail — a corrupt stream can be noisy.
       stderr = (stderr + d.toString()).slice(-2000);
     });
-    child.on('close', (code) => resolve({ code: code ?? -1, stderr: stderr.trim() }));
-    child.on('error', (err) => resolve({ code: -1, stderr: String(err) }));
+    child.on('close', (code) => resolve({ code: code ?? -1, stdout: stdout.trim(), stderr: stderr.trim() }));
+    child.on('error', (err) => resolve({ code: -1, stdout: '', stderr: String(err) }));
   });
 }
 
@@ -249,6 +260,47 @@ async function checkRemoteValhalla(
     }
   }
 
+  // ── THE CHECKSUM TEST, and why it REPLACES gzip -t here rather than joining it
+  //
+  // valhallaChecksum is the field the APP enforces: valhallaPackManager verifies
+  // the downloaded tar's sha256 prefix against it and rejects the pack on a
+  // mismatch. Nothing verified that field until now — the release could serve a
+  // well-formed gzip that simply is not the file the manifest describes, and
+  // every device would download it, reject it, and retry forever while this
+  // workflow reported green.
+  //
+  // A matching sha256 is STRICTLY STRONGER than `gzip -t` for this asset: the
+  // build job already proved THIS byte sequence unpacks and routes (structure
+  // check + a sanity route run in tile_extract mode against the tar gunzipped
+  // from the shipped asset). Identical bytes therefore inherit that proof, while
+  // `gzip -t` alone only ever proved well-formedness — never identity. So it is
+  // one stream, not two, and 45 GB of daily transfer instead of 90.
+  //
+  // sha256sum on Linux runners, shasum on a developer's mac. Resolved once in
+  // the shell so this is runnable locally without a second code path.
+  if (region.valhallaChecksum) {
+    const cmd =
+      `set -o pipefail; SHA=$(command -v sha256sum || echo "shasum -a 256"); ` +
+      `curl -sSL --fail --retry 3 --retry-delay 2 --max-time ${CURL_MAX_TIME_SECONDS} ` +
+      `"${url}" | $SHA | cut -c1-16`;
+    const { code, stdout, stderr } = await runShell(cmd);
+    if (code !== 0) {
+      return { regionId: label, status: 'CORRUPT', detail: (stderr || `exit ${code}`).slice(0, 300) };
+    }
+    const actual = stdout.trim();
+    if (actual !== region.valhallaChecksum) {
+      return {
+        regionId: label,
+        status: 'CHECKSUM_MISMATCH',
+        detail: `served sha256[0:16] ${actual} != manifest ${region.valhallaChecksum} — the app WILL reject this pack`,
+      };
+    }
+    return { regionId: label, status: 'ok', detail: `streamed, sha256 matches (${actual})` };
+  }
+
+  // No checksum pinned (should not happen for a published pack — generate-manifest
+  // emits both fields together). Fall back to proving the asset is at least a
+  // valid gzip, so a missing checksum degrades the check rather than skipping it.
   const cmd =
     `set -o pipefail; ` +
     `curl -sSL --fail --retry 3 --retry-delay 2 --max-time ${CURL_MAX_TIME_SECONDS} ` +
@@ -257,7 +309,7 @@ async function checkRemoteValhalla(
   if (code !== 0) {
     return { regionId: label, status: 'CORRUPT', detail: (stderr || `exit ${code}`).slice(0, 300) };
   }
-  return { regionId: label, status: 'ok', detail: 'streamed + decompressed clean' };
+  return { regionId: label, status: 'ok', detail: 'streamed + decompressed clean (NO checksum pinned)' };
 }
 
 // -----------------------------------------------------------------------------
