@@ -122,6 +122,14 @@ export function mergeValhallaFields(base, valhalla, options = {}) {
     if (merged.regions[regionId].valhallaSize == null) report.missing.push(regionId);
   }
 
+  // A merge that covered nothing is not a success, it is a misfire — almost
+  // always a valhalla_tag pointing at a release whose manifest never landed.
+  // Without this it writes an identical file, exits 0, and the whole run reports
+  // green having changed nothing, leaving the operator no failure to investigate.
+  if (report.covered === 0) {
+    refuse('the valhalla manifest covered no regions — nothing to merge (wrong tag, or its manifest.json is empty)');
+  }
+
   assertAdditiveOnly(base, merged);
   return { manifest: merged, report };
 }
@@ -136,10 +144,22 @@ export function mergeValhallaFields(base, valhalla, options = {}) {
 export function assertAdditiveOnly(base, merged) {
   const ADDED = new Set(['valhallaSize', 'valhallaChecksum']);
 
+  // BOTH directions. The per-region loop below already checks added keys as well
+  // as changed ones; the top-level check used to iterate base's keys only, so a
+  // future edit that wrote a NEW top-level property onto `merged` would pass
+  // silently — precisely the "stops being true after the next edit to this file"
+  // scenario this function exists to prevent.
   for (const key of Object.keys(base)) {
     if (key === 'regions') continue;
     if (JSON.stringify(base[key]) !== JSON.stringify(merged[key])) {
-      refuse(`top-level field "${key}" changed: ${base[key]} -> ${merged[key]}`);
+      refuse(
+        `top-level field "${key}" changed: ${JSON.stringify(base[key])} -> ${JSON.stringify(merged[key])}`,
+      );
+    }
+  }
+  for (const key of Object.keys(merged)) {
+    if (!(key in base)) {
+      refuse(`top-level field "${key}" was ADDED: ${JSON.stringify(merged[key])}`);
     }
   }
   const baseIds = Object.keys(base.regions);

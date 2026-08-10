@@ -12,7 +12,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeValhallaFields, MergeRefused } from './merge-valhalla-fields.mjs';
+import { mergeValhallaFields, assertAdditiveOnly, MergeRefused } from './merge-valhalla-fields.mjs';
 
 const SHA_A = 'a1b2c3d4e5f60718';
 const SHA_B = '00112233445566aa';
@@ -136,6 +136,36 @@ test('refuses a checksum change under the same tag unless explicitly allowed', (
 
 test('refuses a base manifest with no regions object', () => {
   assert.throws(() => mergeValhallaFields({ version: '2026-08-02' }, valhallaManifest({})), MergeRefused);
+});
+
+/**
+ * A run that changes nothing and reports success is worse than one that fails:
+ * there is no failure to investigate. The realistic cause is a valhalla_tag
+ * pointing at a release whose manifest.json never landed.
+ */
+test('refuses a valhalla manifest that covers no regions at all', () => {
+  assert.throws(() => mergeValhallaFields(baseManifest(), valhallaManifest({})), MergeRefused);
+});
+
+/**
+ * assertAdditiveOnly used to iterate the BASE's keys only, so a new top-level
+ * property written onto the merged object would pass unnoticed — the exact
+ * "one edit away from a hole" case the guard exists to prevent. Asserted via the
+ * exported helper because no current code path produces it; the point is that the
+ * NEXT edit to the merge function cannot introduce one silently.
+ */
+test('assertAdditiveOnly catches a NEW top-level key, not just a changed one', () => {
+  const base = baseManifest();
+  const merged = JSON.parse(JSON.stringify(base));
+  merged.publishedBy = 'some-new-workflow';
+  assert.throws(() => assertAdditiveOnly(base, merged), MergeRefused);
+});
+
+test('assertAdditiveOnly still catches a CHANGED top-level key', () => {
+  const base = baseManifest();
+  const merged = JSON.parse(JSON.stringify(base));
+  merged.generatedAt = '2026-09-01T00:00:00Z';
+  assert.throws(() => assertAdditiveOnly(base, merged), MergeRefused);
 });
 
 test('covers every region when the full set is supplied', () => {

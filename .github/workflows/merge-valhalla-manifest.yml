@@ -53,6 +53,20 @@ on:
 permissions:
   contents: write
 
+# Serialize per target release. This job is read-modify-write on the file every
+# install reads: download manifest.json, merge locally, upload with --clobber.
+# Per-batch merging is the documented pattern, so two overlapping dispatches are
+# realistic — and both would read the SAME base, with the second upload silently
+# discarding the first's regions. Every guard passes, because each merge IS
+# additive against its own stale base.
+#
+# cancel-in-progress:false so a merge already talking to the release is never
+# killed mid-flight. Unlike the tile build, only one merge is ever pending, so
+# the "queue holds one" limitation does not bite here.
+concurrency:
+  group: merge-valhalla-manifest-${{ inputs.osm_tag }}
+  cancel-in-progress: false
+
 jobs:
   merge:
     runs-on: ubuntu-latest
@@ -66,7 +80,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: scripts
-        run: npm install
+        run: npm ci
 
       # GATE 1 — never trust the guard without re-proving it in this run. If the
       # additive-only assertions are broken, everything downstream is theatre.
@@ -84,6 +98,28 @@ jobs:
           mv work/manifest.json work/base.json
           VERSION=$(jq -r .version work/base.json)
           echo "base manifest version: $VERSION"
+          # VERSION stashed for the rollback hint, which must not re-derive it
+          # from a file that may not exist when an earlier step is what failed.
+          echo "BASE_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+          # osm_tag is free text, and devices read releases/LATEST/download/
+          # manifest.json. Amending last month's release — an easy mistake right
+          # after a monthly extract publishes — passes every gate: the backup
+          # uploads, the diff is clean, the merge is additive, and verify-release
+          # streams assets from that same old release and reports green. Nothing a
+          # user reads would have changed, and the rollout would be declared done.
+          LATEST_VERSION=$(curl -sSL --fail \
+            "https://github.com/${{ github.repository }}/releases/latest/download/manifest.json" \
+            | jq -r '.version // empty' || echo "")
+          if [ -z "$LATEST_VERSION" ]; then
+            echo "::warning::Could not read the manifest currently served as 'latest' — proceeding without the target check."
+          elif [ "$LATEST_VERSION" != "$VERSION" ]; then
+            echo "::error::${{ inputs.osm_tag }} carries version $VERSION but the release serving 'latest' carries $LATEST_VERSION."
+            echo "::error::Devices read the LATEST manifest, so merging here would change nothing users can see."
+            exit 1
+          else
+            echo "Target check OK: ${{ inputs.osm_tag }} is the release currently served as 'latest'."
+          fi
 
           VTAG="${{ inputs.valhalla_tag }}"
           if [ -z "$VTAG" ]; then
@@ -151,12 +187,20 @@ jobs:
 
           echo ""
           echo "=== FIELD-LEVEL DIFF (base -> merged) ==="
-          python3 - <<'PY' | tee work/diff.txt
-          import json
+          # ALLOW_CHANGE must reach the classifier below. Without it this gate
+          # aborted the exact run allow_checksum_change exists to permit: a
+          # deliberate rebuild yields new=[] and changed=[valhallaChecksum,
+          # valhallaSize], which fell into the "any other way" bucket and tripped
+          # the `!!` check — the merge script said yes and this said no, so the
+          # documented escape hatch could never actually be used.
+          ALLOW_CHANGE="${{ inputs.allow_checksum_change }}" python3 - <<'PY' | tee work/diff.txt
+          import json, os
+          allow_change = os.environ.get('ALLOW_CHANGE') == 'true'
+          VALHALLA_KEYS = {'valhallaSize', 'valhallaChecksum'}
           a = json.load(open('work/base.json'))
           b = json.load(open('work/merged.json'))
           assert a['version'] == b['version'], 'version changed'
-          added, other = [], []
+          added, updated, other = [], [], []
           for rid, before in a['regions'].items():
               after = b['regions'][rid]
               new = sorted(set(after) - set(before))
@@ -164,6 +208,9 @@ jobs:
               changed = sorted(k for k in before if before[k] != after.get(k))
               if new == ['valhallaChecksum', 'valhallaSize'] and not gone and not changed:
                   added.append(rid)
+              elif allow_change and not new and not gone and changed and set(changed) <= VALHALLA_KEYS:
+                  # Explicitly permitted rebuild — still surfaced, never silent.
+                  updated.append((rid, before.get('valhallaChecksum'), after.get('valhallaChecksum')))
               elif new or gone or changed:
                   other.append((rid, new, gone, changed))
           print(f"regions gaining valhalla fields: {len(added)}")
@@ -171,6 +218,10 @@ jobs:
               print(f"  + {rid}: {b['regions'][rid]['valhallaSize']} B / {b['regions'][rid]['valhallaChecksum']}")
           if len(added) > 20:
               print(f"  ... and {len(added) - 20} more")
+          if updated:
+              print(f"regions whose pack was REBUILT (allow_checksum_change=true): {len(updated)}")
+              for rid, old, new_ in updated:
+                  print(f"  ~ {rid}: {old} -> {new_}")
           print(f"regions changed in ANY OTHER WAY: {len(other)}")
           for row in other:
               print(f"  !! {row}")
@@ -198,11 +249,25 @@ jobs:
           echo "Re-run with dry_run=false once the diff has been read."
 
       - name: Upload the merged manifest
+        id: upload
         if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # Last-moment re-read. The concurrency group makes an overlapping merge
+          # unlikely, but a group is a scheduling hint, not a lock — a manual
+          # `gh release upload` by a human, or any path that bypasses this
+          # workflow, can still have moved the file since we read it. Merging is
+          # additive against whatever base we loaded, so a stale base produces a
+          # perfectly valid manifest that silently drops someone else's regions.
+          curl -sSL --fail -o work/current.json \
+            "https://github.com/${{ github.repository }}/releases/download/${{ inputs.osm_tag }}/manifest.json"
+          if ! diff -q work/base.json work/current.json > /dev/null; then
+            echo "::error::manifest.json on ${{ inputs.osm_tag }} CHANGED while this run was working."
+            echo "::error::Refusing to upload a merge computed against a stale base. Re-run; the merge is idempotent."
+            exit 1
+          fi
           cp work/merged.json work/manifest.json
           gh release upload "${{ inputs.osm_tag }}" work/manifest.json --clobber
           echo "manifest.json updated on ${{ inputs.osm_tag }}"
@@ -220,10 +285,16 @@ jobs:
             --manifest-url "https://github.com/${{ github.repository }}/releases/download/${{ inputs.osm_tag }}/manifest.json" \
             --base-url "https://github.com/${{ github.repository }}/releases/download/${{ inputs.osm_tag }}"
 
+      # Gated on the UPLOAD having succeeded, not on any failure. Previously this
+      # fired for a failed download or a REFUSED merge too — telling the operator
+      # production had been modified when it had not, mid-incident, and printing
+      # 'manifest.pre-valhalla-.json' because VERSION was re-derived from a file
+      # the failing step never produced. BASE_VERSION comes from $GITHUB_ENV,
+      # stamped when the base manifest was successfully read.
       - name: Point at the rollback if verification failed
-        if: ${{ failure() && !inputs.dry_run }}
+        if: ${{ failure() && !inputs.dry_run && steps.upload.outcome == 'success' }}
         run: |
-          VERSION=$(jq -r .version work/base.json)
+          VERSION="${BASE_VERSION:-<unknown>}"
           echo "::error::Verification FAILED after the manifest was updated. Restore now:"
           echo "::error::  gh release download ${{ inputs.osm_tag }} --pattern 'manifest.pre-valhalla-${VERSION}.json'"
           echo "::error::  mv manifest.pre-valhalla-${VERSION}.json manifest.json"

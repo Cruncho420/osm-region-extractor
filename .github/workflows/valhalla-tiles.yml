@@ -83,17 +83,19 @@ on:
 permissions:
   contents: write  # Required for creating the smoke prerelease
 
-# One run per tag at a time. The 234-region rollout is dispatched in batches
-# against ONE tag, and two batches in flight together would both find the
-# release absent and both try to create it — the loser fails a job for no reason
-# and its regions silently never upload.
+# NO workflow-level concurrency group. An earlier version had one, keyed on the
+# tag, with cancel-in-progress:false and a comment claiming "queue, never
+# cancel". That comment was WRONG and the group was actively harmful: GitHub's
+# concurrency queue holds exactly ONE pending run per group and cancels any
+# previously pending one. cancel-in-progress:false protects the RUNNING batch,
+# not the QUEUED one — so dispatching batches 2 and 3 while batch 1 built would
+# silently cancel batch 2. A whole batch of regions would never build, with no
+# error annotation, and the operator would believe the rollout was complete.
 #
-# cancel-in-progress is FALSE and that is the whole point: the default (true)
-# would kill a multi-hour build the moment the next batch was dispatched. Queue,
-# never cancel.
-concurrency:
-  group: valhalla-tiles-${{ inputs.tag || github.run_number }}
-  cancel-in-progress: false
+# The race it was added to prevent — two batches both finding the release absent
+# and both calling `gh release create` — is handled where it actually occurs, in
+# prepare-release, by tolerating a lost create. That fix is correct for any
+# number of concurrent batches; the queue was not.
 
 env:
   VALHALLA_IMAGE: ghcr.io/valhalla/valhalla:latest
@@ -306,6 +308,23 @@ jobs:
             echo "Release $TAG already exists — appending to it."
             exit 0
           fi
+          # Between the check above and the create below, a concurrently
+          # dispatched batch can create the same release. Losing that race is
+          # NORMAL and must not fail this batch — its regions would then never
+          # upload, silently. So a failed create is only fatal if the release
+          # still does not exist afterwards.
+          create_or_accept_race() {
+            if gh release create "$@"; then
+              return 0
+            fi
+            echo "gh release create failed — checking whether a concurrent batch won the race"
+            if gh release view "$TAG" > /dev/null 2>&1; then
+              echo "Release $TAG now exists (created by a concurrent run) — continuing."
+              return 0
+            fi
+            echo "::error::Release $TAG could not be created and does not exist."
+            return 1
+          }
           if [ "${{ steps.info.outputs.channel }}" = production ]; then
             TITLE="Valhalla Routing Packs - ${{ steps.info.outputs.version }}"
             LEAD="PRODUCTION Valhalla routing packs (FEAT-033). Consumed by the app: the pack URL is built as releases/download/$TAG/{region}-valhalla.tar.gz, pinned to the manifest version, so this tag MUST match the monthly manifest's version."
@@ -319,7 +338,7 @@ jobs:
           # being a prerelease it would become `latest` and every client would fetch
           # THIS manifest, which lists only valhalla fields, instead of the real one.
           # Nothing here needs `latest`: the pack URL is version-pinned by tag.
-          gh release create "$TAG" \
+          create_or_accept_race "$TAG" \
             --prerelease \
             --target "${{ github.sha }}" \
             --title "$TITLE" \
@@ -842,6 +861,10 @@ jobs:
 
       - name: Build the release manifest + summary table
         id: info
+        env:
+          # Needed by the accumulate step below — it reads the release's existing
+          # manifest.json so a later batch adds to it instead of replacing it.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           # Tag and dataVersion come from prepare-release, which resolved them ONCE
@@ -869,9 +892,45 @@ jobs:
           jq -s --arg version "$VERSION" --arg gen "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
             '{version: $version, generatedAt: $gen,
               regions: (map({(.region): {valhallaSize: .gz_bytes, valhallaChecksum: .sha16}}) | add)}' \
-            reports/*.json > release-files/manifest.json
+            reports/*.json > work-manifest.json
+
+          # ── ACCUMULATE, NEVER REPLACE ──────────────────────────────────────
+          #
+          # This manifest describes ONLY the regions in THIS dispatch, and it is
+          # uploaded with --clobber. The rollout is explicitly batched against one
+          # tag, and the failure summary tells the operator to re-dispatch just the
+          # failed ids — so writing it straight out means batch 3 deletes batches
+          # 1 and 2 from the manifest while their tars sit on the release, unread.
+          # The merge workflow reads THIS file to decide which regions get
+          # valhallaSize in production, so those regions would silently never be
+          # downloadable: 45 GB built, paid for, and invisible.
+          #
+          # So: fetch what the release already published and fold this run into it.
+          # A version disagreement means someone is mixing dataVersions under one
+          # tag, which is the 404 class — refuse rather than merge.
+          if gh release download "$TAG" -D prev --pattern 'manifest.json' 2>/dev/null; then
+            PREV_VERSION=$(jq -r '.version // empty' prev/manifest.json)
+            if [ -n "$PREV_VERSION" ] && [ "$PREV_VERSION" != "$VERSION" ]; then
+              echo "::error::$TAG already carries dataVersion $PREV_VERSION but this run is $VERSION — refusing to mix versions under one tag"
+              exit 1
+            fi
+            # PARENTHESES ARE LOAD-BEARING. Without them jq parses this as
+            # `.[0].regions * (.[1].regions as $merged | ...)` — `as` binds looser
+            # than `*` and swallows the rest of the pipeline — and the output keeps
+            # ONLY this run's regions, reintroducing the exact erasure this step
+            # exists to prevent. Caught by running it, not by reading it.
+            # `*` is a recursive merge with the RIGHT side winning, so a rebuilt
+            # region correctly replaces its earlier entry.
+            jq -s '(.[0].regions * .[1].regions) as $merged
+                   | .[1] | .regions = $merged' \
+              prev/manifest.json work-manifest.json > release-files/manifest.json
+            echo "Accumulated: $(jq '.regions | length' prev/manifest.json) already published + $(jq '.regions | length' work-manifest.json) from this run = $(jq '.regions | length' release-files/manifest.json) total"
+          else
+            cp work-manifest.json release-files/manifest.json
+            echo "First batch on $TAG: $(jq '.regions | length' release-files/manifest.json) regions"
+          fi
           cp release-files/manifest.json release-files/valhalla-manifest.json
-          cat release-files/manifest.json
+          jq '.regions | keys | length as $n | "\($n) regions in the release manifest"' release-files/manifest.json
           {
             echo "## Valhalla smoke packs — dataVersion $VERSION"
             echo ""
