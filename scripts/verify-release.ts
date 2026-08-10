@@ -349,12 +349,30 @@ async function main(): Promise<void> {
   console.log(`source: ${mode}`);
   console.log(`regions with sqlite: ${regions.length}  (concurrency ${concurrency})\n`);
 
-  if (regions.length === 0) {
-    console.error('::error::No regions with a sqliteSize found in the manifest — nothing to verify (unexpected).');
+  // ── VALHALLA-ONLY MODE ────────────────────────────────────────────────────
+  //
+  // The routing packs are delivered on their OWN release, whose manifest.json
+  // carries valhallaSize/valhallaChecksum and nothing else — the app resolves
+  // pins from there rather than from the monthly manifest, so that no binary
+  // built before the feature was gated can ever see them. Pointed at that file,
+  // the sqlite scan legitimately finds zero regions, and the guard below would
+  // read it as "unexpected" and fail a run that is doing exactly what it should.
+  //
+  // A manifest with pack pins and no sqlite pins is therefore a VALID input, not
+  // a broken one. The distinction is deliberate: zero of BOTH still fails,
+  // because that really is a manifest with nothing to verify.
+  const valhallaOnly = regions.length === 0
+    && Object.values(manifest.regions).some((r) => r.valhallaSize != null);
+
+  if (regions.length === 0 && !valhallaOnly) {
+    console.error('::error::No regions with a sqliteSize OR a valhallaSize found in the manifest — nothing to verify (unexpected).');
     process.exit(1);
   }
+  if (valhallaOnly) {
+    console.log('valhalla-only manifest — skipping the sqlite pass, verifying routing packs only.\n');
+  }
 
-  const sqliteResults = await runPool(regions, concurrency, ([regionId, region]) =>
+  const sqliteResults = regions.length === 0 ? [] : await runPool(regions, concurrency, ([regionId, region]) =>
     localDir ? checkLocal(regionId, region) : checkRemote(regionId, region, baseUrl!),
   );
 
