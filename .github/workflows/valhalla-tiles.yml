@@ -83,6 +83,18 @@ on:
 permissions:
   contents: write  # Required for creating the smoke prerelease
 
+# One run per tag at a time. The 234-region rollout is dispatched in batches
+# against ONE tag, and two batches in flight together would both find the
+# release absent and both try to create it — the loser fails a job for no reason
+# and its regions silently never upload.
+#
+# cancel-in-progress is FALSE and that is the whole point: the default (true)
+# would kill a multi-hour build the moment the next batch was dispatched. Queue,
+# never cancel.
+concurrency:
+  group: valhalla-tiles-${{ inputs.tag || github.run_number }}
+  cancel-in-progress: false
+
 env:
   VALHALLA_IMAGE: ghcr.io/valhalla/valhalla:latest
   # Hardcoded in-region sanity route endpoints, "lat,lon|lat,lon" (city pairs).
