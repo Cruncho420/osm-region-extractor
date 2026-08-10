@@ -298,13 +298,20 @@ jobs:
         if: inputs.upload
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # -R on every gh call here, because this job deliberately has NO
+          # actions/checkout: it needs no repo files, only the API. Without a git
+          # working directory `gh` cannot infer the repository and dies with
+          # "failed to run git: fatal: not a git repository" — which the 1-region
+          # smoke caught on its first dispatch (run 31356420479), before any
+          # region had been built.
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           TAG="${{ steps.info.outputs.tag_name }}"
           # NEVER `gh release delete` here. Batched dispatches against one
           # production tag are the intended workflow, and deleting would discard
           # every region a previous batch published. Existing = reuse, always.
-          if gh release view "$TAG" > /dev/null 2>&1; then
+          if gh release view "$TAG" -R "$REPO" > /dev/null 2>&1; then
             echo "Release $TAG already exists — appending to it."
             exit 0
           fi
@@ -314,11 +321,11 @@ jobs:
           # upload, silently. So a failed create is only fatal if the release
           # still does not exist afterwards.
           create_or_accept_race() {
-            if gh release create "$@"; then
+            if gh release create "$@" -R "$REPO"; then
               return 0
             fi
             echo "gh release create failed — checking whether a concurrent batch won the race"
-            if gh release view "$TAG" > /dev/null 2>&1; then
+            if gh release view "$TAG" -R "$REPO" > /dev/null 2>&1; then
               echo "Release $TAG now exists (created by a concurrent run) — continuing."
               return 0
             fi
