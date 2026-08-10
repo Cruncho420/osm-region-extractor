@@ -46,6 +46,9 @@ interface BundledRoundabout {
   lon: number;
   radius?: number;
   type: 'roundabout' | 'mini_roundabout';
+  /** ARCH-21 physical-ring identity — see scripts/ringIdentity.ts. Rows sharing this value are
+   *  one roundabout; absent on packs built before the column existed. */
+  ringId?: number;
 }
 
 interface BundledRoadSurface {
@@ -60,8 +63,35 @@ interface BundledRoadWay {
   ref?: string;
   oneway?: string;
   junction?: string;
+  /** Raw OSM maxspeed tag string — normalized to whole km/h on insert (FEAT-031). */
+  maxspeed?: string;
   osmId?: number;
   coords: number[];
+}
+
+/**
+ * Normalize a raw OSM `maxspeed` tag to a whole km/h integer, or null when it
+ * carries no usable numeric limit (implicit/zonal/unknown). Display-only — feeds
+ * the speed-limit HUD, never pace-note generation (FEAT-031).
+ *
+ * Handles: "50" → 50 · "50 km/h"/"50kph" → 50 · "30 mph" → 48 (× 1.609344) ·
+ * "50;30" (list) → first value. Returns null for "none"/"walk"/"signals"/
+ * "variable", country-coded zones like "RO:urban", and anything non-numeric or
+ * absurd (>400 km/h) — v1 shows only explicit posted limits.
+ */
+function normalizeMaxspeedKmh(raw?: string): number | null {
+  if (!raw) return null;
+  const first = raw.trim().toLowerCase().split(';')[0].trim();
+  if (!first || first === 'none' || first === 'walk' || first === 'signals' || first === 'variable') {
+    return null;
+  }
+  const m = first.match(/^(\d+(?:\.\d+)?)\s*(mph|km\/h|kmh|kph)?$/);
+  if (!m) return null; // country-code zones ("ro:urban"), signals refs, etc.
+  const num = parseFloat(m[1]);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  const kmh = Math.round(m[2] === 'mph' ? num * 1.609344 : num);
+  if (kmh <= 0 || kmh > 400) return null; // reject typos (e.g. "200000")
+  return kmh;
 }
 
 // =============================================================================
@@ -97,7 +127,12 @@ CREATE TABLE IF NOT EXISTS roundabouts (
   lat REAL NOT NULL,
   lon REAL NOT NULL,
   radius REAL,
-  type TEXT NOT NULL
+  type TEXT NOT NULL,
+  -- ARCH-21: which PHYSICAL roundabout this row belongs to (scripts/ringIdentity.ts). One OSM
+  -- roundabout is split into many junction=roundabout ways, so each row here is an ARC; rows
+  -- sharing a ring_id are one roundabout. NULL on packs built before this column, which the app
+  -- handles by falling back to reassembling rings from geometry.
+  ring_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_ra_lat_lon ON roundabouts(lat, lon);
 
@@ -108,7 +143,9 @@ CREATE TABLE IF NOT EXISTS road_ways (
   name TEXT,
   ref TEXT,
   oneway TEXT,
+  access TEXT,
   junction TEXT,
+  maxspeed INTEGER,
   osm_id INTEGER,
   coords TEXT NOT NULL,
   min_lat REAL NOT NULL,
@@ -289,13 +326,13 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
     'INSERT INTO traffic_calming (lat, lon, type, end_lat, end_lon, way_id, tags) VALUES (?, ?, ?, ?, ?, ?, ?)',
   );
   const insertRA = db.prepare(
-    'INSERT INTO roundabouts (lat, lon, radius, type) VALUES (?, ?, ?, ?)',
+    'INSERT INTO roundabouts (lat, lon, radius, type, ring_id) VALUES (?, ?, ?, ?, ?)',
   );
   const insertSurface = db.prepare(
     'INSERT INTO road_surfaces (surface, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?)',
   );
   const insertWay = db.prepare(
-    'INSERT INTO road_ways (highway, surface, name, ref, oneway, junction, osm_id, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO road_ways (highway, surface, name, ref, oneway, junction, maxspeed, osm_id, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   );
 
   // Read metadata from core file
@@ -324,7 +361,7 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
   let raCount = 0;
   console.log('Streaming roundabout data...');
   await streamJsonArray<BundledRoundabout>(corePath, 'roundabouts', (ra) => {
-    insertRA.run(ra.lat, ra.lon, ra.radius ?? null, ra.type);
+    insertRA.run(ra.lat, ra.lon, ra.radius ?? null, ra.type, ra.ringId ?? null);
     raCount++;
   });
   console.log(`  ✓ ${raCount} roundabouts`);
@@ -359,6 +396,7 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
         rw.ref ?? null,
         rw.oneway ?? null,
         rw.junction ?? null,
+        normalizeMaxspeedKmh(rw.maxspeed),
         rw.osmId ?? null,
         JSON.stringify(rw.coords),
         minLat,
