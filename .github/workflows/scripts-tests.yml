@@ -37,11 +37,16 @@ jobs:
         with:
           node-version: '20'
 
-      # `npm install`, not `npm ci`: scripts/ ships no lockfile today, and adding
-      # one here would be an unrelated change to how every other workflow installs.
+      # `npm ci`, because scripts/package-lock.json IS committed (it landed in
+      # addb840 as a side effect of an install and is worth keeping: this repo
+      # publishes the data a shipped app downloads, so a reproducible dependency
+      # tree is the point, not a nicety). `npm ci` additionally FAILS when the
+      # lockfile and package.json disagree, which is exactly the drift you want
+      # a test workflow to catch. The older workflows still use `npm install`;
+      # they now resolve against the same lockfile either way.
       - name: Install dependencies
         working-directory: scripts
-        run: npm install
+        run: npm ci
 
       - name: Run tests
         working-directory: scripts
