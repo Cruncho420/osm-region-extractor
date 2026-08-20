@@ -396,6 +396,32 @@ async function main(): Promise<void> {
   }
 
   const results = [...sqliteResults, ...valhallaResults];
+
+  // ── VACUITY GUARD ─────────────────────────────────────────────────────────
+  //
+  // Zero assets checked must NEVER print a green verdict. Found 2026-08-20 by
+  // running the thing rather than reading it: `--dir <path>` against a
+  // valhalla-only manifest passed the "is this a valid input" gate above (it has
+  // valhallaSize pins), then checked nothing at all — because the valhalla pass
+  // is remote-only by design, packs never being in the local dir a monthly
+  // release is assembled from — and finished with
+  // "✓ All 0 region assets decompressed cleanly. Release integrity verified."
+  //
+  // That is the worst possible output: a wrong flag combination reporting the
+  // release is sound. This job's whole purpose is to be the thing that says no,
+  // and it exits 0 loudest exactly when it has done no work.
+  if (results.length === 0) {
+    console.error(
+      '::error::verify-release checked ZERO assets and will not report success. ' +
+        (localDir
+          ? 'Local mode (--dir) cannot verify routing packs: they live on their own valhalla-<version> ' +
+            'release, not in the directory a monthly release is assembled from. Re-run in remote mode ' +
+            'with --manifest-url pointing at that release\'s manifest.json.'
+          : 'The manifest pinned no sqlite and no valhalla assets to check.'),
+    );
+    process.exit(1);
+  }
+
   const failures = results.filter((r) => r.status !== 'ok');
   console.log(`\n----------------------------------------`);
   console.log(`Checked: ${results.length}   Passed: ${results.length - failures.length}   Failed: ${failures.length}`);
