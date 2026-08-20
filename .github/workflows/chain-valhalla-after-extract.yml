@@ -1,0 +1,268 @@
+name: Chain Valhalla Tiles After Monthly Extract
+
+# Purpose: keep the published Valhalla routing packs at the SAME data vintage as
+# the monthly OSM extract, without a human remembering to dispatch a build.
+# Goal: after every successful monthly extract, rebuild exactly the regions that
+# already have a pack, against the new month's tag.
+#
+# ── WHY THIS IS A SEPARATE WORKFLOW, AND NOT A TRIGGER ON valhalla-tiles.yml ──
+#
+# valhalla-tiles.yml is dispatch-only BY DESIGN, and it is not merely disallowed
+# to add a `workflow_run` trigger there — it does not work:
+#   * `get-regions` and `prepare-release` both carry
+#     `if: github.event_name == 'workflow_dispatch'`, and `build` / `finalize`
+#     depend on them. Under any other event the ENTIRE job graph skips, silently.
+#   * Under a non-dispatch event `inputs.*` is null, so the tag would resolve to
+#     a smoke tag and publish to the wrong channel even if the graph did run.
+# So the chain lives here and drives that workflow through its own front door:
+# a real `workflow_dispatch` with all four inputs supplied explicitly.
+#
+# ── THE ONE THING PEOPLE EXPECT TO BE BROKEN, AND IS NOT ──
+#
+# GITHUB_TOKEN normally cannot start another workflow. `workflow_dispatch` and
+# `repository_dispatch` are the two documented EXCEPTIONS to that rule, so the
+# `gh workflow run` below does create a run with the default token. No PAT is
+# needed, and adding one would widen the blast radius for no gain.
+#
+# ── OWNER GATE, RELAXED DELIBERATELY ──
+#
+# MANIFEST-INTEGRATION.md states "the all-regions rollout stays OWNER-gated".
+# This dispatcher is a deliberate relaxation of that, approved 2026-08-20, and it
+# is narrow: it can only ever rebuild regions that ALREADY have a published pack.
+# It cannot add a region to the rollout — see "what this cannot do" below.
+
+on:
+  workflow_run:
+    # ⚠️ This is the workflow's `name:` field, NOT its filename. A rename of
+    # osm-extract.yml's `name:` silently stops this chain firing, with no error
+    # anywhere — the failure mode is "nothing happened", which nobody notices.
+    # scripts/chain-workflow-name.test.mjs asserts these two strings are equal
+    # and goes RED on a rename, so the rename fails CI instead of the rollout.
+    workflows: ["Monthly OSM Data Extraction"]
+    types: [completed]
+
+  # Manual entry point, used to TEST this dispatcher without waiting a month.
+  # `dry_run` defaults to true so a stray manual click cannot start an 8-hour,
+  # 45 GB build; the automatic path above always runs live.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Resolve and print the dispatch, but do not send it'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read   # read releases + their manifest assets
+  actions: write   # POST .../actions/workflows/{id}/dispatches
+
+concurrency:
+  # One chain at a time. Unlike valhalla-tiles.yml — where a queue would silently
+  # cancel a QUEUED batch and lose a whole set of regions — this workflow does no
+  # building, dispatches once, and is idempotent (see "already current" below), so
+  # dropping a duplicate pending run is correct rather than destructive.
+  group: chain-valhalla-after-extract
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # A failed or cancelled extract must never trigger a tile build: its release
+    # is demoted back to draft on any gate failure, so `releases/latest` would
+    # still point at LAST month and we would rebuild a vintage we already have.
+    # `workflow_run.conclusion` is null on a manual dispatch, hence the || clause.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve the new data version from the PUBLISHED release
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Read the version from the release, NEVER from the clock. The extract
+          # may finish minutes after midnight UTC, or be re-run days later, and
+          # the app builds its pack URL as
+          #   releases/download/valhalla-${manifestVersion}/{region}-valhalla.tar.gz
+          # where manifestVersion comes from the MONTHLY manifest. A clock-derived
+          # date publishes packs nobody asks for: a 404 for every region, from a
+          # run that reported success. valhalla-tiles.yml carries the same warning.
+          #
+          # `releases/latest` is the right query and not just a convenient one: it
+          # is the exact endpoint the app and verify-manifest.yml resolve, so this
+          # agrees with the client by construction. It also cannot pick up a
+          # valhalla release (those are prereleases, never "latest") nor a
+          # half-uploaded extract (draft for the whole upload window, flipped with
+          # `gh release edit --draft=false --latest` as the extract's final act).
+          OSM_TAG=$(gh api "repos/${{ github.repository }}/releases/latest" --jq .tag_name)
+          echo "Latest published release: $OSM_TAG"
+
+          case "$OSM_TAG" in
+            osm-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *)
+              echo "::error::latest release '$OSM_TAG' is not an osm-YYYY-MM-DD tag — refusing to guess a data version"
+              exit 1 ;;
+          esac
+
+          VERSION="${OSM_TAG#osm-}"
+          echo "version=$VERSION"        >> "$GITHUB_OUTPUT"
+          echo "target_tag=valhalla-$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Target valhalla tag: valhalla-$VERSION   dataVersion: $VERSION"
+
+      - name: Work out which regions to rebuild
+        id: regions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TARGET_TAG: ${{ steps.version.outputs.target_tag }}
+        run: |
+          set -euo pipefail
+
+          # ── WHAT THIS CHAIN CAN AND CANNOT DO ────────────────────────────────
+          # It keeps the CURRENT set of published packs current. The region list
+          # is the previous production valhalla release's manifest — so a region
+          # that has never had a pack is not built here, and adding regions stays
+          # an explicit, owner-run dispatch (Stage E of the rollout plan). That is
+          # the whole reason this can run unattended.
+
+          # Regions already rebuilt against the NEW tag, if a previous chain run
+          # (or a manual batch) got part-way. Absent release => empty list.
+          : > done-regions.txt
+          TARGET_EXISTS=no
+          if gh release download "$TARGET_TAG" -D target --pattern 'manifest.json' 2>/dev/null; then
+            TARGET_EXISTS=yes
+            jq -r '.regions | keys[]' target/manifest.json | sort -u > done-regions.txt
+            echo "$TARGET_TAG already carries $(wc -l < done-regions.txt | tr -d ' ') regions"
+          else
+            echo "$TARGET_TAG does not exist yet"
+          fi
+
+          # The baseline is the newest production valhalla release STRICTLY OLDER
+          # than the target. Strictly older matters — "newest that is not the
+          # target" would work for a first run and then break the recovery case:
+          # if a month published only half its regions, the target itself becomes
+          # the newest release, the two sets match, and the missing half would be
+          # declared "already current" and never built. Dates are YYYY-MM-DD, so a
+          # string compare IS a date compare.
+          #
+          # Smoke tags are excluded by the pattern: they are throwaway CI proofs
+          # whose region set is a 3-region default, and picking one up here would
+          # SHRINK the rollout to three regions while reporting success.
+          SOURCE_TAG=$(gh api "repos/${{ github.repository }}/releases?per_page=100" \
+            --jq '[.[] | select(.draft == false)
+                       | .tag_name
+                       | select(test("^valhalla-[0-9]{4}-[0-9]{2}-[0-9]{2}$"))]
+                  | sort | reverse | .[]' \
+            | awk -v t="$TARGET_TAG" '$0 < t' | head -1)
+
+          if [ -z "$SOURCE_TAG" ]; then
+            # No older release to copy a region set from. Two very different
+            # situations, and conflating them would either spam errors every month
+            # or hide a genuinely empty rollout.
+            if [ "$TARGET_EXISTS" = yes ]; then
+              echo "count=0" >> "$GITHUB_OUTPUT"
+              echo "regions=" >> "$GITHUB_OUTPUT"
+              echo "Nothing to do: $TARGET_TAG is the newest production release and there is no older one to catch up from."
+              echo "Nothing to do — $TARGET_TAG is already the newest production pack release." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "::error::no production valhalla-YYYY-MM-DD release exists — there is no pack set to keep current. Publish one with an explicit dispatch first (rollout Stage E)."
+            exit 1
+          fi
+          echo "Baseline release: $SOURCE_TAG"
+
+          gh release download "$SOURCE_TAG" -D source --pattern 'manifest.json'
+          jq -r '.regions | keys[]' source/manifest.json | sort -u > source-regions.txt
+          echo "Baseline carries $(wc -l < source-regions.txt | tr -d ' ') regions"
+
+          comm -23 source-regions.txt done-regions.txt > todo-regions.txt
+          COUNT=$(grep -c . todo-regions.txt || true)
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
+          if [ "$COUNT" -eq 0 ]; then
+            # This is the normal, healthy outcome of a re-run, AND it is the guard
+            # that makes an extract `workflow_dispatch` with `single_region` — which
+            # publishes NO release at all — harmless. Without it, that dry run would
+            # re-read last month's `releases/latest` and start an 8-hour rebuild of
+            # a vintage that is already published.
+            echo "regions=" >> "$GITHUB_OUTPUT"
+            echo "Nothing to do: every region in $SOURCE_TAG is already published under $TARGET_TAG."
+            echo "Nothing to do — $TARGET_TAG is already current with $SOURCE_TAG." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # GitHub caps a matrix at 256 jobs. Failing here with the number is far
+          # better than dispatching a run GitHub rejects with a generic error after
+          # the operator has stopped watching.
+          if [ "$COUNT" -gt 256 ]; then
+            echo "::error::$COUNT regions exceeds GitHub's 256-job matrix cap — dispatch this month in batches by hand"
+            exit 1
+          fi
+
+          REGIONS=$(paste -sd, todo-regions.txt)
+          echo "regions=$REGIONS" >> "$GITHUB_OUTPUT"
+          echo "Will build $COUNT regions into $TARGET_TAG"
+
+      - name: Dispatch the tile build
+        if: steps.regions.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGIONS: ${{ steps.regions.outputs.regions }}
+          TARGET_TAG: ${{ steps.version.outputs.target_tag }}
+          COUNT: ${{ steps.regions.outputs.count }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          # ⚠️ ALL FOUR INPUTS ARE PASSED EXPLICITLY, ON PURPOSE. None of them is
+          # `required: true` in valhalla-tiles.yml, so a bare call silently takes
+          # the defaults — which are the 3-region SMOKE set on a smoke tag. That
+          # would report success and publish nothing anyone asked for.
+          #   regions          the set resolved above
+          #   tag              valhalla-YYYY-MM-DD is the ONLY thing that selects
+          #                    the production channel (exact glob in prepare-release);
+          #                    anything else non-empty exits 1, empty gives a smoke tag
+          #   upload           true — the point of the chain
+          #   prune_old_smoke  false — never let a production run delete smoke tags
+          #                    someone else may be mid-test on
+          {
+            echo "## Chain → Valhalla tile build"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Tag | \`$TARGET_TAG\` |"
+            echo "| Regions | $COUNT |"
+            echo "| Dry run | $DRY_RUN |"
+            echo ""
+            echo "<details><summary>Region list</summary>"
+            echo ""
+            echo "\`\`\`"
+            echo "$REGIONS" | tr ',' '\n'
+            echo "\`\`\`"
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "gh workflow run valhalla-tiles.yml \\"
+          echo "  -f regions=$REGIONS \\"
+          echo "  -f tag=$TARGET_TAG \\"
+          echo "  -f upload=true \\"
+          echo "  -f prune_old_smoke=false"
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "DRY RUN — nothing dispatched."
+            exit 0
+          fi
+
+          gh workflow run valhalla-tiles.yml \
+            -f regions="$REGIONS" \
+            -f tag="$TARGET_TAG" \
+            -f upload=true \
+            -f prune_old_smoke=false
+
+          echo "Dispatched. Watch: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/valhalla-tiles.yml"

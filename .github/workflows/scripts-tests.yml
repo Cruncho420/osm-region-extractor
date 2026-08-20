@@ -17,10 +17,22 @@ on:
     paths:
       - 'scripts/**'
       - '.github/workflows/scripts-tests.yml'
+      # chain-workflow-name.test.mjs asserts across workflow files: that the
+      # monthly chain still listens for osm-extract.yml's exact `name:`, and that
+      # valhalla-tiles.yml is still dispatch-only. Those tests are worthless if
+      # they only run when scripts/ changes — the edit that breaks them is an
+      # edit to one of these three files, and its whole failure mode is silence.
+      - '.github/workflows/osm-extract.yml'
+      - '.github/workflows/valhalla-tiles.yml'
+      - '.github/workflows/chain-valhalla-after-extract.yml'
   pull_request:
     paths:
       - 'scripts/**'
       - '.github/workflows/scripts-tests.yml'
+      # Same cross-workflow reason as above.
+      - '.github/workflows/osm-extract.yml'
+      - '.github/workflows/valhalla-tiles.yml'
+      - '.github/workflows/chain-valhalla-after-extract.yml'
   workflow_dispatch:
 
 permissions:
