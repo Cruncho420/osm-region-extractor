@@ -115,6 +115,15 @@ export function mergeValhallaFields(base, valhalla, options = {}) {
 
     before.valhallaSize = size;
     before.valhallaChecksum = checksum;
+    // Optional by contract: the pack manifest omits it when the gzip trailer was
+    // ambiguous. Copy it when present, and clear a stale one when it is not, so
+    // the merged manifest can never carry an installed size from a previous
+    // build of a pack that has since been replaced.
+    if (Number.isInteger(pack?.valhallaInstalledSize) && pack.valhallaInstalledSize > 0) {
+      before.valhallaInstalledSize = pack.valhallaInstalledSize;
+    } else {
+      delete before.valhallaInstalledSize;
+    }
     report.covered += 1;
   }
 
@@ -142,7 +151,7 @@ export function mergeValhallaFields(base, valhalla, options = {}) {
  * stops being true after the next edit to this file.
  */
 export function assertAdditiveOnly(base, merged) {
-  const ADDED = new Set(['valhallaSize', 'valhallaChecksum']);
+  const ADDED = new Set(['valhallaSize', 'valhallaChecksum', 'valhallaInstalledSize']);
 
   // BOTH directions. The per-region loop below already checks added keys as well
   // as changed ones; the top-level check used to iterate base's keys only, so a

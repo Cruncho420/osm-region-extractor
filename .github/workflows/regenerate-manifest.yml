@@ -116,7 +116,7 @@ jobs:
               if rid not in b.get('regions', {}):
                   changed.append(f"  REMOVED: {rid}")
                   continue
-              for field in ('size','checksum','surfaceSize','surfaceChecksum','waySize','wayChecksum','sqliteSize','sqliteChecksum','valhallaSize','valhallaChecksum'):
+              for field in ('size','checksum','surfaceSize','surfaceChecksum','waySize','wayChecksum','sqliteSize','sqliteChecksum','sqliteInstalledSize','valhallaSize','valhallaChecksum','valhallaInstalledSize'):
                   av, bv = a['regions'][rid].get(field), b['regions'][rid].get(field)
                   if av != bv:
                       changed.append(f"  {rid}.{field}: {av} -> {bv}")

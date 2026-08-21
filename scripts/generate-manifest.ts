@@ -11,6 +11,7 @@
  */
 
 import { readdirSync, statSync, readFileSync, writeFileSync } from 'fs';
+import { installedSizeFromGzip } from './installedSize.mjs';
 import { createHash } from 'crypto';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -44,8 +45,17 @@ interface ManifestRegion {
   builtupChecksum?: string;
   sqliteSize?: number;
   sqliteChecksum?: string;
+  /**
+   * What the region occupies ON THE DEVICE after install, vs sqliteSize which is
+   * the compressed download. ~2.2-2.6x larger. Optional: absent means we could
+   * not determine it, and the app must fall back to showing the download size
+   * alone rather than inventing a multiplier.
+   */
+  sqliteInstalledSize?: number;
   valhallaSize?: number;
   valhallaChecksum?: string;
+  /** On-device size of the routing pack, same contract as sqliteInstalledSize. */
+  valhallaInstalledSize?: number;
 }
 
 interface Manifest {
@@ -164,6 +174,9 @@ function generateManifest(inputDir: string, outputFile: string, overrideVersion?
       const sqliteStats = statSync(sqlitePath);
       region.sqliteSize = sqliteStats.size;
       region.sqliteChecksum = computeChecksum(sqlitePath);
+      // Read from the gzip trailer, so it costs no decompression and travels
+      // inside the asset — a sidecar would be lost by any manifest rebuild.
+      region.sqliteInstalledSize = installedSizeFromGzip(sqlitePath, sqliteStats.size);
     } catch {
       // No SQLite file — that's fine, app falls back to JSON pipeline
     }
@@ -179,6 +192,7 @@ function generateManifest(inputDir: string, outputFile: string, overrideVersion?
       const valhallaStats = statSync(valhallaPath);
       region.valhallaSize = valhallaStats.size;
       region.valhallaChecksum = computeChecksum(valhallaPath);
+      region.valhallaInstalledSize = installedSizeFromGzip(valhallaPath, valhallaStats.size);
     } catch {
       // No Valhalla pack — that's fine, region simply has no offline routing yet
     }
@@ -188,7 +202,9 @@ function generateManifest(inputDir: string, outputFile: string, overrideVersion?
     const extras = [
       region.surfaceSize ? `surfaces: ${(region.surfaceSize / 1024).toFixed(1)} KB` : null,
       region.waySize ? `ways: ${(region.waySize / 1024).toFixed(1)} KB` : null,
-      region.sqliteSize ? `sqlite: ${(region.sqliteSize / 1024 / 1024).toFixed(1)} MB` : null,
+      region.sqliteSize
+        ? `sqlite: ${(region.sqliteSize / 1024 / 1024).toFixed(1)} MB${region.sqliteInstalledSize ? ` -> ${(region.sqliteInstalledSize / 1024 / 1024).toFixed(1)} MB installed` : ' (installed size UNKNOWN)'}`
+        : null,
       region.valhallaSize ? `valhalla: ${(region.valhallaSize / 1024 / 1024).toFixed(1)} MB` : null,
     ].filter(Boolean).join(', ');
     console.log(
