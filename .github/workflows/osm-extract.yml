@@ -5,7 +5,7 @@ name: Monthly OSM Data Extraction
 #
 # This workflow:
 # 1. Runs on the 1st of every month at 3 AM UTC (or manually)
-# 2. Extracts ~100 regions in parallel (max 20 concurrent)
+# 2. Extracts all configured regions in parallel (max 4 concurrent downloads)
 # 3. Creates a GitHub Release with all extracted files
 # 4. Cleans up old releases (keeps last 3)
 
@@ -55,7 +55,9 @@ jobs:
     strategy:
       matrix:
         region: ${{ fromJson(needs.get-regions.outputs.matrix) }}
-      max-parallel: 20
+      # BUG-819: Geofabrik is a shared upstream. Twenty simultaneous large
+      # downloads produced 184 invalid responses in the September run.
+      max-parallel: 4
       fail-fast: false  # Continue even if some regions fail
     steps:
       - uses: actions/checkout@v4
@@ -242,16 +244,23 @@ jobs:
           echo "tag_name=osm-${VERSION}" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
+        id: publish-release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ steps.release-info.outputs.tag_name }}"
           TITLE="OSM Data - ${{ steps.release-info.outputs.month_name }}"
 
-          # Delete existing release with same tag if it exists
-          gh release delete "$TAG" --yes 2>/dev/null || true
-          git tag -d "$TAG" 2>/dev/null || true
-          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+          # Never destroy a complete same-day release just to rerun the workflow.
+          # A failed replacement would otherwise fall back an extra month.
+          if gh release view "$TAG" --json isDraft -q '.isDraft' >/tmp/existing-draft 2>/dev/null; then
+            if [ "$(cat /tmp/existing-draft)" = "false" ]; then
+              echo "::error::A published $TAG already exists. Refusing to replace a complete release."
+              exit 1
+            fi
+            echo "Removing incomplete draft $TAG before the clean retry."
+            gh release delete "$TAG" --cleanup-tag --yes
+          fi
 
           # Create the release as a DRAFT — see the atomic-publish note below.
           gh release create "$TAG" \
@@ -260,6 +269,7 @@ jobs:
             --notes "Monthly OSM data extraction.
 
           **Version:** ${{ steps.release-info.outputs.version }}
+          <!-- osm-workflow-run:${{ github.run_id }} -->
 
           **Contents (per region):**
           - Traffic calming features (speed bumps, dips, bridges, tunnels, speed cameras)
@@ -277,6 +287,7 @@ jobs:
           - {region-id}.json.gz - Core data (traffic calming + roundabouts) [legacy]
           - {region-id}-surfaces.json.gz - Road surface types [legacy]
           - {region-id}-ways.json.gz - Road geometry [legacy]"
+          echo "created=true" >> "$GITHUB_OUTPUT"
 
           # Upload files in batches of 20 to avoid timeouts
           cd release-files
@@ -348,34 +359,6 @@ jobs:
           npm run verify-release -- \
             --manifest-url "https://github.com/${{ github.repository }}/releases/download/${{ steps.release-info.outputs.tag_name }}/manifest.json"
 
-      - name: Un-publish the release if any gate failed
-        if: failure()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # The publish flip lives in "Create GitHub Release" because the final gate above
-          # streams assets from the PUBLIC releases/download/ URL, which 404s for a draft —
-          # so the release must be live for that check to mean anything. That leaves a
-          # short window where a release is `latest` but not yet decompress-verified.
-          #
-          # This step closes it: on ANY failure in this job, demote the release back to a
-          # draft. A draft is not public and is never `latest`, so
-          # releases/latest/download/ falls back to the previous COMPLETE release exactly
-          # as the 2026-08-01 manual rollback did — automatically, in seconds, instead of
-          # depending on somebody noticing.
-          #
-          # Safe when the failure happened before the release existed: `gh release edit`
-          # on a missing tag just errors, and `|| true` swallows it. Runs before
-          # "Delete old releases", so the previous good release is still there to fall
-          # back to.
-          TAG="${{ steps.release-info.outputs.tag_name }}"
-          echo "A gate failed — demoting $TAG to draft so it cannot serve users."
-          gh release edit "$TAG" --draft=true 2>&1 || true
-          # `isLatest` is NOT a valid --json field for `gh release view` (it lists the
-          # valid ones and exits non-zero). isDraft is what matters here anyway: a draft
-          # can never be `latest`.
-          gh release view "$TAG" --json isDraft,isPrerelease -q '"draft=\(.isDraft) prerelease=\(.isPrerelease)"' 2>&1 || true
-
       # RETENTION IS SCOPED TO osm-* TAGS ON PURPOSE.
       #
       # Without delete_tag_pattern this step counts EVERY release in the repo
@@ -409,3 +392,15 @@ jobs:
           echo "**Total Size:** $(du -sh release-files | cut -f1)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Release created: [${{ steps.release-info.outputs.tag_name }}](../../releases/tag/${{ steps.release-info.outputs.tag_name }})" >> $GITHUB_STEP_SUMMARY
+
+      # Keep this LAST. Any failure after publishing — including retention or
+      # summary — must demote the new release so the previous complete pack wins.
+      - name: Un-publish the release if any release job step failed
+        if: failure() && steps.publish-release.outputs.created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.release-info.outputs.tag_name }}"
+          echo "A release-job step failed — demoting $TAG so it cannot serve users."
+          gh release edit "$TAG" --draft=true 2>&1 || true
+          gh release view "$TAG" --json isDraft -q '"draft=\(.isDraft)"' 2>&1 || true

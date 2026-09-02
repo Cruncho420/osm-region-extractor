@@ -23,6 +23,8 @@ on:
       # they only run when scripts/ changes — the edit that breaks them is an
       # edit to one of these three files, and its whole failure mode is silence.
       - '.github/workflows/osm-extract.yml'
+      - '.github/workflows/notify-osm-failure.yml'
+      - '.github/workflows/test-osm-notification.yml'
       - '.github/workflows/valhalla-tiles.yml'
       - '.github/workflows/chain-valhalla-after-extract.yml'
   pull_request:
@@ -31,6 +33,8 @@ on:
       - '.github/workflows/scripts-tests.yml'
       # Same cross-workflow reason as above.
       - '.github/workflows/osm-extract.yml'
+      - '.github/workflows/notify-osm-failure.yml'
+      - '.github/workflows/test-osm-notification.yml'
       - '.github/workflows/valhalla-tiles.yml'
       - '.github/workflows/chain-valhalla-after-extract.yml'
   workflow_dispatch:
@@ -59,6 +63,9 @@ jobs:
       - name: Install dependencies
         working-directory: scripts
         run: npm ci
+
+      - name: Install osmium-tool for downloader contract tests
+        run: sudo apt-get update && sudo apt-get install -y osmium-tool
 
       - name: Run tests
         working-directory: scripts
