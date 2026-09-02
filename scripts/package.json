@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "extract-single": "tsx extract-single.ts",
+    "download-pbf": "node download-pbf.mjs",
     "build-sqlite": "tsx build-sqlite.ts",
     "generate-manifest": "tsx generate-manifest.ts",
     "generate-regions": "tsx generate-regions.ts",

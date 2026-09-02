@@ -10,7 +10,7 @@
  * Usage: npm run extract-single -- --region europe-great-britain
  */
 
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, statSync, createReadStream, createWriteStream, renameSync } from 'fs';
 import { gzipSync } from 'zlib';
 import { join, dirname } from 'path';
@@ -337,8 +337,9 @@ async function extractRegion(regionId: string): Promise<void> {
     // Step 1: Download PBF from Geofabrik
     console.log(`[1/11] Downloading from Geofabrik...`);
     console.log(`      URL: ${pbfUrl}`);
-    // Use curl (available on macOS) instead of wget
-    execSync(`curl -L --progress-bar -o "${localPbf}" "${pbfUrl}"`, {
+    // BUG-819: the old bare curl accepted HTTP error pages and exposed them as
+    // completed PBFs. The helper validates transport + content, then renames atomically.
+    execFileSync(process.execPath, [join(__dirname, 'download-pbf.mjs'), pbfUrl, localPbf], {
       stdio: 'inherit',
     });
 

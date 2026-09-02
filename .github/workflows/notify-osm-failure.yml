@@ -1,0 +1,81 @@
+name: Notify Monthly OSM Failure
+
+on:
+  workflow_run:
+    workflows: ["Monthly OSM Data Extraction", "Chain Valhalla Tiles After Monthly Extract", "Valhalla Graph Tiles (Smoke)"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  notify-owner:
+    if: github.event.workflow_run.conclusion != 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send private Discord failure DM
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPS_SUPABASE_URL: ${{ secrets.OPS_SUPABASE_URL }}
+          OPS_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.OPS_SUPABASE_SERVICE_ROLE_KEY }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+        run: |
+          set -euo pipefail
+          test -n "$OPS_SUPABASE_URL" || { echo "::error::OPS_SUPABASE_URL is not configured"; exit 1; }
+          test -n "$OPS_SUPABASE_SERVICE_ROLE_KEY" || { echo "::error::OPS_SUPABASE_SERVICE_ROLE_KEY is not configured"; exit 1; }
+          JOBS_JSON=$(gh api --paginate --slurp "repos/${{ github.repository }}/actions/runs/$RUN_ID/jobs?per_page=100")
+          FAILED_JOBS=$(jq -r '[.[].jobs[] | select(.conclusion != "success" and .conclusion != "skipped") | .name][0:8] | join(", ")' <<<"$JOBS_JSON")
+          [ -n "$FAILED_JOBS" ] || FAILED_JOBS="workflow ended before a failing job was recorded"
+          ROLLBACK_STATUS="not needed"
+
+          # Cancellation can prevent in-job cleanup. Only demote a release whose
+          # machine-readable notes prove that this exact unsuccessful run created
+          # it. Search by ownership marker, never a guessed calendar date.
+          if [ "$WORKFLOW_NAME" = "Monthly OSM Data Extraction" ]; then
+            if RELEASES_JSON=$(gh api --paginate --slurp "repos/${{ github.repository }}/releases?per_page=100"); then
+              MARKER="<!-- osm-workflow-run:$RUN_ID -->"
+              TAG=$(jq -r --arg marker "$MARKER" '[.[].[] | select((.body // "") | contains($marker)) | .tag_name][0] // empty' <<<"$RELEASES_JSON")
+            else
+              TAG=""
+              ROLLBACK_STATUS="could not list releases"
+            fi
+            if [ -n "$TAG" ]; then
+              echo "Demoting release created by unsuccessful run $RUN_ID."
+              if gh release edit "$TAG" --draft=true; then
+                ROLLBACK_STATUS="demoted $TAG"
+              else
+                ROLLBACK_STATUS="FAILED to demote $TAG — inspect immediately"
+              fi
+            fi
+          fi
+
+          case "$ROLLBACK_STATUS" in
+            "could not list releases"|"FAILED to demote "*)
+              RELEASE_GUIDANCE="Release state is unverified. Inspect releases immediately before trusting latest."
+              ;;
+            *)
+              RELEASE_GUIDANCE="The previous complete map/routing release remains live."
+              ;;
+          esac
+
+          CONTENT="🔴 $WORKFLOW_NAME ended: $RUN_CONCLUSION
+          affected jobs: $FAILED_JOBS
+          release rollback: $ROLLBACK_STATUS
+          trigger: $RUN_EVENT · commit: ${RUN_SHA:0:12}
+          $RELEASE_GUIDANCE Open the run, repair the failed stage, then rerun it.
+          $RUN_URL"
+          RESPONSE=$(curl --fail-with-body --silent --show-error \
+            --request POST "${OPS_SUPABASE_URL%/}/functions/v1/ops-discord-dm" \
+            --header "Authorization: Bearer $OPS_SUPABASE_SERVICE_ROLE_KEY" \
+            --header "Content-Type: application/json" \
+            --data "$(jq -n --arg content "$CONTENT" '{content:$content}')")
+          echo "$RESPONSE" | jq -e '.ok == true' >/dev/null || {
+            echo "::error::Discord relay did not confirm delivery: $RESPONSE"
+            exit 1
+          }

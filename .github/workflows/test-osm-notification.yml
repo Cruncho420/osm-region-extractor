@@ -1,0 +1,33 @@
+name: Test OSM Discord Notification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  notify-owner:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send private Discord test DM
+        env:
+          OPS_SUPABASE_URL: ${{ secrets.OPS_SUPABASE_URL }}
+          OPS_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.OPS_SUPABASE_SERVICE_ROLE_KEY }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          test -n "$OPS_SUPABASE_URL" || { echo "::error::OPS_SUPABASE_URL is not configured"; exit 1; }
+          test -n "$OPS_SUPABASE_SERVICE_ROLE_KEY" || { echo "::error::OPS_SUPABASE_SERVICE_ROLE_KEY is not configured"; exit 1; }
+          CONTENT="✅ OSM rebuild Discord notification test
+          No action needed — this confirms private failure alerts can reach you.
+          $RUN_URL"
+          RESPONSE=$(curl --fail-with-body --silent --show-error \
+            --request POST "${OPS_SUPABASE_URL%/}/functions/v1/ops-discord-dm" \
+            --header "Authorization: Bearer $OPS_SUPABASE_SERVICE_ROLE_KEY" \
+            --header "Content-Type: application/json" \
+            --data "$(jq -n --arg content "$CONTENT" '{content:$content}')")
+          echo "$RESPONSE" | jq -e '.ok == true' >/dev/null || {
+            echo "::error::Discord relay did not confirm delivery: $RESPONSE"
+            exit 1
+          }
