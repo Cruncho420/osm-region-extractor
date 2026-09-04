@@ -23,6 +23,7 @@ import {
   type HighwayWayGeom,
   type UnderBridgeStats,
 } from './underBridgeCrossings';
+import { computeRingIdentity, type RingIdentity } from './ringIdentity';
 
 // =============================================================================
 // TYPES
@@ -73,6 +74,15 @@ interface RoundaboutInfo {
   lon: number;
   radius?: number;
   type: 'roundabout' | 'mini_roundabout';
+  /**
+   * ARCH-21: which PHYSICAL roundabout this row belongs to. OSM splits one roundabout into many
+   * `junction=roundabout` ways, so this row is an ARC — its centroid sits on the ring EDGE and its
+   * radius is a half-chord. Rows sharing a `ringId` are one roundabout; see ringIdentity.ts for the
+   * union-find and the id encoding. Optional so a region built by an older extractor still parses:
+   * the app requires the id on EVERY row before it trusts any of them, and otherwise falls back to
+   * reassembling rings from geometry.
+   */
+  ringId?: number;
 }
 
 interface BundledRoadWay {
@@ -373,6 +383,35 @@ async function extractRegion(regionId: string): Promise<void> {
     const filteredSize = statSync(filteredPbf).size / (1024 * 1024);
     console.log(`      Filtered size: ${filteredSize.toFixed(2)} MB\n`);
 
+    // Step 2b: Ring identity (ARCH-21).
+    //
+    // A SECOND read of the same filtered PBF, in OPL rather than GeoJSON, purely to recover the
+    // NODE IDS that GeoJSON does not carry. Two `junction=roundabout` ways are the same physical
+    // roundabout exactly when they share a node — the one signal that separates a junction from a
+    // grade-separated crossing by definition rather than by a distance threshold. Every threshold
+    // tried app-side has been wrong at some ring size; that is the entire recurrence pattern behind
+    // BUG-368/399/413/434/459/461.
+    //
+    // Cheap: the filtered PBF holds only roundabouts, calming and bridges, so this is 67 ms for
+    // Lithuania and ~2 s for Great Britain. Non-fatal by design — a region that fails here still
+    // ships, just without ids, and the app reassembles rings from geometry as it does today.
+    const oplPath = `/tmp/${regionId}-filtered.opl`;
+    let ringIdentity: RingIdentity | undefined;
+    try {
+      console.log(`[2b] Resolving physical ring identity from node topology...`);
+      execSync(`osmium cat "${filteredPbf}" -f opl -o "${oplPath}" --overwrite`, { stdio: 'inherit' });
+      ringIdentity = await computeRingIdentity(oplPath);
+      console.log(
+        `      ${ringIdentity.wayCount} roundabout ways -> ${ringIdentity.ringCount} physical rings ` +
+          `(${ringIdentity.ringIdByMiniNodeId.size} minis, ${ringIdentity.minisOnRing} on a ring)\n`,
+      );
+    } catch (err) {
+      console.warn(`      ⚠️  Ring identity unavailable, falling back to geometric collapse: ${err}`);
+      ringIdentity = undefined;
+    } finally {
+      if (existsSync(oplPath)) unlinkSync(oplPath);
+    }
+
     // Step 3: Export to GeoJSON
     // Use --add-unique-id type_id to include OSM IDs (e.g., "way/12345") for deduplication
     console.log(`[3/11] Converting to GeoJSON...`);
@@ -386,7 +425,7 @@ async function extractRegion(regionId: string): Promise<void> {
       readFileSync(outputJson, 'utf-8')
     );
 
-    const { data: bundledData, bridgeWays } = convertToBundledFormat(geojson, regionId);
+    const { data: bundledData, bridgeWays } = convertToBundledFormat(geojson, regionId, ringIdentity);
 
     console.log(`      Traffic calming points: ${bundledData.trafficCalming.length}`);
     console.log(`      Roundabouts: ${bundledData.roundabouts.length}`);
@@ -626,9 +665,22 @@ async function extractRegion(regionId: string): Promise<void> {
 /**
  * Convert GeoJSON to our optimized bundled format
  */
+/**
+ * The numeric OSM id behind osmium's typed `feature.id` ("w12345" / "n678"), or undefined when the
+ * export carried none. Kept strict about the type prefix: a way id and a node id can be the same
+ * NUMBER, so reading one as the other would look up a real but unrelated ring.
+ */
+function osmIdOf(feature: { id?: unknown }, kind: 'w' | 'n'): number | undefined {
+  const raw = feature.id;
+  if (typeof raw !== 'string' || !raw.startsWith(kind)) return undefined;
+  const num = parseInt(raw.slice(1), 10);
+  return Number.isFinite(num) && num > 0 ? num : undefined;
+}
+
 function convertToBundledFormat(
   geojson: GeoJSONFeatureCollection,
-  regionId: string
+  regionId: string,
+  ringIdentity?: RingIdentity
 ): { data: BundledOSMData; bridgeWays: BridgeWayGeom[] } {
   const trafficCalming: TrafficCalmingPoint[] = [];
   const roundabouts: RoundaboutInfo[] = [];
@@ -680,11 +732,17 @@ function convertToBundledFormat(
 
       // Mini roundabouts (nodes)
       if (props.highway === 'mini_roundabout') {
+        // A mini whose node lies ON a ring inherits that ring's id, so the app draws one pin
+        // instead of a ring plus a mini stacked on it; every other mini is its own junction and
+        // gets its own id. Decided in ringIdentity.ts, where the node topology still exists.
+        const nodeId = osmIdOf(feature, 'n');
+        const ringId = nodeId !== undefined ? ringIdentity?.ringIdByMiniNodeId.get(nodeId) : undefined;
         roundabouts.push({
           lat,
           lon,
           type: 'mini_roundabout',
           radius: 3, // Mini roundabouts are typically < 4m
+          ...(ringId !== undefined ? { ringId } : {}),
         });
       }
     }
@@ -697,11 +755,14 @@ function convertToBundledFormat(
       if (props.junction === 'roundabout') {
         const center = calculateCentroid(coords);
         const radius = calculateMaxRadius(coords, center);
+        const wayId = osmIdOf(feature, 'w');
+        const ringId = wayId !== undefined ? ringIdentity?.ringIdByWayId.get(wayId) : undefined;
         roundabouts.push({
           lat: center[1],
           lon: center[0],
           type: 'roundabout',
           radius: Math.round(radius),
+          ...(ringId !== undefined ? { ringId } : {}),
         });
       }
 
@@ -761,11 +822,14 @@ function convertToBundledFormat(
       if (props.junction === 'roundabout') {
         const center = calculateCentroid(coords);
         const radius = calculateMaxRadius(coords, center);
+        const wayId = osmIdOf(feature, 'w');
+        const ringId = wayId !== undefined ? ringIdentity?.ringIdByWayId.get(wayId) : undefined;
         roundabouts.push({
           lat: center[1],
           lon: center[0],
           type: 'roundabout',
           radius: Math.round(radius),
+          ...(ringId !== undefined ? { ringId } : {}),
         });
       }
     }

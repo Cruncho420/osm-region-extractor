@@ -46,6 +46,9 @@ interface BundledRoundabout {
   lon: number;
   radius?: number;
   type: 'roundabout' | 'mini_roundabout';
+  /** ARCH-21 physical-ring identity — see scripts/ringIdentity.ts. Rows sharing this value are
+   *  one roundabout; absent on packs built before the column existed. */
+  ringId?: number;
 }
 
 /** FEAT-051 toll plaza — one point per plaza, already lane-clustered by extract-single.ts. */
@@ -155,7 +158,12 @@ CREATE TABLE IF NOT EXISTS roundabouts (
   lat REAL NOT NULL,
   lon REAL NOT NULL,
   radius REAL,
-  type TEXT NOT NULL
+  type TEXT NOT NULL,
+  -- ARCH-21: which PHYSICAL roundabout this row belongs to (scripts/ringIdentity.ts). One OSM
+  -- roundabout is split into many junction=roundabout ways, so each row here is an ARC; rows
+  -- sharing a ring_id are one roundabout. NULL on packs built before this column, which the app
+  -- handles by falling back to reassembling rings from geometry.
+  ring_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_ra_lat_lon ON roundabouts(lat, lon);
 
@@ -368,7 +376,7 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
     'INSERT INTO traffic_calming (lat, lon, type, end_lat, end_lon, way_id, tags) VALUES (?, ?, ?, ?, ?, ?, ?)',
   );
   const insertRA = db.prepare(
-    'INSERT INTO roundabouts (lat, lon, radius, type) VALUES (?, ?, ?, ?)',
+    'INSERT INTO roundabouts (lat, lon, radius, type, ring_id) VALUES (?, ?, ?, ?, ?)',
   );
   const insertSurface = db.prepare(
     'INSERT INTO road_surfaces (surface, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?)',
@@ -409,7 +417,7 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
   let raCount = 0;
   console.log('Streaming roundabout data...');
   await streamJsonArray<BundledRoundabout>(corePath, 'roundabouts', (ra) => {
-    insertRA.run(ra.lat, ra.lon, ra.radius ?? null, ra.type);
+    insertRA.run(ra.lat, ra.lon, ra.radius ?? null, ra.type, ra.ringId ?? null);
     raCount++;
   });
   console.log(`  ✓ ${raCount} roundabouts`);
