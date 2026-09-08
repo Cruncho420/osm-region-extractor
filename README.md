@@ -124,6 +124,69 @@ so a separate outer island inside a hole remains included.
 Each hole must have exactly one containing outer ring; deeper or ambiguous
 nesting, such as a hole inside that nested island, is refused before outputs.
 
+## Native crossing fixture selection
+
+Use the pinned Python image with networking disabled externally:
+
+```sh
+python3 scripts/select-valhalla-crossing.py --config /proof/unsplit-config.json \
+  --receipt /proof/partition-integrity.json --first-poly /proof/lithuania.poly \
+  --second-poly /proof/latvia.poly --output /proof/selected-crossing.json
+```
+
+The selector clips exclusive L2 boxes to their real country extract polygons,
+prioritizes tiles closest to the neighbour, and probes at most 100 candidate
+points per pack by default. Native `locate` correlations must stay within 500 m,
+the same exclusive tile and the polygon. It tries at most 32 nearby pairs using
+the reviewed route/edge-walk checker; actual path tiles must include both exclusive
+sets and shared tiles. A separate subprocess enforces a 120-second overall bound.
+Caps are configurable up to 200 candidates, 64 pairs, 1000 m and 600 seconds.
+Exhaustion, timeouts, unknown native errors and inconsistent evidence all fail.
+
+The output must not exist. Its JSON contains `request`, `routeEvidence`,
+`usedOwnership`, attempt counts and the explicit host-pack-crossing-only scope.
+Extract its `request` object to the request file consumed by the crossing gate.
+Console output contains only artifact path/scope, not fixture coordinates.
+The selector validates local-only graph settings and actual unsplit tile hashes
+against the supplied receipt before and after selection. No coordinates are
+declared verified in advance and no national-border claim is made from extract
+polygons. Unit tests use fake native bindings; geometry tests use Shapely when
+available and are explicitly skipped otherwise.
+
+## Build-only Lithuania–Latvia proof
+
+The `Valhalla connected graph proof` workflow runs native work only on manual
+dispatch. Its temporary branch/path-specific push trigger registers the new
+workflow; the job guard prevents push events from building anything. It creates
+build artifacts only, with no release, manifest or customer configuration writes.
+
+The input helper freezes both country PBFs and polygons with full hashes and HTTP
+headers, requires matching replication timestamps and ordered single-version
+objects, merges once with osmium, and requires complete way-node references.
+Relation-reference results are retained separately and do not establish complete
+relation closure. Failed preparation retains its small provenance reports.
+
+The toolchain helper checks exact core source and initialized submodules, pins
+the Ubuntu image digest and prime_server source, and records its build-recipe
+diff. Installed package versions are retained; mutable apt repositories prevent
+a claim of bit-for-bit reproducibility. One image builds the combined graph,
+extracts both partitions, selects the fixture, and runs offline checks.
+
+The reconstruction helper consumes the actual gzip-compressed native extracts,
+requires their regular `index.bin` and graph members, and rejects unsafe paths,
+links, extended PAX/GNU headers and conflicting duplicates. It retains the two
+archive-specific indexes and creates a hardlinked directory union without an
+index. Trusted immutable staging is required because union members share inodes.
+Limits are 1 GiB per member, 256 GiB total payload per archive, and two million
+members; any failed extraction retains partial output for inspection.
+These structural checks do not themselves validate graph connectivity.
+
+Evidence includes runner resources, source/input identities, image/native hashes,
+build logs, actual reconstructed inventories and the offline crossing result.
+The selected fixture and native verification must succeed before packs are
+uploaded as verified proof artifacts; failures still upload diagnostic evidence.
+This host experiment does not complete mobile integration or global rollout.
+
 ## License
 
 The extracted data is derived from OpenStreetMap and is available under the [ODbL](https://www.openstreetmap.org/copyright).

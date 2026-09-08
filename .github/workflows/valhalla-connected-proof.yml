@@ -1,0 +1,223 @@
+name: Valhalla connected graph proof
+
+# Build-only, manually dispatched LT + LV experiment. No release or manifest writes.
+# The core source is exact; apt repositories and timezone downloads are recorded,
+# not claimed to be bit-reproducible. All native operations use one built image ID.
+on:
+  # Temporary registration shim for this branch-only workflow. Remove on merge
+  # to the default branch; the job gate below prevents any build on push.
+  push:
+    branches: [codex/valhalla-connected-proof]
+    paths: [.github/workflows/valhalla-connected-proof.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CORE_SHA: e2f017b16080f49203de245a211b09efab09cf72
+
+jobs:
+  connected-proof:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record runner resources and install input tools
+        run: |
+          set -euo pipefail
+          mkdir -p work/evidence work/configs work/partitions
+          { date -u; uname -a; df -h; free -m; nproc; } | tee work/evidence/resources-start.txt
+          sudo apt-get update
+          sudo apt-get install -y osmium-tool python3-shapely
+          { osmium --version; dpkg-query -W osmium-tool; node --version; python3 --version; } > work/evidence/host-tools.txt
+          git rev-parse HEAD > work/evidence/workflow-source.txt
+          sha256sum scripts/*valhalla* .github/workflows/valhalla-connected-proof.yml > work/evidence/proof-source-sha256.txt
+
+      - name: Verify proof tooling before the native build
+        run: |
+          set -euo pipefail
+          python3 -B -m unittest discover -s scripts -p 'test_*.py' 2>&1 | tee work/evidence/proof-python-tests.log
+          node --test scripts/*.test.mjs 2>&1 | tee work/evidence/proof-node-tests.log
+
+      - name: Freeze and merge the two input extracts
+        run: |
+          set -euo pipefail
+          python3 scripts/prepare-valhalla-connected-inputs.py --output work/inputs 2>&1 | tee work/evidence/input-preparation.log
+          cp work/inputs/input-provenance.json work/evidence/
+          cp work/inputs/lithuania.poly work/inputs/latvia.poly work/evidence/
+          { date -u; df -h; free -m; } > work/evidence/resources-inputs.txt
+
+      - name: Fetch the exact core source and prepare its actual Docker recipe
+        run: |
+          set -euo pipefail
+          git init valhalla-source
+          git -C valhalla-source remote add origin https://github.com/valhalla/valhalla.git
+          git -C valhalla-source fetch --depth 1 origin "$CORE_SHA"
+          git -C valhalla-source checkout --detach FETCH_HEAD
+          test "$(git -C valhalla-source rev-parse HEAD)" = "$CORE_SHA"
+          git -C valhalla-source submodule update --init --recursive --depth 1
+          docker pull ubuntu:24.04
+          UBUNTU_REF=$(docker image inspect --format '{{index .RepoDigests 0}}' ubuntu:24.04)
+          [[ "$UBUNTU_REF" =~ ^ubuntu@sha256:[0-9a-f]{64}$ ]]
+          python3 scripts/prepare-valhalla-proof-toolchain.py \
+            --source valhalla-source --ubuntu-ref "$UBUNTU_REF" \
+            --receipt work/evidence/toolchain-source.json
+
+      - name: Build one pinned native toolchain image
+        run: |
+          set -euo pipefail
+          docker build --progress plain --file valhalla-source/docker/Dockerfile \
+            --build-arg CONCURRENCY=2 --build-arg VERSION_MODIFIER="$CORE_SHA" \
+            --iidfile work/evidence/image-id.txt valhalla-source 2>&1 | tee work/evidence/toolchain-build.log
+          VALHALLA_REF=$(cat work/evidence/image-id.txt)
+          [[ "$VALHALLA_REF" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "VALHALLA_REF=$VALHALLA_REF" >> "$GITHUB_ENV"
+          docker image inspect "$VALHALLA_REF" > work/evidence/image-inspect.json
+          docker run --rm --network none "$VALHALLA_REF" sh -ec '
+            cat /usr/local/valhalla_version
+            for fact in /usr/local/valhalla-proof-*; do test -f "$fact"; echo "$fact"; cat "$fact"; done
+            dpkg-query -W
+          ' > work/evidence/toolchain-installed.txt
+          docker run --rm --network none "$VALHALLA_REF" python3 -c '
+          import hashlib, pathlib, shutil, valhalla
+          for name in ("valhalla_build_tiles", "valhalla_build_extract", "valhalla_build_admins", "valhalla_build_config", "valhalla_service"):
+              path = pathlib.Path(shutil.which(name))
+              print(hashlib.file_digest(path.open("rb"), "sha256").hexdigest(), path)
+          for path in pathlib.Path(valhalla.__file__).parent.rglob("*.so"):
+              print(hashlib.file_digest(path.open("rb"), "sha256").hexdigest(), path)
+          ' > work/evidence/native-sha256.txt
+          { date -u; df -h; free -m; docker system df; } > work/evidence/resources-toolchain.txt
+
+      - name: Build timezone data and generate the single graph configuration
+        run: |
+          set -euo pipefail
+          docker run --rm "$VALHALLA_REF" valhalla_build_timezones > work/tz_world.sqlite
+          test "$(stat -c%s work/tz_world.sqlite)" -ge 50000000
+          sha256sum work/tz_world.sqlite > work/evidence/timezone-sha256.txt
+          docker run --rm --network none "$VALHALLA_REF" valhalla_build_config \
+            --mjolnir-tile-dir /proof/source \
+            --mjolnir-tile-extract /proof/unused.tar \
+            --mjolnir-timezone /proof/tz_world.sqlite \
+            --mjolnir-admin /proof/admins.sqlite > work/configs/base.json
+          jq '.mjolnir.concurrency = 1 | .mjolnir.max_cache_size = 262144000' \
+            work/configs/base.json > work/configs/build.json
+
+      - name: Build admins and one connected graph at concurrency one
+        run: |
+          set -euo pipefail
+          docker run --rm --network none -v "$PWD/work:/proof" "$VALHALLA_REF" \
+            valhalla_build_admins -c /proof/configs/build.json /proof/inputs/combined.osm.pbf \
+            2>&1 | tee work/evidence/admin-build.log
+          sha256sum work/admins.sqlite > work/evidence/admin-sha256.txt
+          docker run --rm --network none -v "$PWD/work:/proof" "$VALHALLA_REF" \
+            valhalla_build_tiles -c /proof/configs/build.json /proof/inputs/combined.osm.pbf \
+            2>&1 | tee work/evidence/graph-build.log
+          # No retry: preserve the first failed build and its log as evidence.
+          if grep -qE 'Mismatch in end offset|terminate called' work/evidence/graph-build.log; then
+            echo '::error::Graph build emitted a corruption marker'
+            exit 1
+          fi
+          test -d work/source/2
+          { date -u; df -h; free -m; } > work/evidence/resources-graph.txt
+
+      - name: Partition unchanged tiles using frozen extract polygons
+        run: |
+          set -euo pipefail
+          docker run --rm --network none -v "$PWD/work:/proof" -v "$PWD/scripts:/scripts:ro" \
+            "$VALHALLA_REF" python3 /scripts/partition-valhalla-connected.py \
+            --source /proof/source --first-poly /proof/inputs/lithuania.poly \
+            --second-poly /proof/inputs/latvia.poly \
+            --first-out /proof/partitions/first --second-out /proof/partitions/second \
+            > work/evidence/partition-selection.json 2> >(tee work/evidence/partition-selection.stderr >&2)
+
+      - name: Package both partitions using the same native extract tool
+        run: |
+          set -euo pipefail
+          for pack in first second; do
+            jq --arg root "/proof/partitions/$pack" --arg archive "/proof/$pack.tar" \
+              '.mjolnir.tile_dir = $root | .mjolnir.tile_extract = $archive' \
+              work/configs/build.json > "work/configs/extract-$pack.json"
+            docker run --rm --network none -v "$PWD/work:/proof" "$VALHALLA_REF" \
+              valhalla_build_extract -c "/proof/configs/extract-$pack.json" -v \
+              2>&1 | tee "work/evidence/extract-$pack.log"
+            test -s "work/$pack.tar"
+            gzip -n -c "work/$pack.tar" > "work/$pack.tar.gz"
+          done
+          sha256sum work/first.tar.gz work/second.tar.gz > work/evidence/packs-sha256.txt
+
+      - name: Safely reconstruct packs and verify the exact graph union
+        run: |
+          set -euo pipefail
+          python3 scripts/reconstruct-valhalla-proof-packs.py \
+            --first work/first.tar.gz --second work/second.tar.gz --output work/reconstructed 2>&1 | tee work/evidence/reconstruction.log
+          cp work/reconstructed/receipt.json work/evidence/reconstruction.json
+          node scripts/verify-valhalla-partitions.mjs \
+            work/source work/reconstructed/first work/reconstructed/second \
+            > work/evidence/partition-integrity.json 2> >(tee work/evidence/partition-integrity.stderr >&2)
+          for mode in unsplit union first second; do
+            root="/proof/reconstructed/$mode"
+            if [ "$mode" = unsplit ]; then root=/proof/source; fi
+            jq --arg root "$root" '
+              .mjolnir.tile_dir = $root |
+              .mjolnir.tile_extract = "" | .mjolnir.tile_url = "" |
+              .mjolnir.traffic_extract = "" | .mjolnir.incident_log = "" |
+              .mjolnir.incident_dir = "" | .mjolnir.global_synchronized_cache = false
+            ' work/configs/build.json > "work/configs/$mode.json"
+          done
+
+      - name: Select a genuine pack crossing from the built graph
+        run: |
+          set -euo pipefail
+          docker run --rm --network none -v "$PWD/work:/proof" -v "$PWD/scripts:/scripts:ro" \
+            "$VALHALLA_REF" python3 /scripts/select-valhalla-crossing.py \
+            --config /proof/configs/unsplit.json --receipt /proof/evidence/partition-integrity.json \
+            --first-poly /proof/inputs/lithuania.poly --second-poly /proof/inputs/latvia.poly \
+            --output /proof/evidence/selected-crossing.json 2>&1 | tee work/evidence/crossing-selection.log
+          jq -e .request work/evidence/selected-crossing.json > work/evidence/crossing-request.json
+
+      - name: Verify offline union equivalence and missing-pack failures
+        run: |
+          set -euo pipefail
+          docker run --rm --network none -v "$PWD/work:/proof:ro" -v "$PWD/scripts:/scripts:ro" \
+            "$VALHALLA_REF" python3 /scripts/verify-valhalla-crossing.py \
+            --request /proof/evidence/crossing-request.json \
+            --partition-receipt /proof/evidence/partition-integrity.json \
+            --unsplit /proof/configs/unsplit.json --union /proof/configs/union.json \
+            --first /proof/configs/first.json --second /proof/configs/second.json \
+            > work/evidence/offline-crossing.json 2> >(tee work/evidence/offline-crossing.stderr >&2)
+
+      - name: Record final resources
+        if: always()
+        run: |
+          mkdir -p work/evidence
+          if [ -d work/configs ]; then cp -a work/configs work/evidence/configs; fi
+          for diagnostic in work/inputs/*.json work/inputs/check-refs-*.txt work/inputs/*.poly; do
+            if [ -f "$diagnostic" ]; then cp "$diagnostic" work/evidence/; fi
+          done
+          { date -u; df -h; free -m; docker system df; } > work/evidence/resources-final.txt
+
+      - name: Preserve proof evidence, including failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: valhalla-connected-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: work/evidence/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Preserve the two verified packs
+        uses: actions/upload-artifact@v4
+        with:
+          name: valhalla-connected-packs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            work/first.tar.gz
+            work/second.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
