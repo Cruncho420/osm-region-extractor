@@ -174,17 +174,37 @@ extracts both partitions, selects the fixture, and runs offline checks.
 
 The reconstruction helper consumes the actual gzip-compressed native extracts,
 requires their regular `index.bin` and graph members, and rejects unsafe paths,
-links, extended PAX/GNU headers and conflicting duplicates. It retains the two
+links, unsupported PAX/GNU headers and conflicting duplicates. The pinned extractor's
+Python `tar.add()` emits local PAX metadata for fractional file modification times;
+only its single `mtime` record (at most 1 KiB) is accepted and ignored, immediately
+before a regular member. Path, size, link, sparse and unknown metadata overrides,
+global/repeated/orphan headers, and malformed lengths are refused. It retains the two
 archive-specific indexes and creates a hardlinked directory union without an
 index. Trusted immutable staging is required because union members share inodes.
 Limits are 1 GiB per member, 256 GiB total payload per archive, and two million
 members; any failed extraction retains partial output for inspection.
 These structural checks do not themselves validate graph connectivity.
 
+Before building the native toolchain, check the archive contract against the exact
+checked-out core script:
+
+```sh
+python3 -B scripts/smoke-valhalla-extract-compatibility.py \
+  --extractor /path/to/pinned-valhalla/scripts/valhalla_build_extract
+```
+
+The smoke check verifies the pinned script's full hash, invokes it on synthetic
+tile bytes with fractional mtimes, compresses both outputs and reconstructs them,
+then verifies unchanged pack/union bytes. It checks the real extractor format;
+synthetic tiles cannot establish native graph validity or routing acceptance.
+
 Evidence includes runner resources, source/input identities, image/native hashes,
 build logs, actual reconstructed inventories and the offline crossing result.
 The selected fixture and native verification must succeed before packs are
 uploaded as verified proof artifacts; failures still upload diagnostic evidence.
+If pack files exist when a later check fails, the workflow also retains them in
+a separately named `unverified` artifact for diagnosis. That artifact is not
+crossing acceptance and must never be consumed as a verified release.
 This host experiment does not complete mobile integration or global rollout.
 
 ## License

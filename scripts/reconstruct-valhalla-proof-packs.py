@@ -18,6 +18,7 @@ CHUNK = 1024 * 1024
 MAX_MEMBER_BYTES = 1024 ** 3
 MAX_ARCHIVE_BYTES = 256 * 1024 ** 3
 MAX_MEMBERS = 2_000_000
+MAX_MTIME_HEADER_BYTES = 1024
 TILE = re.compile(r"[012]/(?:[0-9]{3}/){1,2}[0-9]{3}\.gph")
 DIRECTORY = re.compile(r"[012](?:/[0-9]{3}){0,2}/?")
 
@@ -57,18 +58,40 @@ def extract_member(source, member, root):
     return {"path": member.name, "bytes": count, "sha256": digest.hexdigest()}
 
 
+def consume_mtime_header(source, member):
+    # Pinned e2f017b valhalla_build_extract uses Python tar.add(), which adds
+    # this local PAX record for fractional filesystem mtime. Ignore timestamps;
+    # never apply PAX path, size, link or sparse overrides to validated headers.
+    require(member.name == "././@PaxHeader" and 0 < member.size <= MAX_MTIME_HEADER_BYTES,
+            "Other extended headers forbidden")
+    payload = source.read(member.size)
+    match = re.fullmatch(rb"([1-9][0-9]{0,3}) mtime=-?[0-9]{1,20}(?:\.[0-9]{1,20})?\n", payload)
+    require(match is not None and int(match[1]) == member.size, "Invalid or unsupported local PAX record")
+    padding = (-member.size) % 512
+    require(source.read(padding) == bytes(padding), "Invalid PAX padding")
+
+
 def tar_members(source):
     # Parse fixed headers ourselves: tarfile's iterator eagerly allocates PAX/GNU
     # extension payloads before callers can reject them or enforce size limits.
+    pending_mtime = False
     while True:
         header = source.read(512)
         require(len(header) == 512, "Missing tar end marker")
         if header == bytes(512):
+            require(not pending_mtime, "Orphan local PAX record")
             require(source.read(512) == bytes(512), "Missing second tar end marker")
             break
         member = tarfile.TarInfo.frombuf(header, "utf-8", "strict")
+        if member.type == tarfile.XHDTYPE:
+            require(not pending_mtime, "Repeated local PAX record")
+            consume_mtime_header(source, member)
+            pending_mtime = True
+            continue
         require(member.type in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE),
                 "Links, special files and extended headers forbidden")
+        require(not pending_mtime or member.isreg(), "Local PAX requires a regular member")
+        pending_mtime = False
         yield member
         padding = (-member.size) % 512
         require(source.read(padding) == bytes(padding), "Invalid tar member padding")

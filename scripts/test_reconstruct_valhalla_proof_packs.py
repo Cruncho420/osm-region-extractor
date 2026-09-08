@@ -38,6 +38,20 @@ def regular(name, content=b"tile"):
     return (name, content, tarfile.REGTYPE)
 
 
+def pax_header(record, kind=tarfile.XHDTYPE):
+    member = tarfile.TarInfo("././@PaxHeader")
+    member.type, member.size = kind, len(record)
+    return member.tobuf(format=tarfile.USTAR_FORMAT) + record + bytes((-len(record)) % 512)
+
+
+def pax_record(key, value):
+    body = f" {key}={value}\n".encode("ascii")
+    size = len(body) + 1
+    while len(str(size)) + len(body) != size:
+        size = len(str(size)) + len(body)
+    return str(size).encode("ascii") + body
+
+
 class ReconstructionTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -167,6 +181,59 @@ class ReconstructionTests(unittest.TestCase):
         alias.symlink_to(self.root, target_is_directory=True)
         with self.assertRaises(ValueError):
             proof.reconstruct(self.first, self.second, alias / "out")
+
+    def test_native_python_tar_add_fractional_mtime_roundtrip(self):
+        # Pinned valhalla_build_extract uses default tarfile.open("w") + add();
+        # that emits a local mtime PAX header for filesystem fractional mtimes.
+        tile = self.root / "tile"
+        tile.write_bytes(b"tile")
+        os.utime(tile, ns=(1700000000123456789, 1700000000123456789))
+        with tarfile.open(self.first, "w:gz") as archive:
+            index = tarfile.TarInfo("index.bin")
+            index.size = 16
+            archive.addfile(index, io.BytesIO(bytes(16)))
+            archive.add(tile, arcname=A)
+        with tarfile.open(self.first) as archive:
+            self.assertEqual(set(archive.getmember(A).pax_headers), {"mtime"})
+        receipt = self.run_proof()
+        self.assertEqual((self.output / "first" / A).read_bytes(), b"tile")
+        self.assertEqual(receipt["first"]["tiles"][0]["sha256"], hashlib.sha256(b"tile").hexdigest())
+
+    def test_pax_cannot_override_paths_sizes_links_or_sparse_semantics(self):
+        original = gzip.decompress(self.first.read_bytes())
+        for key, value in (("path", "../outside"), ("linkpath", A), ("size", "999"),
+                           ("GNU.sparse.map", "0,4"), ("uid", "0"), ("unknown", "ignored")):
+            with self.subTest(key=key), tempfile.TemporaryDirectory(dir=self.root) as temp:
+                extension = pax_header(pax_record(key, value))
+                self.first.write_bytes(gzip.compress(original[:1024] + extension + original[1024:]))
+                with self.assertRaises(ValueError):
+                    proof.reconstruct(self.first, self.second, Path(temp) / "out")
+
+    def test_pax_rejects_malformed_duplicate_global_and_orphan_metadata(self):
+        original = gzip.decompress(self.first.read_bytes())
+        record = pax_record("mtime", "1700000000.1234567")
+        extensions = [pax_header(b"99 mtime=1\n"), pax_header(pax_record("mtime", "nan")),
+                      pax_header(record + record), pax_header(record, tarfile.XGLTYPE),
+                      pax_header(record) + pax_header(record)]
+        for extension in extensions:
+            with self.subTest(extension=extension[:160]), tempfile.TemporaryDirectory(dir=self.root) as temp:
+                self.first.write_bytes(gzip.compress(original[:1024] + extension + original[1024:]))
+                with self.assertRaises(ValueError):
+                    proof.reconstruct(self.first, self.second, Path(temp) / "out")
+        self.first.write_bytes(gzip.compress(original[:1024] + pax_header(record) + bytes(1024)))
+        with self.assertRaises(ValueError):
+            self.run_proof()
+
+    def test_allowed_pax_never_bypasses_member_validation(self):
+        record = pax_header(pax_record("mtime", "1700000000.1234567"))
+        for member in (regular("../outside"), regular(A), (A, b"", tarfile.LNKTYPE),
+                       ("2/000", b"", tarfile.DIRTYPE)):
+            with self.subTest(member=member), tempfile.TemporaryDirectory(dir=self.root) as temp:
+                write_archive(self.first, self.valid + [member])
+                raw = gzip.decompress(self.first.read_bytes())
+                self.first.write_bytes(gzip.compress(raw[:3072] + record + raw[3072:]))
+                with self.assertRaises(ValueError):
+                    proof.reconstruct(self.first, self.second, Path(temp) / "out")
 
 
 if __name__ == "__main__":
