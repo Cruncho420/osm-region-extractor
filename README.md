@@ -22,6 +22,36 @@ To manually run the extraction:
 1. Go to Actions → Monthly OSM Data Extraction
 2. Click "Run workflow"
 
+## Connected Valhalla partition integrity (build-only)
+
+After reconstructing two packs into separate tile directories, run:
+
+```sh
+node scripts/verify-valhalla-partitions.mjs /absolute/unsplit /absolute/pack-a /absolute/pack-b > partition-integrity.json
+node --test scripts/verify-valhalla-partitions.test.mjs
+```
+
+Use stationary, trusted staging directories with no concurrent writers. The command
+streams SHA256 over every actual `.gph` file and requires the two-pack union to
+match the unsplit graph at every unchanged relative path. It rejects missing,
+extra, changed or conflicting tiles, empty packs, duplicate packs, symlinks,
+traversal paths and non-regular members. Both packs must contribute exclusive
+tiles and share at least one tile. Numeric directory/file names are checked for
+safe layout only; GraphId validity, hierarchy and bounds are not inferred.
+Top-level `index.bin` is ignored after checking that it is a regular file; tar
+indexes must come from `valhalla_build_extract`, never this verifier.
+
+Success writes deterministic JSON inventories with per-tile byte counts and full
+SHA256 hashes, aggregate inventory hashes, and shared/exclusive paths and counts.
+Failure exits nonzero without a success receipt. The inventory hash is SHA256 of
+the compact JSON tile array, sorted lexically by relative path. Contents are
+streamed, but inventories occupy memory proportional to the number of tiles.
+
+This is an unchanged-tile-union gate only. It does not prove input snapshot
+provenance, valid native graph contents, offline route equivalence, persistent
+actor behavior, individual-pack graph closure or global production scalability.
+It does not build, download, publish or modify routing data.
+
 ## License
 
 The extracted data is derived from OpenStreetMap and is available under the [ODbL](https://www.openstreetmap.org/copyright).
