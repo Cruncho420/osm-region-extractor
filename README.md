@@ -52,6 +52,45 @@ provenance, valid native graph contents, offline route equivalence, persistent
 actor behavior, individual-pack graph closure or global production scalability.
 It does not build, download, publish or modify routing data.
 
+## Native host crossing proof (caller-supplied fixture)
+
+Run inside the pinned Valhalla Python image, with networking disabled externally:
+
+```sh
+python3 scripts/verify-valhalla-crossing.py \
+  --request /proof/request.json --partition-receipt /proof/partition-integrity.json \
+  --unsplit /proof/unsplit-config.json --union /proof/union-config.json \
+  --first /proof/first-only-config.json --second /proof/second-only-config.json \
+  --timeout 120 > crossing-evidence.json
+python3 -m unittest discover -s scripts -p 'test_verify_valhalla_crossing.py'
+```
+
+All four config files must specify actual absolute local tile directories and
+explicitly disable the global synchronized cache. Extract, remote tile URL,
+traffic extract and incident sources are refused. All four configurations must
+be identical except for `mjolnir.tile_dir`, checked
+before any native worker starts so differing settings cannot imitate missing data.
+Keep staging trees immutable; actual tile hashes are checked against the partition receipt before and after
+execution. Each supplied auto-costing location must have a finite explicit
+`search_cutoff` between 1 and 1000 metres. Requests use JSON/polyline6 without a
+date/time. No fixture coordinates are generated or declared verified by this tool.
+
+One child process retains one unsplit actor and one union actor for cold/warm
+route comparisons. Leg shape, distance, duration and ordered exact `edge_walk`
+edge IDs must agree; native GraphId file paths must include exclusive tiles from
+both packs and shared tiles. Each one-pack negative runs in a fresh subprocess.
+Only exact pinned native RuntimeError messages for errors 170, 171 and 442 count
+as route rejection; construction errors, unknown messages, timeouts, crashes and
+unexpected successful routes fail the gate. Error codes are inferred from exact
+messages because the Python binding exposes runtime-error text, not typed codes.
+
+Success emits JSON with route shapes, edge/path evidence and timings. Optional
+`--source-facts facts.json` is carried as explicitly unverified caller metadata.
+This proves a host-side pack crossing, not a national border, mobile integration,
+native memory behavior or global scalability. External network isolation and
+engine provenance remain separate requirements. Python unit tests use fake
+bindings and prove checker logic only; they are not native graph acceptance.
+
 ## License
 
 The extracted data is derived from OpenStreetMap and is available under the [ODbL](https://www.openstreetmap.org/copyright).
