@@ -91,6 +91,39 @@ native memory behavior or global scalability. External network isolation and
 engine provenance remain separate requirements. Python unit tests use fake
 bindings and prove checker logic only; they are not native graph acceptance.
 
+## Whole-tile connected graph partition
+
+In the pinned Python Valhalla image (which includes Shapely), run:
+
+```sh
+python3 scripts/partition-valhalla-connected.py --source /proof/unsplit \
+  --first-poly /proof/lithuania.poly --second-poly /proof/latvia.poly \
+  --first-out /proof/staged-first --second-out /proof/staged-second > partition.json
+python3 -B -m unittest discover -s scripts -p 'test_partition_valhalla_connected.py'
+```
+
+The helper parses outer rings and holes from both real `.poly` files and checks
+whole native-identified L2 tile boxes against those polygons. L2 boxes use the
+0.25-degree constant from the pinned core revision; native bindings supply their
+origins and canonical paths. Coarse L0/L1 tiles, overlapping tiles and explicitly
+reported polygon-exterior leftovers are shared. Both exclusive L2 sets must be
+nonempty before any output is created. Transit or noncanonical tiles are refused.
+
+Outputs must not exist and must be outside the source, with existing real parent
+directories on the same filesystem. All tile data is hardlinked unchanged; there
+is no copying fallback. Keep inputs and outputs immutable because they share
+inodes. A filesystem failure leaves partial output for inspection and fails the
+command; nothing existing is overwritten or cleaned up. Package these staging
+directories with pinned `valhalla_build_extract`, reconstruct actual compressed
+artifacts, and run the separate integrity/crossing gates. This partition receipt
+does not establish graph connectivity or any verified route coordinates. Tests
+use rectangle geometry and native-binding fakes, plus a real-Shapely island-inside-hole
+regression when Shapely is installed (otherwise explicitly skipped); no native graph
+is exercised. Holes are attached to their owning outer component before union,
+so a separate outer island inside a hole remains included.
+Each hole must have exactly one containing outer ring; deeper or ambiguous
+nesting, such as a hole inside that nested island, is refused before outputs.
+
 ## License
 
 The extracted data is derived from OpenStreetMap and is available under the [ODbL](https://www.openstreetmap.org/copyright).
