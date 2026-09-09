@@ -215,7 +215,8 @@ def main():
     args = parser.parse_args()
     require(math.isfinite(args.timeout) and args.timeout > 0, "Positive finite timeout required")
     configs = {key: read_json(getattr(args, key)) for key in ("unsplit", "union", "first", "second")}
-    request, receipt = read_json(args.request), read_json(args.partition_receipt)
+    partition_bytes = Path(args.partition_receipt).read_bytes()
+    request, receipt = read_json(args.request), json.loads(partition_bytes)
     check_request(request)
     groups = check_receipt(receipt, configs)
     payload = {"configs": configs, "request": request, "groups": {k: sorted(v) for k, v in groups.items()}}
@@ -224,7 +225,9 @@ def main():
         evidence[mode] = launch({**payload, "mode": mode}, args.timeout)
     # Recheck immutable staging after native calls as well as before them.
     check_receipt(receipt, configs)
+    require(Path(args.partition_receipt).read_bytes() == partition_bytes, 'Partition receipt changed during native proof')
     print(json.dumps({"schemaVersion": 1, "scope": "host-local-pack-crossing-not-national-border-or-device-proof",
+                      "partitionReceiptSha256": hashlib.sha256(partition_bytes).hexdigest(),
                       "inputs": vars(args), "evidence": evidence,
                       "sourceFactsUnverified": read_json(args.source_facts) if args.source_facts else None,
                       "networkIsolation": "must be enforced externally; local graph config checked"}, sort_keys=True))

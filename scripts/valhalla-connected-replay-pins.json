@@ -1,0 +1,46 @@
+{
+  "runId": 34355165104,
+  "sourceSha": "5bbf9a3de4a8dc4ad51060f7e36af3dfcd72597e",
+  "files": {
+    "workflow-source.txt": {
+      "bytes": 41,
+      "sha256": "e5888287a9d902d89aadd7da0048fefdf8b9505f9b1dc098c429f882586e2fdf"
+    },
+    "offline-crossing.json": {
+      "bytes": 72870,
+      "sha256": "7753f6921c0c0aeb42f004b42cd65637f33519e55238c755b61a1cae6f2a0db6"
+    },
+    "partition-integrity.json": {
+      "bytes": 370905,
+      "sha256": "2b5549ff6fc9066932b17cf0f6112a4e47984a3e8e248de8859e9852fa161208"
+    },
+    "reconstruction.json": {
+      "bytes": 193199,
+      "sha256": "be25f37b5d337c9af696591cf384a6e14e4aeb0d61f725bc4bed6a485db743a6"
+    },
+    "toolchain-source.json": {
+      "bytes": 5097,
+      "sha256": "26c2afd61684733a8c9e632b50b5717591dcf45175e8fbd29761c441161837c2"
+    },
+    "input-provenance.json": {
+      "bytes": 10300,
+      "sha256": "247c6a063e0d83b8f3fe1d18c8d3918084f5a4cef60304eb6c9cd269b8cf2918"
+    },
+    "crossing-request.json": {
+      "bytes": 252,
+      "sha256": "cde60d05593fa5959870cfcd1422423440d03182958f806a3bfcd7d34b6d6948"
+    },
+    "lithuania.poly": {
+      "bytes": 8447,
+      "sha256": "e39eed51feb99a540263bd825787ce14fdb0207a4b62e5439f199b49abd20f26"
+    },
+    "latvia.poly": {
+      "bytes": 4696,
+      "sha256": "bb72540002e4818f7562512bda0e7629d5c7668205e0d005fe1685baf175b712"
+    },
+    "configs/unsplit.json": {
+      "bytes": 9754,
+      "sha256": "4b0c3f3073406a083f70ef131192eb254d6bf406d7269b040902e9fe563a6626"
+    }
+  }
+}

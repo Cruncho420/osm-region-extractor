@@ -1,0 +1,138 @@
+name: Valhalla fixed artifact replay
+on:
+  push:
+    branches: [codex/valhalla-connected-proof]
+    paths: [.github/workflows/valhalla-connected-replay.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+env:
+  CORE_SHA: e2f017b16080f49203de245a211b09efab09cf72
+jobs:
+  replay:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install proof tools and test current helpers
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y osmium-tool python3-shapely
+          python3 -B -m unittest discover -s scripts -p 'test_*.py' > replay-python-tests.log 2>&1
+          node --test scripts/*.test.mjs > replay-node-tests.log 2>&1
+      - name: Verify fixed successful run identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api repos/Cruncho420/osm-region-extractor/actions/runs/34355165104 > prior-run.json
+          jq -e '.id == 34355165104 and .head_sha == "5bbf9a3de4a8dc4ad51060f7e36af3dfcd72597e" and .conclusion == "success" and .event == "workflow_dispatch"' prior-run.json
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 34355165104
+          name: valhalla-connected-evidence-34355165104-1
+          path: prior
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: 34355165104
+          name: valhalla-connected-packs-34355165104-1
+          path: packs
+      - name: Authenticate and reconstruct the original graph bytes
+        run: |
+          set -euo pipefail
+          python3 -B scripts/replay-valhalla-connected-artifacts.py prepare \
+            --prior "$PWD/prior" --run "$PWD/prior-run.json" --packs "$PWD/packs" --output "$PWD/work" > replay-preparation.log
+          cp replay-*-tests.log prior-run.json work/evidence/
+          git rev-parse HEAD > work/evidence/replay-workflow-source.txt
+          sha256sum scripts/*valhalla* .github/workflows/valhalla-connected-replay.yml > work/evidence/replay-source-sha256.txt
+      - name: Fetch the exact core source and prepare its actual Docker recipe
+        run: |
+          set -euo pipefail
+          git init valhalla-source
+          git -C valhalla-source remote add origin https://github.com/valhalla/valhalla.git
+          git -C valhalla-source fetch --depth 1 origin "$CORE_SHA"
+          git -C valhalla-source checkout --detach FETCH_HEAD
+          test "$(git -C valhalla-source rev-parse HEAD)" = "$CORE_SHA"
+          git -C valhalla-source submodule update --init --recursive --depth 1
+          docker pull ubuntu:24.04
+          UBUNTU_REF=$(docker image inspect --format '{{index .RepoDigests 0}}' ubuntu:24.04)
+          [[ "$UBUNTU_REF" =~ ^ubuntu@sha256:[0-9a-f]{64}$ ]]
+          python3 scripts/prepare-valhalla-proof-toolchain.py \
+            --source valhalla-source --ubuntu-ref "$UBUNTU_REF" \
+            --receipt work/evidence/replay-toolchain-source.json
+
+      - name: Verify the exact native packer format before compiling
+        run: |
+          set -euo pipefail
+          python3 -B scripts/smoke-valhalla-extract-compatibility.py \
+            --extractor valhalla-source/scripts/valhalla_build_extract \
+            2>&1 | tee work/evidence/native-extract-compatibility.log
+
+      - name: Build one pinned native toolchain image
+        run: |
+          set -euo pipefail
+          docker build --progress plain --file valhalla-source/docker/Dockerfile \
+            --build-arg CONCURRENCY=2 --build-arg VERSION_MODIFIER="$CORE_SHA" \
+            --iidfile work/evidence/image-id.txt valhalla-source 2>&1 | tee work/evidence/toolchain-build.log
+          VALHALLA_REF=$(cat work/evidence/image-id.txt)
+          [[ "$VALHALLA_REF" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "VALHALLA_REF=$VALHALLA_REF" >> "$GITHUB_ENV"
+          docker image inspect "$VALHALLA_REF" > work/evidence/image-inspect.json
+          docker run --rm --network none "$VALHALLA_REF" sh -ec '
+            cat /usr/local/valhalla_version
+            for fact in /usr/local/valhalla-proof-*; do test -f "$fact"; echo "$fact"; cat "$fact"; done
+            dpkg-query -W
+          ' > work/evidence/toolchain-installed.txt
+          docker run --rm --network none "$VALHALLA_REF" python3 -c '
+          import hashlib, pathlib, shutil, valhalla
+          for name in ("valhalla_build_tiles", "valhalla_build_extract", "valhalla_build_admins", "valhalla_build_config", "valhalla_service"):
+              path = pathlib.Path(shutil.which(name))
+              print(hashlib.file_digest(path.open("rb"), "sha256").hexdigest(), path)
+          for path in pathlib.Path(valhalla.__file__).parent.rglob("*.so"):
+              print(hashlib.file_digest(path.open("rb"), "sha256").hexdigest(), path)
+          ' > work/evidence/replay-native-sha256.txt
+          { date -u; df -h; free -m; docker system df; } > work/evidence/resources-toolchain.txt
+
+      - name: Replay current strict native checker on authenticated reconstructed union
+        run: |
+          set -euo pipefail
+          docker run --rm --network none -v "$PWD/work:/proof:ro" -v "$PWD/scripts:/scripts:ro" \
+            "$VALHALLA_REF" python3 /scripts/verify-valhalla-crossing.py \
+            --request /proof/evidence/crossing-request.json \
+            --partition-receipt /proof/evidence/partition-integrity.json \
+            --source-facts /proof/evidence/artifact-replay-source.json \
+            --unsplit /proof/configs/unsplit.json --union /proof/configs/union.json \
+            --first /proof/configs/first.json --second /proof/configs/second.json \
+            > work/evidence/offline-crossing.json 2> work/evidence/offline-crossing.stderr
+      - name: Require prior route equivalence and build pinned install contract
+        run: |
+          set -euo pipefail
+          python3 -B scripts/replay-valhalla-connected-artifacts.py finish \
+            --evidence "$PWD/work/evidence" --packs "$PWD/packs" --output "$PWD/install-contract" \
+            > work/evidence/install-descriptor-pin.json
+      - name: Preserve replay evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: valhalla-replay-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            work/evidence/
+            replay-*.log
+            prior-run.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve install contract after strict acceptance
+        uses: actions/upload-artifact@v4
+        with:
+          name: valhalla-replay-contract-${{ github.run_id }}-${{ github.run_attempt }}
+          path: install-contract/
+          if-no-files-found: error
+          retention-days: 14

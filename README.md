@@ -217,6 +217,39 @@ This host experiment does not complete mobile integration or global rollout.
 
 The bounded selector may reject a candidate whose `edge_walk` shape differs from its route shape and continue to the next pair. It records `rejectedShapePairs`; every accepted candidate and the final unsplit/union checker still require exact shape equality. Missing/malformed shapes and unknown errors remain fatal. Run `34352602373` reproduced this native rejection at candidate 3; selecting a compatible candidate still requires a subsequent native run. This is fixture selection, not a relaxation of route equivalence or missing-pack acceptance.
 
+After the native crossing gate succeeds, `build-valhalla-install-descriptor.py`
+creates an install contract with explicit Lithuania/Latvia region identities,
+compressed archive and plain-TAR hashes/sizes, exact raw inventory and coverage
+sidecar pins, the connected graph digest, supported core/format and provenance
+receipt hashes. The native crossing result pins the exact partition receipt it
+used, preventing reuse against changed graph bytes with identical tile names.
+The builder rehashes the real gzip and decompressed TAR streams, matches every
+pack inventory to the verified graph union, and binds coverage to frozen input
+polygon hashes. Coverage uses the existing geofabrik-poly-v1 schema with a
+conservative 1 km boundary margin; multi-region boundary handling remains app work.
+Each raw member inventory includes its archive-specific index and is capped at
+32 MiB for the mobile extraction bridge; the directory union excludes indexes.
+
+The descriptor and sidecars are uploaded only with successful proof artifacts;
+there is no release or production-manifest write. Their hashes bind content, but
+the descriptor is not self-authenticating: the app must receive its full hash from
+a trusted release channel or an explicitly pinned test build before consuming it.
+The unpacker requires a closed, immutable private plain-TAR input and exclusive
+staging ownership. No failed or historical proof is upgraded by this packaging.
+
+```sh
+python3 -B scripts/build-valhalla-install-descriptor.py \
+  --evidence work/evidence --packs work --output work/install-contract
+```
+
+### Fixed successful-artifact replay
+
+`valhalla-connected-replay.yml` is a manually dispatched, read-only replay of successful run `34355165104` at source `5bbf9a3de4a8dc4ad51060f7e36af3dfcd72597e`. The committed `scripts/valhalla-connected-replay-pins.json` authenticates the original raw proof, inventory, config, input provenance and frozen polygons; the pinned reconstruction receipt authenticates both gzip archives. No source PBF is downloaded and no graph is rebuilt. The pinned native toolchain recipe is rebuilt and its new source/native identities are recorded separately.
+
+The replay's compatibility-named `unsplit` and `union` modes both read the authenticated reconstructed union. This is explicitly recorded as reconstructed-source replay, not a second independent unsplit graph. The earlier independent unsplit/union native proof remains byte-pinned as `prior-offline-crossing.json`; the fresh checker binds the original partition receipt and repeats cold/warm geometry, ordered edges and fresh-process missing-pack tests. Finalization additionally requires exact route equality with the earlier independent unsplit proof. The descriptor pins both proofs, the replay scope and the fresh toolchain records.
+
+Successful replay uploads the contract only as a CI artifact; archives remain in the original verified-packs artifact. A later test-build delivery layout may place `first.tar.gz`, `second.tar.gz`, `install-descriptor.json`, both `europe-<country>.inventory.json` and `.coverage.json` sidecars, and all descriptor-named provenance files in one flat directory without changing their bytes. No release URL, manifest trust pin or published assets are created by this workflow. The independent descriptor hash must be reviewed and pinned before consumption.
+
 ## License
 
 The extracted data is derived from OpenStreetMap and is available under the [ODbL](https://www.openstreetmap.org/copyright).
