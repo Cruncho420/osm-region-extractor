@@ -25,6 +25,10 @@ NO_ROUTE = {
 }
 
 
+class CrossingShapeMismatch(ValueError):
+    """A candidate cannot prove edge identity for its exact route geometry."""
+
+
 def require(condition, message):
     if not condition:
         raise ValueError(message)
@@ -136,7 +140,9 @@ def snapshot(actor, request, graph_id):
         if "costing_options" in request:
             trace_request["costing_options"] = copy.deepcopy(request["costing_options"])
         trace = actor.trace_attributes(trace_request)
-        require(trace.get("shape") == shape, "Edge-walk shape differs from route")
+        require(isinstance(trace.get("shape"), str) and trace["shape"], "Missing edge-walk shape")
+        if trace["shape"] != shape:
+            raise CrossingShapeMismatch("Edge-walk shape differs from route")
         edges = [edge.get("id") for edge in trace.get("edges", [])]
         require(edges and all(type(edge) is int and edge >= 0 for edge in edges), "Missing edge IDs")
         paths = [Path(graph_id(edge).tile_base()).as_posix() for edge in edges]

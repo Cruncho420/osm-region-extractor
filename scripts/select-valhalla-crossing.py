@@ -99,6 +99,7 @@ def locate_candidates(actor, samples, country, bindings, max_snap, report=lambda
 
 def choose_route(actor, first, second, groups, graph_id, max_pairs, report=lambda **counts: None):
     pairs = sorted(itertools.product(first, second), key=lambda pair: metres(*pair))[:max_pairs]
+    rejected_shapes = 0
     report(firstCandidates=len(first), secondCandidates=len(second), pairs=len(pairs))
     for index, pair in enumerate(pairs, 1):
         report(pair=index)
@@ -106,6 +107,12 @@ def choose_route(actor, first, second, groups, graph_id, max_pairs, report=lambd
         proof.check_request(request)
         try:
             captured = proof.snapshot(actor, request, graph_id)
+        except proof.CrossingShapeMismatch:
+            # A real native candidate can fail exact edge-walk reproduction.
+            # Keep the acceptance check strict and try the next bounded pair.
+            rejected_shapes += 1
+            report(rejectedShapePairs=rejected_shapes)
+            continue
         except RuntimeError as error:
             if str(error) in proof.NO_ROUTE:
                 continue
@@ -115,7 +122,8 @@ def choose_route(actor, first, second, groups, graph_id, max_pairs, report=lambd
         ownership = {key: sorted(used & values) for key, values in groups.items()}
         if all(ownership.values()):
             return {"request": request, "routeEvidence": captured, "usedOwnership": ownership,
-                    "pairsAttempted": index, "scope": "native-host-pack-crossing-only-not-national-border"}
+                    "pairsAttempted": index, "rejectedShapePairs": rejected_shapes,
+                    "scope": "native-host-pack-crossing-only-not-national-border"}
     raise ValueError("Bounded candidate pairs exhausted without a two-pack crossing")
 
 

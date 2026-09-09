@@ -213,6 +213,10 @@ a separately named `unverified` artifact for diagnosis. That artifact is not
 crossing acceptance and must never be consumed as a verified release.
 This host experiment does not complete mobile integration or global rollout.
 
+### Exact-shape candidate selection
+
+The bounded selector may reject a candidate whose `edge_walk` shape differs from its route shape and continue to the next pair. It records `rejectedShapePairs`; every accepted candidate and the final unsplit/union checker still require exact shape equality. Missing/malformed shapes and unknown errors remain fatal. Run `34352602373` reproduced this native rejection at candidate 3; selecting a compatible candidate still requires a subsequent native run. This is fixture selection, not a relaxation of route equivalence or missing-pack acceptance.
+
 ## License
 
 The extracted data is derived from OpenStreetMap and is available under the [ODbL](https://www.openstreetmap.org/copyright).
