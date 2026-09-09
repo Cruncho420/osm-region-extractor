@@ -200,6 +200,12 @@ synthetic tiles cannot establish native graph validity or routing acceptance.
 
 Evidence includes runner resources, source/input identities, image/native hashes,
 build logs, actual reconstructed inventories and the offline crossing result.
+The selector also retains `<output>.diagnostics.json` on success, failure, or
+worker timeout: a controlled stage name, candidate/pair counters, exception class,
+allowlisted source filenames/line numbers, and process status. Native exception
+messages and captured stdout/stderr are not copied into this artifact or console.
+This distinguishes candidate exhaustion, actor/locate/route faults, and timeouts;
+a failed selection still produces no accepted crossing fixture.
 The selected fixture and native verification must succeed before packs are
 uploaded as verified proof artifacts; failures still upload diagnostic evidence.
 If pack files exist when a later check fails, the workflow also retains them in
