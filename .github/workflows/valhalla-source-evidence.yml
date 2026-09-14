@@ -2,6 +2,12 @@ name: Valhalla source-built Andorra evidence
 # Separate from production extraction. No release/tag/container publication is possible.
 on:
   workflow_dispatch:
+    inputs:
+      census_existing_graph:
+        description: Enumerate the previously verified Andorra graph; do not rebuild graph data
+        type: boolean
+        default: false
+        required: false
 permissions:
   contents: read
 concurrency:
@@ -9,6 +15,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   capture:
+    if: ${{ !inputs.census_existing_graph }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:
@@ -82,6 +89,90 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: valhalla-andorra-source-evidence-metadata-${{ github.run_id }}
+          path: evidence/metadata
+          if-no-files-found: error
+          retention-days: 7
+  census:
+    if: ${{ inputs.census_existing_graph }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      SOURCE_BUILDER_BASE: ubuntu@sha256:a61567bd31828687156d735ea8eb01ba4e37636e225dd6a48ba94136a70d9d61
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Test bounded evidence preparation
+        run: python3 -m unittest discover -s scripts -p 'test_valhalla*.py'
+      - name: Verify exact retained graph artifact and attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/valhalla-edge-census.py fetch --root .
+      - name: Checkout exact unpatched mobile core
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: valhalla/valhalla
+          ref: e2f017b16080f49203de245a211b09efab09cf72
+          submodules: recursive
+          path: source-core
+          persist-credentials: false
+      - name: Build fresh source-only graph reader and enumerate every edge
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir source-builder-work
+          # Only tz needs writable source-local output; upstream generates ignored leapseconds.
+          # Keep the authoritative checkout read-only and copy this small submodule on the runner.
+          cp -a source-core/third_party/tz source-builder-work/tz-source
+          docker pull --platform linux/amd64 "$SOURCE_BUILDER_BASE"
+          docker run --rm --platform linux/amd64 \
+            --cpus 2 --memory 10g \
+            -e SOURCE_BUILDER_BASE -e GITHUB_SHA -e GITHUB_RUN_ID -e PYTHONDONTWRITEBYTECODE \
+            -v "$GITHUB_WORKSPACE:/job" \
+            -v "$GITHUB_WORKSPACE/source-core:/job/source-core:ro" \
+            -v "$GITHUB_WORKSPACE/source-builder-work/tz-source:/job/source-core/third_party/tz" \
+            -v "$GITHUB_WORKSPACE/source-builder-work:/build" \
+            "$SOURCE_BUILDER_BASE" bash /job/scripts/valhalla-edge-census-dependencies.sh
+      - name: Reconcile complete graph counts and atomically publish bounded evidence
+        run: python3 scripts/valhalla-edge-census.py finish --root .
+      - name: Prepare metadata attestation subject
+        id: subjects
+        run: |
+          set -euo pipefail
+          test -f evidence/metadata/receipt.json
+          tar -czf evidence-metadata.tar.gz -C evidence metadata
+          test "$(stat -c%s evidence-metadata.tar.gz)" -le 134217728
+      - name: Attest census and metadata to this source and workflow run
+        id: attestation
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-path: |
+            evidence/metadata/directed-edges.jsonl
+            evidence-metadata.tar.gz
+      - name: Retain attested census metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: valhalla-andorra-edge-census-${{ github.run_id }}
+          path: |
+            evidence-metadata.tar.gz
+            ${{ steps.attestation.outputs.bundle-path }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+      - name: Small failure receipt if no completed capture
+        if: always()
+        run: python3 scripts/valhalla-edge-census.py failure --root .
+      - name: Retain bounded metadata or small failure receipt
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: valhalla-andorra-edge-census-metadata-${{ github.run_id }}
           path: evidence/metadata
           if-no-files-found: error
           retention-days: 7
