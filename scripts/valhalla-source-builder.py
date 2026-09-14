@@ -53,6 +53,15 @@ def verify_source(core,pins):
     return parse_submodules(git(core,'submodule','status','--recursive'),pins['submodules'])
 
 
+def generated_tz(core,complete):
+    # --others intentionally includes ignored files: the pinned Makefile generates one.
+    tz=Path(core)/'third_party/tz'
+    names=git(tz,'ls-files','--others').splitlines()
+    expected=['leapseconds'] if complete else []
+    if names!=expected:raise ValueError('Unexpected or missing timezone source-tree generated files')
+    return {name:e.checked_file(tz/name,1024*1024) for name in names}
+
+
 def tool_hashes(build):
     build=Path(build).resolve();result={}
     for name in TOOLS:
@@ -120,7 +129,7 @@ def bounded_output(argv,path,limit=8*1024*1024,**kwargs):
 
 def build(root,core,build_dir,pins,identity):
     build_dir.mkdir() # Refuse pre-existing output: no installed tools or warm binary substitution.
-    verify_source(core,pins)
+    verify_source(core,pins);generated_tz(core,False)
     run(['cmake','-S',core,'-B',build_dir,'-DCMAKE_BUILD_TYPE=Release','-DENABLE_SERVICES=OFF','-DENABLE_TOOLS=ON','-DENABLE_DATA_TOOLS=ON','-DENABLE_TESTS=OFF','-DENABLE_PYTHON_BINDINGS=OFF','-DENABLE_CCACHE=OFF','-DENABLE_GEOTIFF=OFF'])
     run(['cmake','--build',build_dir,'--parallel','2','--target','valhalla_build_tiles','valhalla_build_admins','valhalla_service'])
     verify_source(core,pins)
@@ -130,7 +139,7 @@ def build(root,core,build_dir,pins,identity):
     receipt={'schemaVersion':1,**identity,'coreRepository':pins['coreRepository'],'coreRevision':pins['coreRevision'],
         'submodules':pins['submodules'],'baseImage':pins['baseImage'],'platform':pins['platform'],
         'dependencyInstallationHermetic':False,'dependencies':package_info,'tools':tool_hashes(build_dir),
-        'sourcePins':e.checked_file(PINS,1024*1024),'buildFiles':{name:e.checked_file(build_dir/name,32*1024*1024) for name in ['CMakeCache.txt','compile_commands.json']}}
+        'generatedSourceOutputs':generated_tz(core,True),'sourcePins':e.checked_file(PINS,1024*1024),'buildFiles':{name:e.checked_file(build_dir/name,32*1024*1024) for name in ['CMakeCache.txt','compile_commands.json']}}
     path=root/'source-build.json';e.write_json(path,receipt)
     return source_authority(e.checked_file(path,8*1024*1024),identity),receipt
 
@@ -178,6 +187,7 @@ def graph(root,core,build_dir,pins,authority,build_receipt):
     e.write_json(root/'europe-andorra-corridors.json',[{'name':'source-selected-road-smoke','sourceWayId':way['id'],'request':request,'response':response,'expectedRoadSequence':'NOT LABELLED: smoke only'}])
     if tool_hashes(build_dir)!=build_receipt['tools']:raise ValueError('Fresh graph tools changed')
     verify_source(core,pins)
+    if generated_tz(core,True)!=build_receipt['generatedSourceOutputs']:raise ValueError('Generated timezone input changed after build')
     e.write_json(root/'valhalla-report-europe-andorra.json',{'sha256':graph_info['sha256'],'sourceBuildReceiptSha256':authority['buildReceiptSha256'],
         'coreRevision':pins['coreRevision'],'timezoneDependency':'Fixed upstream release URL in source script; archive not locked; output DB hash retained',
         'nativeConsumerFormatProven':False})

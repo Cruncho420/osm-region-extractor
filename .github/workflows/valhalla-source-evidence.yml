@@ -37,12 +37,16 @@ jobs:
         run: |
           set -euo pipefail
           mkdir source-builder-work
+          # Only tz needs writable source-local output; upstream generates ignored leapseconds.
+          # Keep the authoritative checkout read-only and copy this small submodule on the runner.
+          cp -a source-core/third_party/tz source-builder-work/tz-source
           docker pull --platform linux/amd64 "$SOURCE_BUILDER_BASE"
           docker run --rm --platform linux/amd64 \
             --cpus 2 --memory 10g \
             -e SOURCE_BUILDER_BASE -e GITHUB_SHA -e GITHUB_RUN_ID -e PYTHONDONTWRITEBYTECODE \
             -v "$GITHUB_WORKSPACE:/job" \
             -v "$GITHUB_WORKSPACE/source-core:/job/source-core:ro" \
+            -v "$GITHUB_WORKSPACE/source-builder-work/tz-source:/job/source-core/third_party/tz" \
             -v "$GITHUB_WORKSPACE/source-builder-work:/build" \
             "$SOURCE_BUILDER_BASE" bash /job/scripts/valhalla-source-dependencies.sh
       - name: Prepare metadata attestation subject

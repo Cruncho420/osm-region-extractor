@@ -32,6 +32,18 @@ class SourceBuilderTests(unittest.TestCase):
     def test_source_authority_rejects_unbound_receipt(self):
         with self.assertRaises(ValueError):s.source_authority({}, {'workflowRevision':'2'*40,'runId':'123'})
 
+    def test_generated_tz_contract_rejects_extra_or_stale_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            core=Path(d);tz=core/'third_party/tz';tz.mkdir(parents=True)
+            with patch.object(s,'git',return_value=''):
+                self.assertEqual(s.generated_tz(core,False),{})
+            for raw,complete in [('leapseconds\n',False),('',True),('leapseconds\nleapseconds.out\n',True),('unexpected\n',True)]:
+                with patch.object(s,'git',return_value=raw):
+                    with self.assertRaises(ValueError):s.generated_tz(core,complete)
+            (tz/'leapseconds').write_text('generated leap seconds')
+            with patch.object(s,'git',return_value='leapseconds\n'):
+                self.assertIn('sha256',s.generated_tz(core,True)['leapseconds'])
+
     def route(self):
         # Polyline6 [(0,0),(0.001,0.001)] supplies geometry, never road labels.
         return {'trip':{'status':0,'summary':{'length':0.157,'time':20},
