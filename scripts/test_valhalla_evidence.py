@@ -41,6 +41,24 @@ class EvidenceTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):e.decode_highway_topology(pbf,root)
             self.assertEqual(existing.read_bytes(),b'not ours')
 
+    def test_compact_topology_preserves_full_values_and_array_order(self):
+        data={'schemaVersion':1,'ways':[{'id':'2','nodes':['5','1'],'coordinates':[[1.2,3.4],[5.6,7.8]],
+              'tags':{'highway':'service','access':'private','name':'Ąžuolų'},'version':'3','timestamp':None},
+              {'id':'1','nodes':['1','5'],'coordinates':[[5.6,7.8],[1.2,3.4]],'tags':{'highway':'path'}}],
+              'nodes':{'5':{'coordinate':[1.2,3.4],'version':'9','timestamp':'2026-09-12T00:00:00Z'}},
+              'polygonIsGraphEdge':False,'scope':'all highways'}
+        with tempfile.TemporaryDirectory() as d:
+            normal=Path(d)/'normal.json';compact=Path(d)/'compact.json'
+            e.write_json(normal,data);e.write_json(compact,data,compact=True)
+            self.assertEqual(json.loads(compact.read_text()),json.loads(normal.read_text()))
+            self.assertEqual(json.loads(compact.read_text())['ways'],data['ways'])
+            limit=compact.stat().st_size
+            self.assertLess(limit,normal.stat().st_size)
+            self.assertEqual(e.checked_file(compact,limit)['bytes'],limit)
+            with self.assertRaisesRegex(ValueError,rf'actual_bytes={normal.stat().st_size} limit_bytes={limit}'):
+                e.checked_file(normal,limit)
+            with self.assertRaises(FileExistsError):e.write_json(compact,data,compact=True)
+
     def options(self):
         return dict(evidence_only=True, regions='europe-andorra', upload=False, prune_old_smoke=False,
                     pbf_url='https://download.geofabrik.de/europe/andorra-260912.osm.pbf',

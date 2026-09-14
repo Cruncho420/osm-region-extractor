@@ -27,13 +27,16 @@ POLICY=Path(__file__).with_name('valhalla-evidence-builders.json')
 
 
 def digest(data):return hashlib.sha256(data).hexdigest()
-def write_json(path,value):
-    with Path(path).open('x') as f:json.dump(value,f,sort_keys=True,indent=2);f.write('\n')
+def write_json(path,value,*,compact=False):
+    with Path(path).open('x') as f:
+        json.dump(value,f,sort_keys=True,indent=None if compact else 2,separators=(',',':') if compact else None)
+        f.write('\n')
 def checked_file(path,limit):
     path=Path(path)
     if path.is_symlink():raise ValueError('Symlink evidence forbidden')
     before=path.stat()
-    if not stat.S_ISREG(before.st_mode) or before.st_size>limit or before.st_size==0:raise ValueError('Evidence size/type limit')
+    if not stat.S_ISREG(before.st_mode):raise ValueError('Evidence file must be regular')
+    if before.st_size>limit or before.st_size==0:raise ValueError(f'Evidence size limit: actual_bytes={before.st_size} limit_bytes={limit}')
     data=path.read_bytes();after=path.stat()
     if (before.st_ino,before.st_size,before.st_mtime_ns)!=(after.st_ino,after.st_size,after.st_mtime_ns):raise ValueError('Evidence changed during read')
     return {'sha256':digest(data),'bytes':len(data)}
@@ -65,9 +68,11 @@ def fetch(url,target,expected,limit):
     opener=urllib.request.build_opener(NoRedirect())
     with opener.open(url,timeout=60) as response:
         length=response.headers.get('Content-Length')
-        if length is not None and (not length.isdigit() or int(length)>limit):raise ValueError('Download size limit')
+        if length is not None and not length.isdigit():raise ValueError('Invalid download length')
+        if length is not None and int(length)>limit:raise ValueError(f'Download size limit: actual_bytes={int(length)} limit_bytes={limit}')
         data=response.read(limit+1)
-        if not data or len(data)>limit or digest(data)!=expected:raise ValueError('Source size/hash mismatch')
+        if not data or len(data)>limit:raise ValueError(f'Source size limit: actual_bytes={len(data)} limit_bytes={limit}')
+        if digest(data)!=expected:raise ValueError('Source hash mismatch')
         if length is not None and len(data)!=int(length):raise ValueError('Truncated source')
         metadata={'url':url,'retrievedAt':datetime.datetime.now(datetime.timezone.utc).isoformat(),
                   'headers':{k:response.headers.get(k) for k in ['ETag','Last-Modified','Content-Length']},'sha256':expected,'bytes':len(data)}
@@ -85,7 +90,7 @@ def graph_inventory(path):
             chunk=stream.read(min(65536,BUNDLE_LIMIT-expanded+1))
             if not chunk:break
             expanded+=len(chunk)
-            if expanded>BUNDLE_LIMIT:raise ValueError('Entire expanded TAR size limit')
+            if expanded>BUNDLE_LIMIT:raise ValueError(f'Entire expanded TAR size limit: observed_bytes={expanded} limit_bytes={BUNDLE_LIMIT}')
     entries={};total=0;seen=set();count=0
     with tarfile.open(path,'r|gz') as archive:
         for member in archive:
@@ -96,9 +101,10 @@ def graph_inventory(path):
             seen.add(name)
             if member.isdir():continue
             if not member.isfile():raise ValueError('Non-regular graph entry')
-            if member.size<=0 or member.size>GRAPH_LIMIT:raise ValueError('Graph entry size limit')
+            if member.size<=0 or member.size>GRAPH_LIMIT:raise ValueError(f'Graph entry size limit: actual_bytes={member.size} limit_bytes={GRAPH_LIMIT}')
             total+=member.size
-            if total>BUNDLE_LIMIT or len(entries)>=8192:raise ValueError('Expanded graph size/count limit')
+            if total>BUNDLE_LIMIT:raise ValueError(f'Expanded graph size limit: actual_bytes={total} limit_bytes={BUNDLE_LIMIT}')
+            if len(entries)>=8192:raise ValueError('Expanded graph member count limit')
             data=archive.extractfile(member).read(member.size+1)
             if len(data)!=member.size:raise ValueError('Truncated graph entry')
             entries[name]={'sha256':digest(data),'bytes':len(data)}
@@ -177,7 +183,7 @@ def prepare_sources(root,options,authority):
     # This is the exact header, not a date inferred from filename or HTTP modification time.
     if not info.get('header',{}).get('option',{}).get('osmosis_replication_timestamp'):raise ValueError('PBF replication timestamp missing')
     highway_topology,derivation=decode_highway_topology(source/'region.osm.pbf',work)
-    write_json(metadata/'retained-highways.json',highway_topology)
+    write_json(metadata/'retained-highways.json',highway_topology,compact=True)
     checked_file(metadata/'retained-highways.json',32*1024*1024)
     write_json(metadata/'source.json',{'schemaVersion':1,'pbf':pbf,'polygon':poly,'builderAuthority':authority,
         'workflowSourceRevision':os.environ.get('GITHUB_SHA'),'runId':os.environ.get('GITHUB_RUN_ID'),
@@ -223,7 +229,8 @@ def finish_with_authority(root,authority):
     files={}
     for folder in [source,metadata]:
         for file in sorted(folder.iterdir()):files[str(file.relative_to(evidence))]=checked_file(file,GRAPH_LIMIT)
-    if sum(v['bytes'] for v in files.values())>BUNDLE_LIMIT:raise ValueError('Evidence bundle limit exceeded')
+    total_bytes=sum(v['bytes'] for v in files.values())
+    if total_bytes>BUNDLE_LIMIT:raise ValueError(f'Evidence bundle limit: actual_bytes={total_bytes} limit_bytes={BUNDLE_LIMIT}')
     write_json(metadata/'receipt.json',{'schemaVersion':1,'status':'SOURCE_GRAPH_CAPTURED_NOT_NATIVE_RUNTIME_ACCEPTED',
         'files':files,'graph':graph_info,'installedGraphBoundary':'UNRESOLVED','nativeRuntimeProven':False,
         'historicalMatrixComparison':'Separate new source cohort; historical fixtures unchanged'})
@@ -241,7 +248,7 @@ def publish_evidence(private,public):
         count+=1
         if count>128:raise ValueError('Evidence publication file count limit')
         total+=checked_file(file,GRAPH_LIMIT)['bytes']
-        if total>BUNDLE_LIMIT:raise ValueError('Evidence publication total size limit')
+        if total>BUNDLE_LIMIT:raise ValueError(f'Evidence publication total size limit: actual_bytes={total} limit_bytes={BUNDLE_LIMIT}')
     if not (private/'metadata/receipt.json').is_file():raise ValueError('Complete success receipt required')
     private.rename(public) # Same-volume atomic directory publication, after every bound is checked.
 
