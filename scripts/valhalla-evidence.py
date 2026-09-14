@@ -137,6 +137,26 @@ def topology(xml_path):
             'negativeLabels':'UNRESOLVED: freeze separate candidate gaps and compare against every retained segment; absence is not engine refusal'}
 
 
+def decode_highway_topology(pbf,work):
+    # Osmium includes referenced nodes by default. No omit-reference, value, access or length filter.
+    pbf=Path(pbf);original=checked_file(pbf,PBF_LIMIT)
+    xml=Path(work)/'evidence-highways.osm';created=False
+    argv=['osmium','tags-filter',str(pbf),'w/highway','-f','osm']
+    try:
+        with xml.open('xb') as out:
+            created=True
+            subprocess.run(argv,stdout=out,check=True,timeout=120,
+                preexec_fn=lambda:resource.setrlimit(resource.RLIMIT_FSIZE,(XML_LIMIT,XML_LIMIT)))
+        xml_info=checked_file(xml,XML_LIMIT)
+        result=topology(xml)
+        if checked_file(pbf,PBF_LIMIT)!=original:raise ValueError('Original PBF changed during topology extraction')
+        return result,{'command':argv,'fullSourcePbf':original,'xml':xml_info,
+            'scope':'All highway-tagged ways and referenced nodes; not exhaustive graph edges',
+            'referencedNodesIncluded':True,'xmlRetained':False,'graphInput':'exact full original PBF'}
+    finally:
+        if created:xml.unlink() # Only our exclusive-created disposable XML, including partial failures.
+
+
 def prepare(root,options):
     authority=admit(options,json.loads(POLICY.read_text())) # BEFORE mkdir, network, Docker or build.
     return prepare_sources(root,options,authority)
@@ -156,18 +176,14 @@ def prepare_sources(root,options,authority):
     info=json.loads((metadata/'pbf-fileinfo.json').read_text())
     # This is the exact header, not a date inferred from filename or HTTP modification time.
     if not info.get('header',{}).get('option',{}).get('osmosis_replication_timestamp'):raise ValueError('PBF replication timestamp missing')
-    xml=work/'evidence-source.osm'
-    try:
-        with xml.open('xb') as out:subprocess.run(['osmium','cat',str(source/'region.osm.pbf'),'-f','osm'],stdout=out,check=True,timeout=120,preexec_fn=lambda:resource.setrlimit(resource.RLIMIT_FSIZE,(XML_LIMIT,XML_LIMIT)))
-        write_json(metadata/'retained-highways.json',topology(xml))
-    finally:
-        if xml.exists():xml.unlink() # Only our disposable decoding intermediate.
+    highway_topology,derivation=decode_highway_topology(source/'region.osm.pbf',work)
+    write_json(metadata/'retained-highways.json',highway_topology)
     checked_file(metadata/'retained-highways.json',32*1024*1024)
     write_json(metadata/'source.json',{'schemaVersion':1,'pbf':pbf,'polygon':poly,'builderAuthority':authority,
         'workflowSourceRevision':os.environ.get('GITHUB_SHA'),'runId':os.environ.get('GITHUB_RUN_ID'),
         'clippingSemantics':'Geofabrik complete crossing ways/multipolygons; polygon is selection definition, NOT installed graph edge',
         'polygonPbfHistoricalAssociation':'NOT ASSERTED: independently retrieved source inputs, retained by exact hash',
-        'options':options,'files':{name:checked_file(metadata/name,32*1024*1024) for name in ['retained-highways.json','pbf-fileinfo.json']}})
+        'topologyDerivation':derivation,'options':options,'files':{name:checked_file(metadata/name,32*1024*1024) for name in ['retained-highways.json','pbf-fileinfo.json']}})
     return pbf
 
 

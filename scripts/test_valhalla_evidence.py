@@ -13,6 +13,34 @@ e = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(e)
 
 class EvidenceTests(unittest.TestCase):
+    def test_highway_decode_keeps_original_and_cleans_only_owned_xml(self):
+        xml=b'<osm><node id="1" lat="1" lon="2"/><node id="2" lat="1.1" lon="2.1"/><way id="3"><nd ref="1"/><nd ref="2"/><tag k="highway" v="service"/><tag k="access" v="private"/></way></osm>'
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);pbf=root/'region.osm.pbf';pbf.write_bytes(b'FULL ORIGINAL PBF')
+            def command(argv,**kwargs):
+                self.assertEqual(argv,['osmium','tags-filter',str(pbf),'w/highway','-f','osm'])
+                kwargs['stdout'].write(xml)
+            with patch.object(e.subprocess,'run',side_effect=command):
+                result,receipt=e.decode_highway_topology(pbf,root)
+            self.assertEqual(result['ways'][0]['tags'],{'highway':'service','access':'private'})
+            self.assertEqual(pbf.read_bytes(),b'FULL ORIGINAL PBF')
+            self.assertEqual(receipt['xml']['sha256'],e.digest(xml))
+            self.assertFalse((root/'evidence-highways.osm').exists())
+            def failed(argv,**kwargs):kwargs['stdout'].write(b'partial');raise RuntimeError('decoder failed')
+            with patch.object(e.subprocess,'run',side_effect=failed):
+                with self.assertRaises(RuntimeError):e.decode_highway_topology(pbf,root)
+            self.assertFalse((root/'evidence-highways.osm').exists())
+            with patch.object(e.subprocess,'run',side_effect=command),patch.object(e,'XML_LIMIT',32):
+                with self.assertRaises(ValueError):e.decode_highway_topology(pbf,root)
+            self.assertFalse((root/'evidence-highways.osm').exists())
+            def changed(argv,**kwargs):kwargs['stdout'].write(xml);pbf.write_bytes(b'changed')
+            with patch.object(e.subprocess,'run',side_effect=changed):
+                with self.assertRaisesRegex(ValueError,'Original PBF changed'):e.decode_highway_topology(pbf,root)
+            self.assertFalse((root/'evidence-highways.osm').exists())
+            existing=root/'evidence-highways.osm';existing.write_bytes(b'not ours')
+            with self.assertRaises(FileExistsError):e.decode_highway_topology(pbf,root)
+            self.assertEqual(existing.read_bytes(),b'not ours')
+
     def options(self):
         return dict(evidence_only=True, regions='europe-andorra', upload=False, prune_old_smoke=False,
                     pbf_url='https://download.geofabrik.de/europe/andorra-260912.osm.pbf',
