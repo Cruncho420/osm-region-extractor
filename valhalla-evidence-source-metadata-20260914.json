@@ -1,0 +1,47 @@
+{
+  "status": "EXACT_NEW_SOURCE_BYTES_HASHED_NOT_HISTORICAL_GRAPH_AUTHORITY",
+  "totalDownloadedBytes": 3470096,
+  "files": [
+    {
+      "url": "https://download.geofabrik.de/europe/andorra-260912.osm.pbf",
+      "retrievedAt": "2026-09-14T08:09:58.387814+00:00",
+      "bytes": 3466366,
+      "sha256": "087f397e9fce79b48c66cabfde149c7c9bc36e3d75ff4d4730082744b0523b25",
+      "md5": "1a8ec309f77640e661c711b50edf0f24",
+      "headers": {
+        "Last-Modified": "Sun, 13 Sep 2026 00:17:54 GMT",
+        "ETag": "\"34e47e-65b523fae6e7a\"",
+        "Content-Length": "3466366"
+      }
+    },
+    {
+      "url": "https://download.geofabrik.de/europe/andorra.poly",
+      "retrievedAt": "2026-09-14T08:09:58.528496+00:00",
+      "bytes": 3673,
+      "sha256": "d875d3c72a180a34620bcd5dc92d31ae27dde8f4f28b14acc6dc249792872e83",
+      "md5": "7e581b593ab156848710fc3351f17fbc",
+      "headers": {
+        "Last-Modified": "Fri, 11 Sep 2026 23:27:42 GMT",
+        "ETag": "\"e59-65b3d6e536086\"",
+        "Content-Length": "3673"
+      }
+    },
+    {
+      "url": "https://download.geofabrik.de/europe/andorra-260912.osm.pbf.md5",
+      "retrievedAt": "2026-09-14T08:09:58.670435+00:00",
+      "bytes": 57,
+      "sha256": "7aead063e91bea666d5d275d07a2181a00bd9aa31278e602f583da90a0abab08",
+      "md5": "19153e2107102facc3e744d3c05fccf9",
+      "headers": {
+        "Last-Modified": "Sun, 13 Sep 2026 00:17:54 GMT",
+        "ETag": "\"39-65b523faf1a5b\"",
+        "Content-Length": "57"
+      },
+      "text": "1a8ec309f77640e661c711b50edf0f24  andorra-260912.osm.pbf\n"
+    }
+  ],
+  "retainedPayloads": false,
+  "polygonRole": "independently retrieved clipping definition; not graph edge, and its historical association with dated PBF is unproven",
+  "pbfHeaderTimestamp": "NOT_READ: no PBF decoder executed",
+  "nativeImageLayersDownloaded": false
+}
