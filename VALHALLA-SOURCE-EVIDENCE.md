@@ -1,6 +1,6 @@
 # Dispatch-only clean-source Andorra graph evidence
 
-Prepared for independent review; **not dispatched, compiled or exercised on Linux/native consumers**. Existing production extraction defaults remain unchanged. The separate `.github/workflows/valhalla-source-evidence.yml` has no schedule, publication input, release/tag command, package-write permission or production download target. Its only output is a seven-day evidence artifact plus provenance attestation.
+The standalone workflow is registered; its first run failed during CMake configuration, before core compilation or graph generation. **No Linux graph build or native consumer acceptance has succeeded yet.** Existing production extraction defaults remain unchanged. The separate `.github/workflows/valhalla-source-evidence.yml` has no schedule, publication input, release/tag command, package-write permission or production download target. Its only output is a seven-day evidence artifact plus provenance attestation.
 
 ## Authority model
 
@@ -34,3 +34,11 @@ bash -n scripts/valhalla-source-dependencies.sh
 The test suite includes source mismatch/dirty checkout, recursive gitlink mismatch/duplicate, missing workflow identity, tool symlink substitution, fake/empty CLI success, retained source/graph integrity, archive traversal/duplicate/count, expanded PAX metadata, oversized output and atomic failure-publication regressions. Tests use synthetic data only; they do not manufacture native acceptance.
 
 After independent review, parent may choose a public source commit/branch and dispatch this separate workflow. No dispatch is authorized by this document. After successful capture, verify attestation subject SHA against the exact reviewed workflow/run, validate receipt and PBF/graph/config hashes, then prove graph format and road traversal against the clean mobile wrapper on both platforms. Device/simulator queue leases and the active endurance run remain parent-owned prerequisites; this workflow does not touch devices. Runtime acceptance, boundary/negative label review, train/held-out freezing and full C3/C4 bars remain pending.
+
+## First runtime failure and dependency audit
+
+Run [34824509103](https://github.com/Cruncho420/osm-region-extractor/actions/runs/34824509103), from source branch commit `123ffcef4488b769ad3d69ab04bdc94c02babdc4`, reached CMake and stopped at exact-core `CMakeLists.txt:259`: the required `openssl` pkg-config module was absent. `libcurl4-openssl-dev` does not supply the OpenSSL development module under this installation. The correction explicitly installs `libssl-dev`; it also explicitly installs `libgeos-dev` rather than relying on SpatiaLite's transitive dependencies.
+
+The exact-core required dependency audit covers root CMake, its source CMake and helper modules: `zlib` → `zlib1g-dev`, `liblz4` → `liblz4-dev`, `libcurl` → `libcurl4-openssl-dev`, `spatialite` → `libspatialite-dev`, `luajit` → `libluajit-5.1-dev`, `geos` → `libgeos-dev`, and `openssl` → `libssl-dev`. Required CMake packages are Boost (`libboost-all-dev`), PkgConfig (`pkg-config`), Threads (compiler/libc from `build-essential`), Protobuf (`libprotobuf-dev` plus `protobuf-compiler`), and SQLite3 (`libsqlite3-dev`). The failed run already detected every enabled required pkg-config module except OpenSSL, plus Protobuf, SQLite and Threads. `ENABLE_SERVICES=OFF` excludes prime_server; GeoTIFF, Python bindings and tests remain disabled. Vendored dependencies remain bound to the existing recursive gitlink manifest.
+
+The package correction has local Python-suite and shell-syntax validation only. It requires independent review and another actual Linux CI run; no successful configuration, compilation, graph capture or native compatibility is inferred from that audit. The prior failed run and small failure artifact remain the failure receipt.

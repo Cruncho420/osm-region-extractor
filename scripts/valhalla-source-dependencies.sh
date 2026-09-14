@@ -7,7 +7,7 @@ apt-get update
 apt-get -o Dir::Cache::archives=/build/deb-cache -y --no-install-recommends install \
   build-essential cmake pkg-config git ca-certificates libboost-all-dev \
   libcurl4-openssl-dev liblz4-dev libprotobuf-dev protobuf-compiler libsqlite3-dev \
-  libspatialite-dev libluajit-5.1-dev zlib1g-dev python3 python3-shapely \
+  libspatialite-dev libluajit-5.1-dev libgeos-dev libssl-dev zlib1g-dev python3 python3-shapely \
   python3-requests osmium-tool curl unzip jq spatialite-bin
 python3 - <<'PY'
 import hashlib,json,os,subprocess
