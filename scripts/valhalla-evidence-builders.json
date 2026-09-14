@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "approvedBuilders": [],
+  "admissionBlocker": "No independently reviewed digest-to-core-source builder receipt has been established. OCI latest metadata lacks core revision. Do not populate from a caller assertion or version string."
+}
