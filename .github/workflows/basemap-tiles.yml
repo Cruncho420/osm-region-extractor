@@ -1,0 +1,290 @@
+name: Basemap PMTiles
+
+# Purpose: build one offline MAP file per region for the Rods app (FEAT-090 ME-13, Mapbox exit).
+# Each region ships as ONE PMTiles archive the app downloads next to its road data and
+# routing pack, copies to app storage and opens with MapLibre as pmtiles://file://….
+#
+# Recipe: `pmtiles extract` cuts the region out of the Protomaps daily planet build
+# (https://build.protomaps.com/<YYYYMMDD>.pmtiles, basemap schema v4 — the schema the
+# app's map style is written against) using HTTP RANGE requests. Nothing near the
+# 120 GB planet is downloaded: Latvia z0-14 = 161 requests, 163 MB transferred for a
+# 156 MB archive (measured 2026-09-23). The clip polygon is the region's Geofabrik
+# .poly — the exact boundary its road data and routing pack were cut with, so the map
+# covers what the data covers.
+#
+# Publishing mirrors valhalla-tiles.yml (read its comments; the reasons are the same):
+# - dispatch-only; every job is gated on workflow_dispatch.
+# - a SEPARATE release per data version, always a PRERELEASE, with its OWN manifest.json.
+#   The monthly osm-* manifest is never touched, so no already-shipped app binary can
+#   ever be offered a map file, and rollback is deleting a prerelease.
+#   `basemap-smoke-<n>`  throwaway proof, version = today, assets may be replaced.
+#   `basemap-<YYYY-MM-DD>` production, version = the date in the tag, which MUST equal
+#                        the monthly manifest's version (the app builds the URL from it).
+#                        Assets are IMMUTABLE: an existing asset is never replaced, so a
+#                        URL + checksum the app pinned can never change under it.
+# - the manifest carries basemapSize + full sha256 + maxZoom + planet date per region.
+#
+# Max zoom is an INPUT (owner decision pending, D-ME02-4): 14 by default (the app
+# overzooms to 17); 15 roughly doubles size. Files over 2 GiB fail the region: GitHub's
+# per-asset cap, and the app's background downloader carries the size as a 32-bit int.
+
+on:
+  # Registration shim: GitHub will not register workflow_dispatch for a workflow that has
+  # only ever existed on a feature branch. REMOVE this `push` block at the merge to main.
+  # It starts nothing: every job below is gated on workflow_dispatch.
+  push:
+    branches: [feat/basemap-pmtiles]
+    paths: ['.github/workflows/basemap-tiles.yml']
+  workflow_dispatch:
+    inputs:
+      regions:
+        description: 'Comma list of regions (region id, id suffix, or geofabrik path fragment)'
+        required: true
+        default: 'lithuania,latvia'
+        type: string
+      maxzoom:
+        description: 'Maximum zoom baked into the file (14 default; 15 ≈ 2x size)'
+        required: false
+        default: '14'
+        type: choice
+        options: ['12', '13', '14', '15']
+      planet:
+        description: 'Protomaps planet build date YYYYMMDD. Empty = newest available in the last 7 days'
+        required: false
+        default: ''
+        type: string
+      upload:
+        description: 'Publish to the release (false = build + measure only)'
+        required: false
+        default: true
+        type: boolean
+      tag:
+        description: 'basemap-smoke-<n> or basemap-<YYYY-MM-DD>. Empty = basemap-smoke-<run_number>'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  PMTILES_VERSION: '1.31.2'
+  PMTILES_SHA256: '3ed7dbf4ec2e6dfe5e25b6f70d1ffc932729f93c86db353bf514dd71010a312f'
+  MAX_ASSET_BYTES: '2147483647'
+
+jobs:
+  get-regions:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+      planet: ${{ steps.planet.outputs.planet }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve region tokens to region ids
+        id: resolve
+        env:
+          REGIONS_INPUT: ${{ inputs.regions }}
+        run: |
+          set -euo pipefail
+          IDS=""
+          IFS=',' read -ra TOKENS <<< "$REGIONS_INPUT"
+          for tok in "${TOKENS[@]}"; do
+            tok="$(echo "$tok" | tr -d '[:space:]')"
+            [ -z "$tok" ] && continue
+            MATCHES=$(jq -r --arg t "$tok" '
+              [.regions[] | select(.id == $t)] as $exact
+              | (if ($exact | length) > 0 then $exact
+                 else [.regions[] | select((.id | endswith($t)) or (.geofabrikPath | contains($t)))]
+                 end)
+              | [.[].id] | unique | .[]' scripts/regions.json)
+            N=$(printf '%s' "$MATCHES" | grep -c . || true)
+            [ "$N" -eq 1 ] || { echo "::error::Region token '$tok' matches $N regions: $(echo $MATCHES)"; exit 1; }
+            IDS="${IDS}${MATCHES}"$'\n'
+          done
+          [ -n "$IDS" ] || { echo "::error::No regions provided"; exit 1; }
+          MATRIX=$(printf '%s' "$IDS" | grep . | sort -u | jq -R . | jq -sc .)
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Resolved regions: $MATRIX"
+      - name: Resolve the planet build ONCE (every region of a run must share it)
+        id: planet
+        env:
+          PLANET_INPUT: ${{ inputs.planet }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PLANET_INPUT" ]; then
+            CANDIDATES="$PLANET_INPUT"
+          else
+            CANDIDATES=$(for d in 0 1 2 3 4 5 6 7; do date -u -d "-$d day" +%Y%m%d; done)
+          fi
+          for d in $CANDIDATES; do
+            if curl -sfI "https://build.protomaps.com/$d.pmtiles" > /dev/null; then
+              echo "planet=$d" >> "$GITHUB_OUTPUT"; echo "Planet build: $d"; exit 0
+            fi
+          done
+          echo "::error::No Protomaps planet build found for: $CANDIDATES"; exit 1
+
+  prepare-release:
+    needs: get-regions
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.info.outputs.tag_name }}
+      version: ${{ steps.info.outputs.version }}
+      channel: ${{ steps.info.outputs.channel }}
+    steps:
+      - name: Resolve tag + version
+        id: info
+        run: |
+          set -euo pipefail
+          TAG_INPUT="${{ inputs.tag }}"
+          case "$TAG_INPUT" in
+            '') TAG="basemap-smoke-${{ github.run_number }}"; VERSION=$(date -u +%Y-%m-%d); CHANNEL=smoke ;;
+            basemap-smoke-*) TAG="$TAG_INPUT"; VERSION=$(date -u +%Y-%m-%d); CHANNEL=smoke ;;
+            basemap-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) TAG="$TAG_INPUT"; VERSION="${TAG_INPUT#basemap-}"; CHANNEL=production ;;
+            *) echo "::error::tag '$TAG_INPUT' must be basemap-smoke-<n> or basemap-<YYYY-MM-DD>"; exit 1 ;;
+          esac
+          { echo "tag_name=$TAG"; echo "version=$VERSION"; echo "channel=$CHANNEL"; } >> "$GITHUB_OUTPUT"
+          echo "Channel: $CHANNEL  Tag: $TAG  version: $VERSION"
+      - name: Create the release if it does not exist
+        if: inputs.upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.info.outputs.tag_name }}"
+          gh release view "$TAG" -R "$REPO" > /dev/null 2>&1 && { echo "Release $TAG exists — appending."; exit 0; }
+          # A concurrent batch may win the create race; that is fine if the release now exists.
+          gh release create "$TAG" -R "$REPO" --prerelease --target "${{ github.sha }}" \
+            --title "Basemap PMTiles (${{ steps.info.outputs.channel }}) - ${{ steps.info.outputs.version }}" \
+            --notes "Offline map files for the Rods app (FEAT-090 ME-13). One {region-id}-basemap.pmtiles per region (Protomaps basemap v4, cut from the planet build named in manifest.json), and manifest.json with basemapSize / basemapChecksum (full sha256) / basemapMaxZoom / basemapPlanet per region. PRERELEASE on purpose: it must never become releases/latest." \
+            || gh release view "$TAG" -R "$REPO" > /dev/null
+
+  build:
+    needs: [get-regions, prepare-release]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        region: ${{ fromJson(needs.get-regions.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pmtiles (pinned + checksummed)
+        run: |
+          set -euo pipefail
+          F="go-pmtiles_${PMTILES_VERSION}_Linux_x86_64.tar.gz"
+          curl -sfLO "https://github.com/protomaps/go-pmtiles/releases/download/v${PMTILES_VERSION}/$F"
+          echo "${PMTILES_SHA256}  $F" | sha256sum -c -
+          tar xzf "$F" pmtiles && sudo mv pmtiles /usr/local/bin/ && pmtiles version
+      - name: Clip polygon from Geofabrik
+        env:
+          REGION: ${{ matrix.region }}
+        run: |
+          set -euo pipefail
+          GF=$(jq -r --arg id "$REGION" '.regions[] | select(.id == $id) | .geofabrikPath' scripts/regions.json)
+          POLY_URL="https://download.geofabrik.de/${GF%-latest.osm.pbf}.poly"
+          curl -sfL --retry 3 "$POLY_URL" -o region.poly
+          node scripts/poly-to-geojson.mjs region.poly region.geojson
+      - name: Extract (HTTP range reads from the planet build)
+        env:
+          REGION: ${{ matrix.region }}
+          PLANET: ${{ needs.get-regions.outputs.planet }}
+          MAXZOOM: ${{ inputs.maxzoom }}
+        run: |
+          set -euo pipefail
+          START=$(date +%s)
+          pmtiles extract "https://build.protomaps.com/${PLANET}.pmtiles" "${REGION}-basemap.pmtiles" \
+            --region=region.geojson --maxzoom="$MAXZOOM" --download-threads=8 2>&1 | tee extract.log
+          echo "SECONDS_EXTRACT=$(( $(date +%s) - START ))" >> "$GITHUB_ENV"
+          pmtiles verify "${REGION}-basemap.pmtiles"
+          pmtiles show "${REGION}-basemap.pmtiles" | tee show.txt
+          grep -q '^tile type: mvt' show.txt || { echo "::error::not a vector archive"; exit 1; }
+      - name: Size cap + checksum + report
+        env:
+          REGION: ${{ matrix.region }}
+          PLANET: ${{ needs.get-regions.outputs.planet }}
+          MAXZOOM: ${{ inputs.maxzoom }}
+        run: |
+          set -euo pipefail
+          F="${REGION}-basemap.pmtiles"
+          BYTES=$(stat -c %s "$F")
+          if [ "$BYTES" -gt "$MAX_ASSET_BYTES" ]; then
+            echo "::error::$F is $BYTES bytes, over the 2 GiB per-file cap — lower maxzoom or split the region"; exit 1
+          fi
+          SHA=$(sha256sum "$F" | cut -d' ' -f1)
+          TILES=$(grep -oE 'Region tiles [0-9]+, result tile entries [0-9]+' extract.log | grep -oE '[0-9]+$' || echo 0)
+          REQS=$(grep -oE 'Extract required [0-9]+ total requests' extract.log | grep -oE '[0-9]+' || echo 0)
+          mkdir -p report
+          jq -n --arg r "$REGION" --argjson b "$BYTES" --arg s "$SHA" --argjson z "$MAXZOOM" --arg p "$PLANET" \
+            --argjson t "${TILES:-0}" --argjson q "${REQS:-0}" --argjson sec "$SECONDS_EXTRACT" \
+            '{region:$r, basemapSize:$b, basemapChecksum:$s, basemapMaxZoom:$z, basemapPlanet:$p, tiles:$t, requests:$q, seconds:$sec}' \
+            > "report/basemap-report-${REGION}.json"
+          cat "report/basemap-report-${REGION}.json"
+      - name: Upload the file (production assets are immutable)
+        if: inputs.upload
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGION: ${{ matrix.region }}
+          TAG: ${{ needs.prepare-release.outputs.tag_name }}
+          CHANNEL: ${{ needs.prepare-release.outputs.channel }}
+        run: |
+          set -euo pipefail
+          F="${REGION}-basemap.pmtiles"
+          if [ "$CHANNEL" = production ]; then
+            if gh release view "$TAG" --json assets -q '.assets[].name' | grep -qx "$F"; then
+              echo "::error::$F already published on $TAG — production assets are immutable; publish a new version instead"; exit 1
+            fi
+            gh release upload "$TAG" "$F"
+          else
+            gh release upload "$TAG" "$F" --clobber
+          fi
+          # What GitHub serves must be what we built.
+          URL="https://github.com/${{ github.repository }}/releases/download/$TAG/$F"
+          SERVED=$(curl -sfIL "$URL" | grep -i '^content-length' | tail -1 | tr -dc '0-9')
+          [ "$SERVED" = "$(stat -c %s "$F")" ] || { echo "::error::served $SERVED bytes, built $(stat -c %s "$F")"; exit 1; }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: basemap-report-${{ matrix.region }}
+          path: report/*.json
+
+  finalize:
+    needs: [get-regions, prepare-release, build]
+    runs-on: ubuntu-latest
+    if: ${{ !cancelled() && inputs.upload }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: basemap-report-*
+          path: reports
+          merge-multiple: true
+      - name: Accumulate the release manifest + summary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare-release.outputs.tag_name }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          ls reports/*.json > /dev/null 2>&1 || { echo "::error::No region produced a report"; exit 1; }
+          jq -s --arg v "$VERSION" --arg g "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{version:$v, generatedAt:$g, schema:"protomaps-basemap-v4",
+              regions:(map({(.region): (del(.region, .requests, .seconds))}) | add)}' reports/*.json > work.json
+          if gh release download "$TAG" -R "$REPO" -D prev --pattern manifest.json 2>/dev/null; then
+            PREV=$(jq -r '.version' prev/manifest.json)
+            [ "$PREV" = "$VERSION" ] || { echo "::error::$TAG carries version $PREV, this run is $VERSION"; exit 1; }
+            jq -s '(.[0].regions * .[1].regions) as $m | .[1] | .regions = $m' prev/manifest.json work.json > manifest.json
+          else
+            cp work.json manifest.json
+          fi
+          gh release upload "$TAG" -R "$REPO" manifest.json --clobber
+          {
+            echo "## Basemap PMTiles — $TAG (version $VERSION)"
+            echo ""
+            echo "| Region | Size (MB) | Max zoom | Tiles | Range requests | Extract (s) | sha256 |"
+            echo "|---|---:|---:|---:|---:|---:|---|"
+            jq -r '"| \(.region) | \((.basemapSize/1048576*10|floor)/10) | \(.basemapMaxZoom) | \(.tiles) | \(.requests) | \(.seconds) | `\(.basemapChecksum[0:16])` |"' reports/*.json
+          } >> "$GITHUB_STEP_SUMMARY"
