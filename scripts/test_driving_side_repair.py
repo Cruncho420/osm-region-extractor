@@ -79,5 +79,19 @@ class PartBoxTests(unittest.TestCase):
         self.assertEqual(added, [])
 
 
+class OutlineTests(unittest.TestCase):
+    def test_every_feature_of_one_iso_is_kept(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'ne.geojson'
+            path.write_text(json.dumps({'features': [
+                {'properties': {'ISO_A2_EH': 'FR', 'ISO_A2': '-99'}, 'geometry': square(-5, 42, 13)},
+                {'properties': {'ISO_A2_EH': 'FR', 'ISO_A2': 'FR'}, 'geometry': square(-109, 10, 0.1)}]}))
+            fr = r.outlines(path)['FR']
+        self.assertEqual(fr['type'], 'MultiPolygon')
+        self.assertEqual(len(fr['coordinates']), 2)
+        table = {'FR': ('France', True)}
+        self.assertEqual(r.plan([], table, {'FR': fr}, (0.4, 41.4, 2.8, 43.7), [])[1], ['FR'])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -75,15 +75,20 @@ def part_boxes(geometry):
 
 
 def outlines(ne_path):
-    """ISO_A2_EH -> geometry (ISO_A2 is -99 for France and Norway in Natural Earth 5.x)."""
-    result = {}
+    """ISO_A2_EH -> one MultiPolygon of EVERY feature with that code (ISO_A2 is -99 for France and
+    Norway in Natural Earth 5.x; and one code can have several features - FR is both France and
+    Clipperton Island, so keeping only the last one silently dropped metropolitan France)."""
+    parts = {}
     with open(ne_path) as handle:
         features = json.load(handle)['features']
     for feature in features:
         iso = feature['properties'].get('ISO_A2_EH') or feature['properties'].get('ISO_A2')
-        if iso and iso != '-99' and feature.get('geometry'):
-            result[iso] = feature['geometry']
-    return result
+        geometry = feature.get('geometry')
+        if not iso or iso == '-99' or not geometry:
+            continue
+        polygons = [geometry['coordinates']] if geometry['type'] == 'Polygon' else geometry['coordinates']
+        parts.setdefault(iso, []).extend(polygons)
+    return {iso: {'type': 'MultiPolygon', 'coordinates': polygons} for iso, polygons in parts.items()}
 
 
 def plan(rows, table, ne, bbox, required):
