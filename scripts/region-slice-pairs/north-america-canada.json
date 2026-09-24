@@ -1,0 +1,15 @@
+[
+ {"name": "Ottawa -> Montreal (Ontario | Quebec)", "from": [45.4215, -75.6972], "to": [45.5019, -73.5674], "pieces": ["north-america-canada-ontario", "north-america-canada-quebec"]},
+ {"name": "Toronto -> Quebec City (Ontario | Quebec)", "from": [43.6532, -79.3832], "to": [46.8139, -71.2080], "pieces": ["north-america-canada-ontario", "north-america-canada-quebec"]},
+ {"name": "Winnipeg -> Kenora (Prairies | Ontario)", "from": [49.8951, -97.1384], "to": [49.7670, -94.4894], "pieces": ["north-america-canada-prairies", "north-america-canada-ontario"]},
+ {"name": "Calgary -> Kamloops (Prairies | British Columbia)", "from": [51.0447, -114.0719], "to": [50.6745, -120.3273], "pieces": ["north-america-canada-prairies", "north-america-canada-british-columbia"]},
+ {"name": "Edmonton -> Prince George (Prairies | British Columbia)", "from": [53.5461, -113.4938], "to": [53.9171, -122.7497], "pieces": ["north-america-canada-prairies", "north-america-canada-british-columbia"]},
+ {"name": "Whitehorse -> Fort Nelson (North | British Columbia)", "from": [60.7212, -135.0568], "to": [58.8050, -122.6972], "pieces": ["north-america-canada-north", "north-america-canada-british-columbia"]},
+ {"name": "Hay River -> High Level (North | Prairies)", "from": [60.8156, -115.7999], "to": [58.5169, -117.1360], "pieces": ["north-america-canada-north", "north-america-canada-prairies"]},
+ {"name": "Edmundston -> Riviere-du-Loup (Atlantic | Quebec)", "from": [47.3737, -68.3251], "to": [47.8352, -69.5360], "pieces": ["north-america-canada-atlantic", "north-america-canada-quebec"]},
+ {"name": "Labrador City -> Fermont (Atlantic | Quebec)", "from": [52.9463, -66.9114], "to": [52.7836, -67.0856], "pieces": ["north-america-canada-atlantic", "north-america-canada-quebec"]},
+ {"name": "Halifax -> Ottawa (Atlantic | Quebec | Ontario)", "from": [44.6488, -63.5752], "to": [45.4215, -75.6972], "pieces": ["north-america-canada-atlantic", "north-america-canada-quebec", "north-america-canada-ontario"]},
+ {"name": "Whitehorse -> Edmonton (North | British Columbia | Prairies)", "from": [60.7212, -135.0568], "to": [53.5461, -113.4938], "pieces": ["north-america-canada-north", "north-america-canada-british-columbia", "north-america-canada-prairies"]},
+ {"name": "Iqaluit town (inside Nunavut only)", "from": [63.7467, -68.5170], "to": [63.7505, -68.4870], "pieces": ["north-america-canada-nunavut"]},
+ {"name": "NEGATIVE Ottawa -> Montreal with only Ontario", "from": [45.4215, -75.6972], "to": [45.5019, -73.5674], "pieces": ["north-america-canada-ontario"], "expect": "fail"}
+]

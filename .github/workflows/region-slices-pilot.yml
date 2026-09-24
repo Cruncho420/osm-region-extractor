@@ -1,0 +1,387 @@
+name: Region Slices Pilot
+
+# Purpose: PILOT of cutting a too-big region into pieces (Rods FEAT-090 REGION-SLICE,
+# owner rule 2026-09-24: split only a region whose road + routing + map download is over
+# 2,000 MB, along natural sub-regions, into the fewest pieces of at most 2,000 MB).
+#
+# Per piece it builds the three downloads the app needs - road data (.sqlite.gz), a
+# routing pack (-valhalla.tar.gz + coverage + tile inventory) and the map (.pmtiles) - and
+# measures them. The routing graph is built ONCE per country and then cut into pieces by
+# whole tiles (scripts/slice-valhalla-graph.mjs), so neighbouring pieces share
+# byte-identical border tiles and the phone can install two of them into one tile
+# directory and route across the border. The run then PROVES that: each cross-border
+# pair in scripts/region-slice-pairs/<country>.json is routed on the union of its pieces
+# and on the whole-country graph with the same pinned engine and must match
+# (scripts/compare-slice-routes.mjs).
+#
+# Isolation: dispatch-only; reads scripts/region-slices.json, never regions.json on disk
+# (a piece entry is appended to the RUNNER's copy only); publishes ONLY to a
+# `valhalla-slices-pilot-*` PRERELEASE. It never touches `latest`, the monthly osm-*
+# releases or any valhalla-<date> release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      countries:
+        description: 'Comma list of country ids from scripts/region-slices.json'
+        required: false
+        default: 'europe-great-britain,north-america-canada'
+        type: string
+      tag:
+        description: 'Prerelease tag (must start with valhalla-slices-pilot-)'
+        required: false
+        default: 'valhalla-slices-pilot-20260924'
+        type: string
+      osm_date:
+        description: 'Geofabrik dated snapshot YYMMDD for road data + routing (same as valhalla-2026-09-02)'
+        required: false
+        default: '260901'
+        type: string
+      protomaps_build:
+        description: 'Protomaps daily build (YYYYMMDD) the maps are cut from'
+        required: false
+        default: '20260923'
+        type: string
+
+permissions:
+  contents: write  # the pilot prerelease
+
+env:
+  # Same engine pin as valhalla-tiles.yml (RT-18: one engine for packs, phone and server).
+  VALHALLA_IMAGE: ghcr.io/valhalla/valhalla@sha256:2b19ea46551a9687b245022551183829d817fdee9b58c5e7b2adb6e422749c43
+  VALHALLA_EXPECTED_VERSION: '3.6.3'
+  PMTILES_VERSION: '1.31.2'
+
+jobs:
+  plan:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      countries: ${{ steps.plan.outputs.countries }}
+      pieces: ${{ steps.plan.outputs.pieces }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve countries and pieces
+        id: plan
+        env:
+          COUNTRIES: ${{ inputs.countries }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          case "$TAG" in valhalla-slices-pilot-*) ;; *) echo "::error::tag must start with valhalla-slices-pilot-"; exit 1;; esac
+          WANT=$(echo "$COUNTRIES" | tr -d ' ' | jq -R 'split(",")')
+          C=$(jq -c --argjson want "$WANT" '[.countries[] | select(.country as $c | $want | index($c)) | .country]' scripts/region-slices.json)
+          [ "$(echo "$C" | jq length)" -eq "$(echo "$WANT" | jq length)" ] || { echo "::error::unknown country in '$COUNTRIES'"; exit 1; }
+          P=$(jq -c --argjson want "$WANT" '[.countries[] | select(.country as $c | $want | index($c)) | .pieces[].id]' scripts/region-slices.json)
+          echo "countries=$C" >> "$GITHUB_OUTPUT"
+          echo "pieces=$P" >> "$GITHUB_OUTPUT"
+          echo "Countries: $C"; echo "Pieces: $P"
+
+      - name: Create the pilot prerelease if missing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" > /dev/null 2>&1; then echo "$TAG exists - appending"; exit 0; fi
+          # PRERELEASE is load-bearing: a normal release could become releases/latest,
+          # which every app install resolves for manifest.json.
+          gh release create "$TAG" --prerelease --target "$GITHUB_SHA" \
+            --title "Region slices PILOT - not consumed by any app" \
+            --notes "PILOT of region slices (Rods FEAT-090 REGION-SLICE). Per piece: <id>.sqlite.gz (road data), <id>-valhalla.tar.gz + <id>-valhalla-coverage.json + <id>.inventory.json (routing, cut from ONE country graph build), <id>.pmtiles (map), plus <country>-whole-valhalla.tar.gz (the uncut graph, for comparison) and <country>-slice-report.json. Not referenced by any manifest." \
+            || gh release view "$TAG" > /dev/null
+
+  routing:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        country: ${{ fromJson(needs.plan.outputs.countries) }}
+    env:
+      COUNTRY: ${{ matrix.country }}
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free runner disk (Canada's graph needs it)
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache /opt/microsoft /usr/local/share/powershell /usr/share/swift 2>/dev/null || true
+          df -h /
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Pull the pinned engine
+        run: |
+          set -euo pipefail
+          docker pull -q "$VALHALLA_IMAGE"
+          VALHALLA_REF=$(docker inspect --format '{{index .RepoDigests 0}}' "$VALHALLA_IMAGE")
+          V=$(docker run --rm "$VALHALLA_REF" valhalla_build_tiles --version | tail -1)
+          [ "$V" = "$VALHALLA_EXPECTED_VERSION" ] || { echo "::error::engine $V, expected $VALHALLA_EXPECTED_VERSION"; exit 1; }
+          echo "VALHALLA_REF=$VALHALLA_REF" >> "$GITHUB_ENV"
+          echo "Engine $V $VALHALLA_REF"
+
+      - name: Download the dated country extract (ONE graph build per country)
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          PBF=$(jq -r --arg c "$COUNTRY" '.countries[] | select(.country==$c) | .pbf' scripts/region-slices.json)
+          curl -fL --retry 3 --retry-delay 30 -o work/region.osm.pbf "https://download.geofabrik.de/${PBF}-${{ inputs.osm_date }}.osm.pbf"
+          echo "OSM_SNAPSHOT=$(python3 scripts/pbf_snapshot.py work/region.osm.pbf)" >> "$GITHUB_ENV"
+          ls -la work/region.osm.pbf
+
+      - name: Restore world timezone DB
+        uses: actions/cache@v4
+        with:
+          path: work/tz_world.sqlite
+          key: valhalla-tzdata-slices-${{ inputs.osm_date }}
+
+      - name: Build admins + graph tiles (recipe of valhalla-tiles.yml, concurrency 1)
+        run: |
+          set -euo pipefail
+          D() { docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" "$@"; }
+          [ -s work/tz_world.sqlite ] || D valhalla_build_timezones > work/tz_world.sqlite
+          D valhalla_build_config --mjolnir-tile-dir /data/valhalla_tiles --mjolnir-tile-extract /data/unused.tar \
+            --mjolnir-timezone /data/tz_world.sqlite --mjolnir-admin /data/admins.sqlite > work/valhalla-base.json
+          # Concurrency 1: both pilot extracts are > 600 MB, where 2 races the tile writer.
+          jq '.mjolnir.concurrency = 1 | .mjolnir.max_cache_size = 262144000' work/valhalla-base.json > work/valhalla.json
+          D valhalla_build_admins -c /data/valhalla.json /data/region.osm.pbf
+          # Driving side: whole-country extracts carry their own country row; correct a
+          # wrong natural row and assert, as valhalla-tiles.yml does (never guess).
+          TOKEN=$(jq -r --arg c "$COUNTRY" '.countries[] | select(.country==$c) | .pbf | split("/") | last' scripts/region-slices.json)
+          ENTRY=$(jq -c --arg t "$TOKEN" '.[$t]' scripts/country-driving-side.json)
+          ISO=$(echo "$ENTRY" | jq -r .iso); DOR=$(echo "$ENTRY" | jq -r 'if .driveOnRight then 1 else 0 end')
+          SQL() { D spatialite /data/admins.sqlite "$1" | tr -d '[:space:]'; }
+          [ "$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2 AND iso_code='$ISO';")" -ge 1 ] || { echo "::error::no $ISO country row"; exit 1; }
+          D spatialite /data/admins.sqlite "UPDATE admins SET drive_on_right=$DOR WHERE admin_level=2 AND iso_code='$ISO';"
+          echo "Driving side $ISO drive_on_right=$DOR verified"
+          T0=$(date +%s)
+          D valhalla_build_tiles -c /data/valhalla.json /data/region.osm.pbf 2>&1 | tee work/build.log | tail -5
+          if grep -qE "Mismatch in end offset|terminate called" work/build.log || [ ! -d work/valhalla_tiles/2 ]; then
+            echo "::error::tile build failed or corrupt"; exit 1
+          fi
+          echo "TILES_SECONDS=$(( $(date +%s) - T0 ))" >> "$GITHUB_ENV"
+          sudo rm -f work/region.osm.pbf
+          sudo chown -R "$(id -u):$(id -g)" work
+          df -h /
+
+      - name: Collect piece outlines
+        run: |
+          set -euo pipefail
+          mkdir -p work/polys
+          jq -r --arg c "$COUNTRY" '.countries[] | select(.country==$c) | .pieces[] | "\(.id) \(if .outline then "stored" else .sources[0] end)"' scripts/region-slices.json |
+          while read -r ID SRC; do
+            if [ "$SRC" = stored ]; then cp "scripts/polys/$ID.poly" "work/polys/$ID.poly"
+            else curl -fsSL --retry 3 -o "work/polys/$ID.poly" "https://download.geofabrik.de/$SRC.poly"; fi
+          done
+          ls -la work/polys
+
+      - name: Cut the graph into pieces (whole tiles, shared borders)
+        run: |
+          set -euo pipefail
+          node scripts/slice-valhalla-graph.mjs --slices scripts/region-slices.json --country "$COUNTRY" \
+            --polys work/polys --tiles work/valhalla_tiles --out work/pieces > work/slice.json
+          jq '{tileCount, orphans: (.orphanTiles | length), pieces}' work/slice.json
+
+      - name: Route across every border - union of pieces vs whole graph
+        id: compare
+        run: |
+          set +e  # record the verdict, still package + publish the evidence; the Report step fails the job
+          node scripts/compare-slice-routes.mjs --whole "$PWD/work/valhalla_tiles" --pieces-root "$PWD/work/pieces" \
+            --pairs "scripts/region-slice-pairs/$COUNTRY.json" --config work/valhalla.json --image "$VALHALLA_REF" \
+            --work "$PWD/work/compare" --out "work/routes.json"
+          echo "rc=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Package, pin and upload each piece's routing pack
+        run: |
+          set -euo pipefail
+          D() { docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" "$@"; }
+          echo '{}' > work/packs.json
+          pack() {  # $1 = asset name stem, $2 = tile dir under work/
+            jq --arg d "/data/$2" --arg t "/data/$1.tar" '.mjolnir.tile_dir = $d | .mjolnir.tile_extract = $t' work/valhalla.json > work/extract.json
+            D valhalla_build_extract -c /data/extract.json > /dev/null
+            gzip -f "work/$1.tar"
+            mv "work/$1.tar.gz" "$1-valhalla.tar.gz"
+          }
+          for ID in $(jq -r '.pieces | keys[]' work/slice.json); do
+            pack "$ID" "pieces/$ID"
+            # Phone inventory: every tile + this pack's own index.bin.
+            MEMBER=$(tar -tzf "$ID-valhalla.tar.gz" | grep -E '(^|/)index\.bin$' | head -1)
+            INDEX=$(tar -xzOf "$ID-valhalla.tar.gz" "$MEMBER" | sha256sum | cut -d' ' -f1)
+            IBYTES=$(tar -xzOf "$ID-valhalla.tar.gz" "$MEMBER" | wc -c)
+            jq -c --arg s "$INDEX" --argjson b "$IBYTES" '. + {"index.bin": {bytes: $b, sha256: $s}}' \
+              "work/pieces/$ID.tiles.json" > "$ID.inventory.json"
+            node scripts/generate-valhalla-coverage.mjs --input "work/polys/$ID.poly" --output "$ID-valhalla-coverage.json"
+            gh release upload "$TAG" "$ID-valhalla.tar.gz" "$ID-valhalla-coverage.json" "$ID.inventory.json" --clobber
+            jq --arg id "$ID" --argjson gz "$(stat -c%s "$ID-valhalla.tar.gz")" \
+              --arg sha "$(sha256sum "$ID-valhalla.tar.gz" | cut -d' ' -f1)" \
+              --argjson cov "$(stat -c%s "$ID-valhalla-coverage.json")" \
+              '.[$id] = {valhallaSize: $gz, valhallaSha256: $sha, valhallaCoverageSize: $cov}' work/packs.json > work/p.tmp && mv work/p.tmp work/packs.json
+            rm -f "$ID-valhalla.tar.gz"
+          done
+          pack "$COUNTRY-whole" valhalla_tiles
+          gh release upload "$TAG" "$COUNTRY-whole-valhalla.tar.gz" --clobber
+          jq --argjson gz "$(stat -c%s "$COUNTRY-whole-valhalla.tar.gz")" '.whole = {valhallaSize: $gz}' work/packs.json > work/p.tmp && mv work/p.tmp work/packs.json
+          cat work/packs.json
+
+      - name: Report
+        run: |
+          set -euo pipefail
+          jq -n --arg country "$COUNTRY" --arg image "$VALHALLA_REF" --arg snap "$OSM_SNAPSHOT" \
+            --argjson tiles_s "$TILES_SECONDS" --slurpfile slice work/slice.json --slurpfile packs work/packs.json \
+            --slurpfile routes work/routes.json \
+            '{country: $country, image: $image, osmSnapshot: $snap, tileBuildSeconds: $tiles_s,
+              slice: ($slice[0] | {tileCount, orphanTiles, pieces}), packs: $packs[0], routes: $routes[0]}' \
+            > "$COUNTRY-slice-report.json"
+          gh release upload "$TAG" "$COUNTRY-slice-report.json" --clobber
+          jq -r '.routes[] | "\(if .pass then "PASS" else "FAIL" end) \(.name) hausdorff=\(.hausdorffM // "-") maneuverDiffs=\(.maneuverDiffs | length? // "-")"' \
+            "$COUNTRY-slice-report.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "${{ steps.compare.outputs.rc }}" = 0 ] || { echo "::error::cross-piece routing differs from the whole graph"; exit 1; }
+
+  road-data:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 4  # Geofabrik politeness, as osm-extract.yml
+      matrix:
+        piece: ${{ fromJson(needs.plan.outputs.pieces) }}
+    env:
+      PIECE: ${{ matrix.piece }}
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: sudo apt-get update && sudo apt-get install -y osmium-tool
+      - working-directory: scripts
+        run: npm ci
+      - name: Cut the piece's extract from dated Geofabrik sources
+        run: |
+          set -euo pipefail
+          SPEC=$(jq -c --arg id "$PIECE" '.countries[].pieces[] | select(.id==$id)' scripts/region-slices.json)
+          i=0; SNAPS=""
+          for SRC in $(echo "$SPEC" | jq -r '.sources[]'); do
+            i=$((i+1))
+            node scripts/download-pbf.mjs "https://download.geofabrik.de/${SRC}-${{ inputs.osm_date }}.osm.pbf" "/tmp/src$i.osm.pbf"
+            SNAPS="$SNAPS $(python3 scripts/pbf_snapshot.py /tmp/src$i.osm.pbf)"
+          done
+          [ "$(echo $SNAPS | tr ' ' '\n' | sort -u | wc -l)" -eq 1 ] || { echo "::error::sources from different snapshots:$SNAPS"; exit 1; }
+          if [ "$i" -gt 1 ]; then osmium merge /tmp/src*.osm.pbf -o /tmp/piece.osm.pbf; else mv /tmp/src1.osm.pbf /tmp/piece.osm.pbf; fi
+          if [ "$(echo "$SPEC" | jq -r '.clipRoadData // false')" = true ]; then
+            osmium extract -p "scripts/polys/$PIECE.poly" --strategy complete_ways /tmp/piece.osm.pbf -o /tmp/clipped.osm.pbf
+            mv /tmp/clipped.osm.pbf /tmp/piece.osm.pbf
+          fi
+          rm -f /tmp/src*.osm.pbf
+          ls -la /tmp/piece.osm.pbf
+          # Runner-only regions.json entry: extract-single / build-sqlite look the id up there.
+          jq --argjson s "$SPEC" '.regions += [{id: $s.id, name: $s.name, continent: "slice", bbox: [0,0,0,0], geofabrikPath: ("slice/" + $s.id), estimatedSize: 0}]' \
+            scripts/regions.json > /tmp/regions.json && mv /tmp/regions.json scripts/regions.json
+      - name: Build road data
+        working-directory: scripts
+        env:
+          EXTRACT_LOCAL_PBF: /tmp/piece.osm.pbf
+          NODE_OPTIONS: '--max-old-space-size=12288'
+        run: |
+          set -euo pipefail
+          npm run extract-single -- --region "$PIECE"
+          npm run build-sqlite -- --region "$PIECE"
+          cp "output/$PIECE.sqlite.gz" "../$PIECE.sqlite.gz"
+      - name: Upload
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" "$PIECE.sqlite.gz" --clobber
+          jq -n --arg id "$PIECE" --argjson b "$(stat -c%s "$PIECE.sqlite.gz")" '{($id): {sqliteSize: $b}}' > "road-$PIECE.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: road-${{ matrix.piece }}
+          path: road-${{ matrix.piece }}.json
+          retention-days: 3
+
+  map:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        piece: ${{ fromJson(needs.plan.outputs.pieces) }}
+    env:
+      PIECE: ${{ matrix.piece }}
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Cut the map from the Protomaps build
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/protomaps/go-pmtiles/releases/download/v${PMTILES_VERSION}/go-pmtiles_${PMTILES_VERSION}_Linux_x86_64.tar.gz" | tar xz pmtiles
+          SPEC=$(jq -c --arg id "$PIECE" '.countries[].pieces[] | select(.id==$id)' scripts/region-slices.json)
+          if [ "$(echo "$SPEC" | jq 'has("outline")')" = true ]; then cp "scripts/polys/$PIECE.poly" piece.poly
+          else curl -fsSL --retry 3 -o piece.poly "https://download.geofabrik.de/$(echo "$SPEC" | jq -r '.sources[0]').poly"; fi
+          # .poly -> GeoJSON MultiPolygon (each '!' hole goes to the outer ring that holds it).
+          node --input-type=module -e "
+            import { readFileSync, writeFileSync } from 'node:fs';
+            import { parseGeofabrikPoly } from './scripts/generate-valhalla-coverage.mjs';
+            import { insideOutline } from './scripts/slice-valhalla-graph.mjs';
+            const rings = parseGeofabrikPoly(readFileSync('piece.poly', 'utf8'));
+            const outers = rings.filter((r) => !r.exclude).map((r) => [r.coordinates]);
+            for (const h of rings.filter((r) => r.exclude)) {
+              const owner = outers.find((o) => insideOutline(h.coordinates[0], [{ exclude: false, coordinates: o[0] }]));
+              if (owner) owner.push(h.coordinates);
+            }
+            writeFileSync('piece.geojson', JSON.stringify({ type: 'MultiPolygon', coordinates: outers }));"
+          Z=$(echo "$SPEC" | jq -r '.mapMaxZoom // 14')
+          ./pmtiles extract "https://build.protomaps.com/${{ inputs.protomaps_build }}.pmtiles" "$PIECE.pmtiles" \
+            --region=piece.geojson --maxzoom="$Z" --download-threads=4
+          ls -la "$PIECE.pmtiles"
+          echo "MAXZOOM=$Z" >> "$GITHUB_ENV"
+      - name: Upload
+        run: |
+          set -euo pipefail
+          BYTES=$(stat -c%s "$PIECE.pmtiles")
+          # GitHub caps a release asset at 2 GiB; a piece that big is over the owner's cap anyway.
+          if [ "$BYTES" -lt 2147483648 ]; then gh release upload "$TAG" "$PIECE.pmtiles" --clobber; else echo "::warning::$PIECE map $BYTES B not uploaded (2 GiB asset cap)"; fi
+          jq -n --arg id "$PIECE" --argjson b "$BYTES" --argjson z "$MAXZOOM" '{($id): {mapSize: $b, mapMaxZoom: $z}}' > "map-$PIECE.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: map-${{ matrix.piece }}
+          path: map-${{ matrix.piece }}.json
+          retention-days: 3
+
+  sizes:
+    needs: [plan, routing, road-data, map]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: parts
+          merge-multiple: true
+      - name: Piece size table (MB = 1,048,576 B; owner cap 2,000 MB)
+        run: |
+          set -euo pipefail
+          for c in $(echo '${{ needs.plan.outputs.countries }}' | jq -r '.[]'); do
+            gh release download "$TAG" --pattern "$c-slice-report.json" -D parts/reports || echo "::warning::no routing report for $c"
+          done
+          jq -s 'reduce .[] as $x ({}; . * $x)' parts/*.json > parts/road-map.json
+          jq -s '[.[] | .packs | to_entries[] | select(.key != "whole") | {(.key): .value}] | add' parts/reports/*.json > parts/routing.json
+          jq -s '.[0] * .[1]' parts/road-map.json parts/routing.json |
+            jq 'with_entries(.value += {totalSize: ((.value.sqliteSize // 0) + (.value.valhallaSize // 0) + (.value.mapSize // 0))})' > slices-pilot-sizes.json
+          gh release upload "$TAG" slices-pilot-sizes.json --clobber
+          echo "| Piece | Road MB | Routing MB | Map MB (zoom) | Total MB |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---:|---:|---:|---:|" >> "$GITHUB_STEP_SUMMARY"
+          jq -r 'to_entries[] | "| \(.key) | \((.value.sqliteSize // 0)/1048576|floor) | \((.value.valhallaSize // 0)/1048576|floor) | \((.value.mapSize // 0)/1048576|floor) (z\(.value.mapMaxZoom // "-")) | \(.value.totalSize/1048576|floor) |"' \
+            slices-pilot-sizes.json | tee -a "$GITHUB_STEP_SUMMARY"
