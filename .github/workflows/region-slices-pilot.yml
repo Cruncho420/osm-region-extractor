@@ -32,6 +32,11 @@ on:
         required: false
         default: 'valhalla-slices-pilot-20260924'
         type: string
+      pieces:
+        description: 'Optional comma list of piece ids: build road data + map only for these (routing always cuts every piece)'
+        required: false
+        default: ''
+        type: string
       osm_date:
         description: 'Geofabrik dated snapshot YYMMDD for road data + routing (same as valhalla-2026-09-02)'
         required: false
@@ -65,6 +70,7 @@ jobs:
         id: plan
         env:
           COUNTRIES: ${{ inputs.countries }}
+          ONLY: ${{ inputs.pieces }}
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
@@ -73,6 +79,10 @@ jobs:
           C=$(jq -c --argjson want "$WANT" '[.countries[] | select(.country as $c | $want | index($c)) | .country]' scripts/region-slices.json)
           [ "$(echo "$C" | jq length)" -eq "$(echo "$WANT" | jq length)" ] || { echo "::error::unknown country in '$COUNTRIES'"; exit 1; }
           P=$(jq -c --argjson want "$WANT" '[.countries[] | select(.country as $c | $want | index($c)) | .pieces[].id]' scripts/region-slices.json)
+          if [ -n "${ONLY// /}" ]; then
+            P=$(echo "$P" | jq -c --argjson only "$(echo "$ONLY" | tr -d ' ' | jq -R 'split(",")')" '[.[] | select(. as $p | $only | index($p))]')
+            [ "$(echo "$P" | jq length)" -eq "$(echo "$ONLY" | tr -d ' ' | jq -R 'split(",") | length')" ] || { echo "::error::unknown piece in '$ONLY'"; exit 1; }
+          fi
           echo "countries=$C" >> "$GITHUB_OUTPUT"
           echo "pieces=$P" >> "$GITHUB_OUTPUT"
           echo "Countries: $C"; echo "Pieces: $P"
@@ -211,6 +221,7 @@ jobs:
           pack() {  # $1 = asset name stem, $2 = tile dir under work/
             jq --arg d "/data/$2" --arg t "/data/$1.tar" '.mjolnir.tile_dir = $d | .mjolnir.tile_extract = $t' work/valhalla.json > work/extract.json
             D valhalla_build_extract -c /data/extract.json > /dev/null
+            TAR_BYTES=$(stat -c%s "work/$1.tar"); TAR_SHA=$(sha256sum "work/$1.tar" | cut -d' ' -f1)
             gzip -f "work/$1.tar"
             mv "work/$1.tar.gz" "$1-valhalla.tar.gz"
           }
@@ -227,13 +238,29 @@ jobs:
             jq --arg id "$ID" --argjson gz "$(stat -c%s "$ID-valhalla.tar.gz")" \
               --arg sha "$(sha256sum "$ID-valhalla.tar.gz" | cut -d' ' -f1)" \
               --argjson cov "$(stat -c%s "$ID-valhalla-coverage.json")" \
-              '.[$id] = {valhallaSize: $gz, valhallaSha256: $sha, valhallaCoverageSize: $cov}' work/packs.json > work/p.tmp && mv work/p.tmp work/packs.json
+              --argjson tb "$TAR_BYTES" --arg ts "$TAR_SHA" \
+              '.[$id] = {valhallaSize: $gz, valhallaSha256: $sha, valhallaCoverageSize: $cov,
+                         archive: {bytes: $gz, sha256: $sha}, tar: {bytes: $tb, sha256: $ts}}' work/packs.json > work/p.tmp && mv work/p.tmp work/packs.json
             rm -f "$ID-valhalla.tar.gz"
+            mkdir -p work/assets && mv "$ID.inventory.json" "$ID-valhalla-coverage.json" work/assets/
           done
           pack "$COUNTRY-whole" valhalla_tiles
           gh release upload "$TAG" "$COUNTRY-whole-valhalla.tar.gz" --clobber
           jq --argjson gz "$(stat -c%s "$COUNTRY-whole-valhalla.tar.gz")" '.whole = {valhallaSize: $gz}' work/packs.json > work/p.tmp && mv work/p.tmp work/packs.json
           cat work/packs.json
+
+      - name: Phone connected-install descriptor (one per country)
+        run: |
+          set -euo pipefail
+          PBF=$(jq -r --arg c "$COUNTRY" '.countries[] | select(.country==$c) | .pbf' scripts/region-slices.json)
+          jq -n --arg image "$VALHALLA_REF" --arg v "$VALHALLA_EXPECTED_VERSION" --arg commit "$GITHUB_SHA" \
+            --arg url "https://download.geofabrik.de/${PBF}-${{ inputs.osm_date }}.osm.pbf" --arg snap "$OSM_SNAPSHOT" \
+            '{toolchain: {valhallaImage: $image, valhallaVersion: $v, extractorCommit: $commit},
+              inputs: {countryPbf: $url, osmSnapshot: $snap}}' > work/inputs.json
+          # The builder refuses unless the union of every piece's tiles is the whole graph.
+          node scripts/build-slice-install-descriptor.mjs --work work --assets work/assets --country "$COUNTRY" \
+            --inputs work/inputs.json --out work/descriptor | tee work/descriptor-pin.json
+          gh release upload "$TAG" work/descriptor/* --clobber
 
       - name: Report
         run: |

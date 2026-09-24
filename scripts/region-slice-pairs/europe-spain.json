@@ -1,0 +1,62 @@
+[
+{
+"name": "Madrid -> Burgos (South-East | North)",
+"from": [
+40.4168,
+-3.7038
+],
+"to": [
+42.3439,
+-3.6969
+],
+"pieces": [
+"europe-spain-south-east",
+"europe-spain-north"
+]
+},
+{
+"name": "Barcelona -> Zaragoza (South-East | North)",
+"from": [
+41.3851,
+2.1734
+],
+"to": [
+41.6488,
+-0.8891
+],
+"pieces": [
+"europe-spain-south-east",
+"europe-spain-north"
+]
+},
+{
+"name": "Valencia -> Teruel (South-East | North)",
+"from": [
+39.4699,
+-0.3763
+],
+"to": [
+40.3456,
+-1.1065
+],
+"pieces": [
+"europe-spain-south-east",
+"europe-spain-north"
+]
+},
+{
+"name": "Seville -> Salamanca (South-East | North)",
+"from": [
+37.3891,
+-5.9845
+],
+"to": [
+40.9701,
+-5.6635
+],
+"pieces": [
+"europe-spain-south-east",
+"europe-spain-north"
+]
+}
+]

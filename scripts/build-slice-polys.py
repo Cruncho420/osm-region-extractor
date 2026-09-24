@@ -24,11 +24,28 @@ CACHE = {}
 CLOSE_DEG = 0.01  # ~1 km: wider than any gap between Geofabrik county outlines seen in England
 
 
+NE_FILE = None  # set from $NE_ADMIN1 (ne_10m_admin_1_states_provinces.geojson) for "ne:ISO:Name" parts
+
+
 def geofabrik_poly(path):
+    if path.startswith("ne:"):
+        return natural_earth(path)
     if path not in CACHE:
         url = f"https://download.geofabrik.de/{path}.poly"
         CACHE[path] = parse(urllib.request.urlopen(url, timeout=60).read().decode())
     return CACHE[path]
+
+
+def natural_earth(token):
+    """ne:ISO:Name -> Natural Earth admin-1 shape, for pieces that split a Geofabrik region."""
+    global NE_FILE
+    import os
+    from shapely.geometry import shape
+    if NE_FILE is None:
+        NE_FILE = {(f["properties"]["iso_a2"], f["properties"]["name"]): shape(f["geometry"])
+                   for f in json.load(open(os.environ["NE_ADMIN1"]))["features"]}
+    _, iso, name = token.split(":", 2)
+    return NE_FILE[(iso, name)]
 
 
 def parse(text):

@@ -1,0 +1,62 @@
+[
+{
+"name": "Bologna -> Florence (North | Centre-South)",
+"from": [
+44.4949,
+11.3426
+],
+"to": [
+43.7696,
+11.2558
+],
+"pieces": [
+"europe-italy-north",
+"europe-italy-centre-south"
+]
+},
+{
+"name": "Genoa -> La Spezia -> Pisa (North | Centre-South)",
+"from": [
+44.4056,
+8.9463
+],
+"to": [
+43.7228,
+10.4017
+],
+"pieces": [
+"europe-italy-north",
+"europe-italy-centre-south"
+]
+},
+{
+"name": "Milan -> Rome (North | Centre-South)",
+"from": [
+45.4642,
+9.19
+],
+"to": [
+41.9028,
+12.4964
+],
+"pieces": [
+"europe-italy-north",
+"europe-italy-centre-south"
+]
+},
+{
+"name": "Rimini -> Pesaro (North | Centre-South)",
+"from": [
+44.0678,
+12.5695
+],
+"to": [
+43.9098,
+12.9131
+],
+"pieces": [
+"europe-italy-north",
+"europe-italy-centre-south"
+]
+}
+]
