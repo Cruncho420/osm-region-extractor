@@ -1,0 +1,12 @@
+{
+  "_comment": "Country driving-side truth table for the Valhalla admin-completeness repair (ci/valhalla-roundabout-exit-probe). Keyed by the 'country token' extracted from a regions.json geofabrikPath: for a sub-country path (continent/country/subregion-latest.osm.pbf) the token is the MIDDLE segment ('germany' from europe/germany/bayern-latest.osm.pbf); for a whole-country path (continent/country-latest.osm.pbf) it is the filename with '-latest.osm.pbf' stripped ('lithuania' from europe/lithuania-latest.osm.pbf). driveOnRight is a plain fact (ISO 3166-1 country, left-vs-right-hand traffic) verified against the public list of left-hand-traffic countries, not derived from OSM or Valhalla's own (undocumented, name-string-matched, and proven fragile in this investigation) admin build. iso/name feed the synthesized admin_level=2 row's iso_code/name/name_en columns.",
+  "_scope": "Covers every country that is EITHER (a) the parent of a sub-country regions.json entry today [needed for the repair path to fire] or (b) named by an owner ask as a known-good whole-country regression check [germany, france, us, brazil, china, india = (a); lithuania, great-britain = (b)]. This is deliberately NOT all ~200 countries in regions.json: a whole-country region's own admin_level=2 boundary is self-contained and already builds correctly (see the admin-completeness gate), so it never reaches the repair code path and needs no entry here to build correctly. The gate still hard-fails for ANY country token missing from this table (whole-country anomaly or a newly added sub-country region for an uncovered country) rather than guessing, so coverage only ever needs to grow, never be trusted blind.",
+  "germany": { "iso": "DE", "name": "Germany", "driveOnRight": true },
+  "france": { "iso": "FR", "name": "France", "driveOnRight": true },
+  "us": { "iso": "US", "name": "United States", "driveOnRight": true },
+  "brazil": { "iso": "BR", "name": "Brazil", "driveOnRight": true },
+  "china": { "iso": "CN", "name": "China", "driveOnRight": true },
+  "india": { "iso": "IN", "name": "India", "driveOnRight": false },
+  "lithuania": { "iso": "LT", "name": "Lithuania", "driveOnRight": true },
+  "great-britain": { "iso": "GB", "name": "United Kingdom", "driveOnRight": false }
+}

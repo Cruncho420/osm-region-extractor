@@ -405,8 +405,16 @@ jobs:
           # never ships unverified, the endpoints are just no longer required to
           # be hand-written.
           COORDS=$(jq -rn --argjson m "$SANITY_ROUTES" --arg id "$REGION" '$m[$id] // empty')
+          # bbox feeds the admin-completeness repair below: a sub-country region's
+          # own bbox, padded, stands in for the missing/degenerate country boundary
+          # polygon (see "Repair missing country admin row" — every node Geofabrik
+          # ships for this region is already confined to the true country, so a
+          # padded bbox rectangle is a safe superset, not an approximation that can
+          # misclassify a node).
+          BBOX=$(jq -c --arg id "$REGION" '.regions[] | select(.id==$id) | .bbox' scripts/regions.json)
           echo "geo_path=$GEO_PATH" >> "$GITHUB_OUTPUT"
           echo "coords=$COORDS" >> "$GITHUB_OUTPUT"
+          echo "bbox=$BBOX" >> "$GITHUB_OUTPUT"
           echo "Region: $REGION  PBF: $GEO_PATH  Sanity route: ${COORDS:-<derive from tiles>}"
 
       - name: Download PBF from Geofabrik
@@ -501,7 +509,7 @@ jobs:
             valhalla_build_admins -c /data/valhalla.json /data/region.osm.pbf
           ls -la work/admins.sqlite
 
-      - name: Verify admin completeness (driving-side gate)
+      - name: Verify admin completeness and repair the driving-side gap
         id: admin_check
         run: |
           set -euo pipefail
@@ -522,23 +530,126 @@ jobs:
           # src/odin/maneuversbuilder.cc) — reproduced on an isolated single
           # roundabout: exit count was a constant 2 regardless of the real exit
           # taken, until drive_on_right was corrected, after which 1st/2nd/3rd
-          # exits came out correctly. A whole-country extract (Lithuania, Estonia)
-          # has no such gap: its own border is closed and self-contained.
+          # exits came out correctly. A whole-country extract (Lithuania, Great
+          # Britain, Estonia) has no such gap: its own border is closed and
+          # self-contained, so this step is a no-op for those regions below.
           #
           # This is a driving-side defect, not just a roundabout one — every
           # left/right turn call, every "keep left/right", inherits the same wrong
-          # flag. The gate below is the root-cause check (works for every region,
-          # roundabouts or not, no curated coordinates) rather than a roundabout-
-          # specific symptom check.
+          # flag.
+          #
+          # THE REPAIR (added here, was a hard-fail-only gate before): a
+          # sub-country region's OWN bbox is a safe stand-in for the missing
+          # country polygon, because Geofabrik already clips the extract's actual
+          # road data to the true national boundary — a rectangle drawn AROUND
+          # that data can only ever contain nodes that are genuinely inside the
+          # country, never a neighbor's, even though the rectangle itself is not
+          # the true border shape. So: synthesize one admin_level=2 row covering
+          # the region's padded bbox, with iso_code/name/drive_on_right from the
+          # static ci/scripts/country-driving-side.json table (a verified ISO
+          # 3166-1 fact table), and INSERT it directly into admins.sqlite.
+          #
+          # Why not ask Valhalla to resolve drive_on_right itself, e.g. by feeding
+          # it a synthetic OSM boundary relation tagged with the real ISO code?
+          # PROVEN NOT TO WORK during this investigation: valhalla_build_admins
+          # resolves drive_on_right by matching the relation's OSM `name` tag
+          # against an internal, undocumented list of left-hand-traffic COUNTRY
+          # NAMES — not the ISO code, and NOT the `driving_side` tag (tested
+          # explicitly: a relation named "UKTest", iso=GB, driving_side=left still
+          # came out drive_on_right=1; only renaming it to the exact string
+          # "United Kingdom" produced the correct 0). Trusting that string match
+          # would just move the same class of silent-wrong-default bug one layer
+          # over. A directly-controlled, explicitly-verified table is the more
+          # robust of the two options open here (osmium-merging a synthetic
+          # relation vs. patching admins.sqlite post-build) for exactly this
+          # reason, at the cost of listing countries here as new sub-country
+          # regions are added (enforced by the hard failure below, not silent).
           COUNTRY_ROWS=$(docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" \
             spatialite /data/admins.sqlite "SELECT COUNT(*) FROM admins WHERE admin_level=2;" \
             | tr -d '[:space:]')
-          echo "country_rows=$COUNTRY_ROWS" >> "$GITHUB_OUTPUT"
           echo "Country-level (admin_level=2) admin rows built: $COUNTRY_ROWS"
+
           if [ -z "$COUNTRY_ROWS" ] || [ "$COUNTRY_ROWS" -eq 0 ]; then
-            echo "::error::[$REGION] zero complete country-level admin polygons — this region's Geofabrik extract cannot resolve driving side for ANY node (see comment above). Every roundabout exit count, and every left/right maneuver, would be wrong region-wide. Pack rejected. Fix: build admins.sqlite from a WHOLE-COUNTRY (or larger) PBF that contains the closed national boundary, not from this region's own PBF, before shipping a sub-country region."
-            exit 1
+            GEO_PATH="${{ steps.meta.outputs.geo_path }}"
+            # Country token: the segment identifying the country in the Geofabrik
+            # path. 3 parts (continent/country/subregion-latest.osm.pbf) -> the
+            # middle segment. 2 parts (continent/country-latest.osm.pbf, a
+            # whole-country region that STILL came back with zero rows -- a real
+            # anomaly, not the expected case) -> the filename with the suffix
+            # stripped, so it still gets a chance to match the table before this
+            # falls through to the hard failure.
+            NPARTS=$(echo "$GEO_PATH" | awk -F'/' '{print NF}')
+            if [ "$NPARTS" -eq 3 ]; then
+              TOKEN=$(echo "$GEO_PATH" | cut -d'/' -f2)
+            else
+              TOKEN=$(echo "$GEO_PATH" | awk -F'/' '{print $NF}' | sed 's/-latest\.osm\.pbf$//')
+            fi
+            ENTRY=$(jq -c --arg t "$TOKEN" '.[$t] // empty' scripts/country-driving-side.json)
+            if [ -z "$ENTRY" ]; then
+              echo "::error::[$REGION] zero complete country-level admin polygons, and country token '$TOKEN' (derived from $GEO_PATH) has no entry in scripts/country-driving-side.json — cannot safely repair. Add a verified {iso, name, driveOnRight} entry for '$TOKEN' before this region can ship. Every roundabout exit count, and every left/right maneuver, would otherwise be wrong region-wide."
+              exit 1
+            fi
+            ISO=$(echo "$ENTRY" | jq -r '.iso')
+            NAME=$(echo "$ENTRY" | jq -r '.name')
+            EXPECT_DOR=$(echo "$ENTRY" | jq -r 'if .driveOnRight then 1 else 0 end')
+            echo "Repairing: country token '$TOKEN' -> iso=$ISO name=\"$NAME\" drive_on_right=$EXPECT_DOR"
+
+            # Pad the region's own bbox so nodes sitting exactly on the edge are
+            # unambiguously inside the polygon (bbox is [minLon, minLat, maxLon,
+            # maxLat] per scripts/regions.json / generate-regions.ts).
+            BBOX='${{ steps.meta.outputs.bbox }}'
+            read -r MINLON MINLAT MAXLON MAXLAT <<< "$(echo "$BBOX" | jq -r '.[0], .[1], .[2], .[3]' | tr '\n' ' ')"
+            PAD=0.2
+            MINLON=$(awk -v v="$MINLON" -v p="$PAD" 'BEGIN{printf "%.6f", v-p}')
+            MINLAT=$(awk -v v="$MINLAT" -v p="$PAD" 'BEGIN{printf "%.6f", v-p}')
+            MAXLON=$(awk -v v="$MAXLON" -v p="$PAD" 'BEGIN{printf "%.6f", v+p}')
+            MAXLAT=$(awk -v v="$MAXLAT" -v p="$PAD" 'BEGIN{printf "%.6f", v+p}')
+            WKT="MULTIPOLYGON((($MINLON $MINLAT, $MAXLON $MINLAT, $MAXLON $MAXLAT, $MINLON $MAXLAT, $MINLON $MINLAT)))"
+
+            docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" spatialite /data/admins.sqlite \
+              "INSERT INTO admins (admin_level, iso_code, parent_admin, name, name_en, drive_on_right, allow_intersection_names, default_language, supported_languages, geom) VALUES (2, '$ISO', NULL, '$NAME', '$NAME', $EXPECT_DOR, 0, NULL, NULL, GeomFromText('$WKT', 4326));"
+
+            # Re-verify: the repair must land exactly one correct row, not silently
+            # no-op. This is also the CI assertion that a known-driving-side
+            # sub-country region (e.g. Bayern/germany, any US state/us) ends up
+            # with the RIGHT drive_on_right after the build, generalized to every
+            # region this path repairs rather than one hardcoded example.
+            AFTER_ROWS=$(docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" \
+              spatialite /data/admins.sqlite "SELECT COUNT(*) FROM admins WHERE admin_level=2;" \
+              | tr -d '[:space:]')
+            AFTER_DOR=$(docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" \
+              spatialite /data/admins.sqlite "SELECT drive_on_right FROM admins WHERE admin_level=2 AND iso_code='$ISO';" \
+              | tr -d '[:space:]')
+            if [ "$AFTER_ROWS" -ne 1 ] || [ "$AFTER_DOR" != "$EXPECT_DOR" ]; then
+              echo "::error::[$REGION] admin repair did not land as expected (rows=$AFTER_ROWS, drive_on_right=$AFTER_DOR, wanted 1 row with drive_on_right=$EXPECT_DOR). Pack rejected."
+              exit 1
+            fi
+            echo "Repair verified: 1 admin_level=2 row, iso=$ISO, drive_on_right=$AFTER_DOR"
+            COUNTRY_ROWS=1
+            echo "admin_repaired=true" >> "$GITHUB_OUTPUT"
+            echo "admin_repair_country=$TOKEN" >> "$GITHUB_OUTPUT"
+          else
+            # No repair needed. Regression check (owner-requested, 2026-09-24):
+            # for the whole-country regions we have a verified expected answer
+            # for, assert THIS gate's presence never flips an already-correct
+            # build. Skipped (not failed) for any region without a table entry —
+            # absence here just means "not asserted", never "assumed correct".
+            SELF_TOKEN=$(echo "${{ steps.meta.outputs.geo_path }}" | awk -F'/' '{print $NF}' | sed 's/-latest\.osm\.pbf$//')
+            SELF_ENTRY=$(jq -c --arg t "$SELF_TOKEN" '.[$t] // empty' scripts/country-driving-side.json)
+            if [ -n "$SELF_ENTRY" ]; then
+              EXPECT_DOR=$(echo "$SELF_ENTRY" | jq -r 'if .driveOnRight then 1 else 0 end')
+              ACTUAL_DOR=$(docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" \
+                spatialite /data/admins.sqlite "SELECT drive_on_right FROM admins WHERE admin_level=2 ORDER BY ROWID LIMIT 1;" \
+                | tr -d '[:space:]')
+              if [ "$ACTUAL_DOR" != "$EXPECT_DOR" ]; then
+                echo "::error::[$REGION] whole-country regression: expected drive_on_right=$EXPECT_DOR for '$SELF_TOKEN' but the naturally-built admin row has $ACTUAL_DOR. The admin-completeness repair above must not have touched this region (country_rows was already $COUNTRY_ROWS) — investigate the OSM data or Valhalla's own admin build, not the repair step."
+                exit 1
+              fi
+              echo "Whole-country regression check OK: '$SELF_TOKEN' drive_on_right=$ACTUAL_DOR as expected, untouched by the repair path."
+            fi
+            echo "admin_repaired=false" >> "$GITHUB_OUTPUT"
           fi
+          echo "country_rows=$COUNTRY_ROWS" >> "$GITHUB_OUTPUT"
 
       - name: Build graph tiles (verify-and-retry)
         id: tiles
@@ -818,12 +929,16 @@ jobs:
             --arg image "$VALHALLA_REF" \
             --arg valhalla_version "${{ steps.image.outputs.valhalla_version }}" \
             --arg admin_country_rows "${{ steps.admin_check.outputs.country_rows }}" \
+            --arg admin_repaired "${{ steps.admin_check.outputs.admin_repaired }}" \
+            --arg admin_repair_country "${{ steps.admin_check.outputs.admin_repair_country }}" \
             --arg roundabout_variance "${{ steps.sanity.outputs.roundabout_variance }}" \
             '{region: $region, pbf_mb: $pbf_mb, tiles_seconds: $tiles_seconds,
               gz_bytes: $gz_bytes, gz_mb: $gz_mb, sha256: $sha256, sha16: $sha16,
               sanity: $sanity, concurrency: $concurrency, retried: $retried,
               gph_count: $gph_count, image: $image, valhalla_version: $valhalla_version,
-              admin_country_rows: $admin_country_rows, roundabout_variance: $roundabout_variance}' \
+              admin_country_rows: $admin_country_rows, admin_repaired: $admin_repaired,
+              admin_repair_country: $admin_repair_country,
+              roundabout_variance: $roundabout_variance}' \
             > "valhalla-report-${REGION}.json"
           cat "valhalla-report-${REGION}.json"
           {
