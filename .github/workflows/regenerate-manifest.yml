@@ -69,7 +69,8 @@ jobs:
           if gh release view "$VALHALLA_TAG" > /dev/null 2>&1; then
             gh release download "$VALHALLA_TAG" \
               -D release-assets \
-              --pattern '*-valhalla.tar.gz'
+              --pattern '*-valhalla.tar.gz' \
+              --pattern '*-valhalla-coverage.json'
             echo "Downloaded $(ls release-assets/*-valhalla.tar.gz 2>/dev/null | wc -l) valhalla packs from $VALHALLA_TAG"
           else
             # Not fatal on its own — a manifest that never had these fields is
@@ -116,7 +117,7 @@ jobs:
               if rid not in b.get('regions', {}):
                   changed.append(f"  REMOVED: {rid}")
                   continue
-              for field in ('size','checksum','surfaceSize','surfaceChecksum','waySize','wayChecksum','sqliteSize','sqliteChecksum','valhallaSize','valhallaChecksum'):
+              for field in ('size','checksum','surfaceSize','surfaceChecksum','waySize','wayChecksum','sqliteSize','sqliteChecksum','valhallaSize','valhallaChecksum','valhallaCoverageSize','valhallaCoverageChecksum'):
                   av, bv = a['regions'][rid].get(field), b['regions'][rid].get(field)
                   if av != bv:
                       changed.append(f"  {rid}.{field}: {av} -> {bv}")

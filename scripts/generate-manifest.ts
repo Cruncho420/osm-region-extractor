@@ -46,6 +46,8 @@ interface ManifestRegion {
   sqliteChecksum?: string;
   valhallaSize?: number;
   valhallaChecksum?: string;
+  valhallaCoverageSize?: number;
+  valhallaCoverageChecksum?: string;
 }
 
 interface Manifest {
@@ -181,6 +183,16 @@ function generateManifest(inputDir: string, outputFile: string, overrideVersion?
       region.valhallaChecksum = computeChecksum(valhallaPath);
     } catch {
       // No Valhalla pack — that's fine, region simply has no offline routing yet
+    }
+
+    const coverageFile = `${regionId}-valhalla-coverage.json`;
+    const coveragePath = join(inputDir, coverageFile);
+    try {
+      const coverageStats = statSync(coveragePath);
+      region.valhallaCoverageSize = coverageStats.size;
+      region.valhallaCoverageChecksum = computeChecksum(coveragePath);
+    } catch {
+      // Legacy/no Valhalla pack — exact coverage is additive and optional.
     }
 
     manifest.regions[regionId] = region;

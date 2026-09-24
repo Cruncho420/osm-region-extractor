@@ -433,6 +433,7 @@ jobs:
 
           **Contents (per region):**
           - {region-id}-valhalla.tar.gz - gzip of the SINGLE valhalla_build_extract tar (index.bin + graph tiles) that mjolnir.tile_extract memory-maps; GRAPH-ONLY (no tz/admin sqlite)
+          - {region-id}-valhalla-coverage.json - Geofabrik's exact extract polygon + 10 km boundary-risk margin, pinned by valhallaCoverageSize/valhallaCoverageChecksum; the app refuses to route without it
           - {region-id}-corridors.json - P1.8 corridor fixtures: array of {name, request, response} with the FULL valhalla route response from CI verification
           - manifest.json / valhalla-manifest.json - per-region valhallaSize + valhallaChecksum (sha256 first 16 hex), written by the finalize job once every region has reported"
           echo "Created $TAG"
@@ -485,6 +486,28 @@ jobs:
           echo "coords=$COORDS" >> "$GITHUB_OUTPUT"
           echo "bbox=$BBOX" >> "$GITHUB_OUTPUT"
           echo "Region: $REGION  PBF: $GEO_PATH  Sanity route: ${COORDS:-<derive from tiles>}"
+
+      # Exact pack boundary for the app's routing gate. The app REFUSES to route
+      # on a pack without it (Rods valhallaCoverage.ts), so it is built here, per
+      # region, before the hours of tile building: a region whose .poly cannot be
+      # fetched or parsed fails in seconds instead of shipping an unroutable pack.
+      # Geofabrik publishes only the CURRENT .poly (no dated copy beside the dated
+      # PBF); extract boundaries change rarely, and sourceChecksum records exactly
+      # which polygon was used.
+      - name: Build exact pack-coverage metadata
+        id: coverage
+        run: |
+          set -euo pipefail
+          GEO_PATH="${{ steps.meta.outputs.geo_path }}"
+          COVERAGE_FILE="${REGION}-valhalla-coverage.json"
+          mkdir -p work
+          curl -fL --retry 3 --retry-delay 30 --connect-timeout 30 -o work/region.poly \
+            "https://download.geofabrik.de/${GEO_PATH%-latest.osm.pbf}.poly"
+          node scripts/generate-valhalla-coverage.mjs --input work/region.poly --output "$COVERAGE_FILE"
+          COVERAGE_SHA=$(sha256sum "$COVERAGE_FILE" | cut -d' ' -f1)
+          echo "bytes=$(stat -c%s "$COVERAGE_FILE")" >> "$GITHUB_OUTPUT"
+          echo "sha16=${COVERAGE_SHA:0:16}" >> "$GITHUB_OUTPUT"
+          echo "Coverage: $(stat -c%s "$COVERAGE_FILE") B, sha16=${COVERAGE_SHA:0:16}"
 
       - name: Download PBF from Geofabrik
         id: pbf
@@ -1002,6 +1025,8 @@ jobs:
             --argjson gz_mb "${{ steps.pack.outputs.gz_mb }}" \
             --arg sha256 "${{ steps.pack.outputs.sha256 }}" \
             --arg sha16 "${{ steps.pack.outputs.sha16 }}" \
+            --argjson coverage_bytes "${{ steps.coverage.outputs.bytes }}" \
+            --arg coverage_sha16 "${{ steps.coverage.outputs.sha16 }}" \
             --arg sanity "${{ steps.sanity.outputs.result }}" \
             --argjson concurrency "${{ steps.tiles.outputs.concurrency }}" \
             --argjson retried "${{ steps.tiles.outputs.retried }}" \
@@ -1015,6 +1040,7 @@ jobs:
             --arg osm_snapshot "${{ steps.pbf.outputs.osm_snapshot }}" \
             '{region: $region, osm_snapshot: $osm_snapshot, pbf_mb: $pbf_mb, tiles_seconds: $tiles_seconds,
               gz_bytes: $gz_bytes, gz_mb: $gz_mb, sha256: $sha256, sha16: $sha16,
+              coverage_bytes: $coverage_bytes, coverage_sha16: $coverage_sha16,
               sanity: $sanity, concurrency: $concurrency, retried: $retried,
               gph_count: $gph_count, image: $image, valhalla_version: $valhalla_version,
               admin_country_rows: $admin_country_rows, admin_repaired: $admin_repaired,
@@ -1056,6 +1082,7 @@ jobs:
           set -euo pipefail
           gh release upload "$TAG" \
             "${REGION}-valhalla.tar.gz" \
+            "${REGION}-valhalla-coverage.json" \
             "${REGION}-corridors.json" \
             --clobber
           echo "Uploaded ${REGION} to $TAG"
@@ -1082,6 +1109,15 @@ jobs:
             exit 1
           fi
           echo "Upload verified: served Content-Length $SERVED B == built $EXPECTED B"
+
+          # Same proof for the coverage sidecar: a pack without it is unroutable.
+          COV_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${REGION}-valhalla-coverage.json"
+          COV_SHA=$(curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors "$COV_URL" | sha256sum | cut -c1-16)
+          if [ "$COV_SHA" != "${{ steps.coverage.outputs.sha16 }}" ]; then
+            echo "::error::[$REGION] served coverage sha16 $COV_SHA != built ${{ steps.coverage.outputs.sha16 }}"
+            exit 1
+          fi
+          echo "Coverage upload verified: sha16 $COV_SHA"
 
       # Only the report JSON travels as an artifact — a few hundred bytes per
       # region. The tar deliberately does NOT: shipping 45 GB through the artifact
@@ -1180,7 +1216,8 @@ jobs:
           # plus a legacy valhalla-manifest.json copy for earlier app-side tests.
           jq -s --arg version "$VERSION" --arg gen "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
             '{version: $version, generatedAt: $gen,
-              regions: (map({(.region): {valhallaSize: .gz_bytes, valhallaChecksum: .sha16}}) | add)}' \
+              regions: (map({(.region): {valhallaSize: .gz_bytes, valhallaChecksum: .sha16,
+                valhallaCoverageSize: .coverage_bytes, valhallaCoverageChecksum: .coverage_sha16}}) | add)}' \
             reports/*.json > work-manifest.json
 
           # ── ACCUMULATE, NEVER REPLACE ──────────────────────────────────────
@@ -1220,6 +1257,11 @@ jobs:
           fi
           cp release-files/manifest.json release-files/valhalla-manifest.json
           jq '.regions | keys | length as $n | "\($n) regions in the release manifest"' release-files/manifest.json
+          # COVERAGE GATE: the app refuses to route on a pack whose manifest entry
+          # has no coverage pin, so a manifest listing one publishes a pack nobody
+          # can use. Regions carried over from EARLIER batches count too; fix them
+          # with valhalla-coverage-backfill.yml, never by weakening this gate.
+          bash scripts/check-valhalla-coverage.sh "$TAG" release-files/manifest.json
           {
             echo "## Valhalla smoke packs — dataVersion $VERSION"
             echo ""
@@ -1274,6 +1316,7 @@ jobs:
 
           **Contents (per region):**
           - {region-id}-valhalla.tar.gz - gzip of the SINGLE valhalla_build_extract tar (index.bin + graph tiles) that mjolnir.tile_extract memory-maps; GRAPH-ONLY (no tz/admin sqlite)
+          - {region-id}-valhalla-coverage.json - Geofabrik's exact extract polygon + 10 km boundary-risk margin, pinned by valhallaCoverageSize/valhallaCoverageChecksum; the app refuses to route without it
           - (no .sha256 sidecars: the manifest's valhallaChecksum is the checksum of record, and 233 sidecars would burn a quarter of GitHub's 1000-asset cap for nothing)
           - {region-id}-corridors.json - P1.8 corridor fixtures: array of {name, request, response} with the FULL valhalla route response from CI verification
           - manifest.json - regions carry valhallaSize + valhallaChecksum (sha256 first 16 hex, same truncation as generate-manifest.ts computeChecksum)

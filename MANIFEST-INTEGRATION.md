@@ -21,6 +21,13 @@ approved.
   ```
   The core-file scan filters `*.json.gz`, so `-valhalla.tar.gz` can never become a
   phantom core region.
+- Every pack also ships `{regionId}-valhalla-coverage.json` (Geofabrik's exact extract
+  `.poly`, 10 km boundary-risk margin; `scripts/generate-valhalla-coverage.mjs`), pinned as
+  `valhallaCoverageSize` / `valhallaCoverageChecksum`. The app refuses to route without it.
+  `valhalla-tiles.yml` builds it per region and its finalize fails if any manifest region
+  lacks it; `verify-release.ts` checks it; `valhalla-coverage-backfill.yml` repairs an older
+  release. `merge-valhalla-fields.mjs` does NOT carry the coverage fields yet: extend it
+  before that merge is ever used.
 - CI sanity gate runs `valhalla_service` in TILE_EXTRACT mode against the tar
   gunzipped from the shipped asset — a pack that routes in tile_dir mode but not
   tile_extract mode fails the job.
