@@ -162,6 +162,31 @@ env:
     "asia-kazakhstan":"43.238,76.945|51.169,71.449",
     "asia-jordan":"31.953,35.910|29.532,35.006",
     "asia-malaysia-singapore-brunei":"3.139,101.687|1.492,103.741",
+    "asia-saudi-arabia":"24.713,46.675|26.420,50.088",
+    "central-america-guatemala":"14.634,-90.507|14.845,-91.518",
+    "central-america-haiti-and-domrep":"18.486,-69.931|19.451,-70.697",
+    "central-america-honduras":"14.072,-87.192|15.505,-88.025",
+    "central-america-panama":"8.983,-79.520|8.427,-82.431",
+    "central-america-nicaragua":"12.114,-86.236|12.435,-86.878",
+    "europe-france-guadeloupe":"16.241,-61.533|15.998,-61.726",
+    "europe-france-guyane":"4.922,-52.313|5.160,-52.650",
+    "europe-germany-baden-wuerttemberg":"48.776,9.183|49.007,8.404",
+    "europe-germany-berlin":"52.520,13.405|52.536,13.200",
+    "europe-germany-hessen":"50.110,8.682|51.312,9.479",
+    "europe-germany-mecklenburg-vorpommern":"54.089,12.140|53.635,11.401",
+    "europe-luxembourg":"49.611,6.130|49.847,6.104",
+    "europe-moldova":"47.011,28.863|47.762,27.929",
+    "europe-switzerland":"47.377,8.540|46.948,7.447",
+    "north-america-us-district-of-columbia":"38.897,-77.037|38.935,-76.998",
+    "north-america-us-georgia":"33.749,-84.388|32.081,-81.091",
+    "north-america-us-kentucky":"38.253,-85.759|38.040,-84.504",
+    "north-america-us-maine":"43.661,-70.255|44.801,-68.777",
+    "north-america-us-puerto-rico":"18.466,-66.106|18.011,-66.614",
+    "south-america-bolivia":"-16.500,-68.150|-17.394,-66.157",
+    "south-america-brazil-norte":"-10.184,-48.333|-7.191,-48.207",
+    "south-america-colombia":"4.711,-74.072|6.244,-75.581",
+    "south-america-ecuador":"-0.180,-78.468|-2.171,-79.922",
+    "south-america-venezuela":"10.480,-66.904|10.162,-68.008",
     "asia-india-north-eastern-zone":"26.144,91.736|25.578,91.893",
     "europe-lithuania":"54.687,25.280|54.897,23.914",
     "north-america-us-california":"34.05,-118.24|32.72,-117.16",
@@ -883,7 +908,10 @@ jobs:
 
           PASSED=0
           IDX=0
-          CORRIDORS='[]'
+          # Accumulated in a FILE, not a shell variable: a long corridor response
+          # passed back through --argjson hit ARG_MAX (switzerland, 2026-09-24:
+          # "jq: Argument list too long", exit 126).
+          echo '[]' > work/corridors.json
           for PAIR in $PAIRS; do
             A="${PAIR%|*}"; B="${PAIR#*|}"
             LAT1="${A%,*}"; LON1="${A#*,}"; LAT2="${B%,*}"; LON2="${B#*,}"
@@ -912,9 +940,9 @@ jobs:
               exit 1
             fi
             echo "Sanity route OK ($NAME): $(jq -c '.trip.summary | {length, time}' work/route-response.json)"
-            CORRIDORS=$(jq -n --argjson acc "$CORRIDORS" --arg name "$NAME" \
-              --argjson req "$REQ" --slurpfile resp work/route-response.json \
-              '$acc + [{name: $name, request: $req, response: $resp[0]}]')
+            jq --arg name "$NAME" --argjson req "$REQ" --slurpfile resp work/route-response.json \
+              '. + [{name: $name, request: $req, response: $resp[0]}]' \
+              work/corridors.json > work/corridors.tmp && mv work/corridors.tmp work/corridors.json
             PASSED=$((PASSED + 1))
             IDX=$((IDX + 1))
           done
@@ -926,27 +954,30 @@ jobs:
           # `>= 1`, not `== 1`: the array now carries one entry per verified pair.
           # Checked 2026-08-05 — nothing in the Rods repo parses this file with a
           # length assumption, so widening it breaks no consumer.
-          echo "$CORRIDORS" > "${REGION}-corridors.json"
+          cp work/corridors.json "${REGION}-corridors.json"
           jq -e 'type == "array" and length >= 1 and (.[0].response.trip != null)' \
             "${REGION}-corridors.json" > /dev/null
           echo "Corridor asset written: ${REGION}-corridors.json ($(stat -c%s "${REGION}-corridors.json") bytes)"
 
           # Defense in depth alongside the admin-completeness gate above: if the
-          # sanity pairs we already queried happen to cross 3+ roundabouts, their
+          # sanity pairs we already queried happen to cross 5+ roundabouts, their
           # roundabout_exit_count values must not all be identical. Free — reuses
           # the responses already fetched for the route-correctness check, no new
           # queries, no curated coordinates, and it catches a wrong-but-non-empty
           # admin build (or any other cause) the admin_level=2 row-count check
-          # above wouldn't. Fewer than 3 roundabout maneuvers (inner-mongolia: two genuine 1st exits) proves
-          # nothing either way, so it's a pass, not a skip-reported-as-green.
-          EXIT_COUNTS=$(echo "$CORRIDORS" | jq -r \
-            '[.[].response.trip.legs[]?.maneuvers[]? | select(.roundabout_exit_count != null) | .roundabout_exit_count] | @csv')
+          # above wouldn't. Fewer than 5 proves nothing: long highway pairs cross roundabouts
+          # straight through (inner-mongolia 1,1; michigan and montana 2,2,2 with the
+          # driving side verified right-hand), while the real defect showed 14x 2 in
+          # hong-kong. Below 5 it is a pass, not a skip-reported-as-green.
+          EXIT_COUNTS=$(jq -r \
+            '[.[].response.trip.legs[]?.maneuvers[]? | select(.roundabout_exit_count != null) | .roundabout_exit_count] | @csv' \
+            "${REGION}-corridors.json")
           N=$(echo "$EXIT_COUNTS" | tr -cd ',' | wc -c)
           N=$((N + 1))
           if [ -n "$EXIT_COUNTS" ] && [ "$EXIT_COUNTS" != '""' ]; then
             UNIQ=$(echo "$EXIT_COUNTS" | tr ',' '\n' | sort -u | wc -l | tr -d '[:space:]')
             echo "Roundabout exit counts seen in sanity routes: $EXIT_COUNTS (unique=$UNIQ)"
-            if [ "$N" -ge 3 ] && [ "$UNIQ" -eq 1 ]; then
+            if [ "$N" -ge 5 ] && [ "$UNIQ" -eq 1 ]; then
               echo "::error::[$REGION] ${N} roundabout maneuvers in the sanity routes ALL report the same roundabout_exit_count ($EXIT_COUNTS) — this is the signature of the driving-side defect (see admin-completeness gate). Pack rejected."
               echo "roundabout_variance=FAIL-constant" >> "$GITHUB_OUTPUT"
               exit 1
