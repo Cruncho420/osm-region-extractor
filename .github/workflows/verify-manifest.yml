@@ -16,6 +16,12 @@ on:
   schedule:
     - cron: '0 6 * * *'  # Daily at 06:00 UTC
   workflow_dispatch:      # Manual trigger for ad-hoc verification
+    inputs:
+      manifest_url:
+        description: 'Manifest to verify (e.g. a valhalla-<date> release manifest). Empty = latest release.'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -47,7 +53,7 @@ jobs:
           # through to users because the manifest size was itself computed over the
           # truncated bytes — Rods BUG-242 / BUG-243. A non-zero exit fails the job.
           npm run verify-release -- \
-            --manifest-url "https://github.com/${{ github.repository }}/releases/latest/download/manifest.json" \
+            --manifest-url "${{ inputs.manifest_url || format('https://github.com/{0}/releases/latest/download/manifest.json', github.repository) }}" \
             2>&1 | tee verify-output.txt
 
       - name: Open issue on failure
