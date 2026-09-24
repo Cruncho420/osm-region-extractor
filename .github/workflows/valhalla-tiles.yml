@@ -98,7 +98,14 @@ permissions:
 # number of concurrent batches; the queue was not.
 
 env:
-  VALHALLA_IMAGE: ghcr.io/valhalla/valhalla:latest
+  # Pinned to the digest `:latest` resolved to on 2026-09-24 (valhalla 3.7.0-d37aa595e),
+  # the same build every prior smoke/production run used. A floating `:latest` means a
+  # digest resolved today is not the digest a rebuild resolves next month — the roundabout
+  # driving-side investigation (BUG: constant roundabout_exit_count on sub-country regions,
+  # see the admin-completeness gate below) needed to diff behavior against a KNOWN version,
+  # and a float would have made "did the image change under us" one more untested variable.
+  # Bump this deliberately (new commit, noted why) when Valhalla ships a fix Rods needs.
+  VALHALLA_IMAGE: ghcr.io/valhalla/valhalla@sha256:4eec7684289daa17afe33b13c8ae9b5a590434acda1d805213c6feb704431239
   # Hardcoded in-region sanity route endpoints, "lat,lon|lat,lon" (city pairs).
   # A region WITHOUT an entry here fails fast ON PURPOSE: the sanity route is the
   # only end-to-end proof the shipped pack can actually route. Generalize this
@@ -417,6 +424,7 @@ jobs:
           df -h / | tail -1
 
       - name: Pull Valhalla image and pin its digest
+        id: image
         run: |
           set -euo pipefail
           # P1.6 contract: valhalla_build_tiles, valhalla_build_extract AND the
@@ -431,6 +439,14 @@ jobs:
           fi
           echo "VALHALLA_REF=$VALHALLA_REF" >> "$GITHUB_ENV"
           echo "Pinned Valhalla image: $VALHALLA_REF"
+          # Record the actual engine version string (e.g. 3.7.0-d37aa595e) into the
+          # manifest — VALHALLA_IMAGE can be a digest with no human-readable version
+          # anywhere else, and "which Valhalla built this pack" has already been the
+          # first question in one cross-region investigation (roundabout driving-side
+          # defect, 2026-09-24).
+          VALHALLA_VERSION=$(docker run --rm "$VALHALLA_REF" valhalla_build_tiles --version | tail -1)
+          echo "valhalla_version=$VALHALLA_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Valhalla engine version: $VALHALLA_VERSION"
 
       - name: Compute timezone cache key (month-scoped)
         id: tzkey
@@ -484,6 +500,45 @@ jobs:
           docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" \
             valhalla_build_admins -c /data/valhalla.json /data/region.osm.pbf
           ls -la work/admins.sqlite
+
+      - name: Verify admin completeness (driving-side gate)
+        id: admin_check
+        run: |
+          set -euo pipefail
+          # ROOT CAUSE (found 2026-09-24, Bayern roundabout_exit_count constant-2
+          # investigation): a Geofabrik SUB-COUNTRY extract (a German state, a US
+          # state, a French region, a UK county — anything below whole-country)
+          # never contains a COMPLETE country-level (admin_level=2) boundary
+          # relation, because that relation's way members run through neighboring
+          # states/countries the extract doesn't include. valhalla_build_admins
+          # logs "<Country> is missing way member ... is degenerate and will be
+          # skipped" and inserts ZERO rows for it. drive_on_right is looked up
+          # per-node via `drive_on_right[admin_index]` (src/mjolnir/graphbuilder.cc)
+          # on an unordered_map — a miss on a MISSING country row silently
+          # default-constructs to false (left-hand driving) for EVERY node in the
+          # pack, region-wide, no error, no corruption marker. That flips which
+          # side maneuversbuilder.cc counts intersecting edges on for roundabout
+          # exits (AreRoundaboutsProcessable / prev_edge->drive_on_right() in
+          # src/odin/maneuversbuilder.cc) — reproduced on an isolated single
+          # roundabout: exit count was a constant 2 regardless of the real exit
+          # taken, until drive_on_right was corrected, after which 1st/2nd/3rd
+          # exits came out correctly. A whole-country extract (Lithuania, Estonia)
+          # has no such gap: its own border is closed and self-contained.
+          #
+          # This is a driving-side defect, not just a roundabout one — every
+          # left/right turn call, every "keep left/right", inherits the same wrong
+          # flag. The gate below is the root-cause check (works for every region,
+          # roundabouts or not, no curated coordinates) rather than a roundabout-
+          # specific symptom check.
+          COUNTRY_ROWS=$(docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" \
+            spatialite /data/admins.sqlite "SELECT COUNT(*) FROM admins WHERE admin_level=2;" \
+            | tr -d '[:space:]')
+          echo "country_rows=$COUNTRY_ROWS" >> "$GITHUB_OUTPUT"
+          echo "Country-level (admin_level=2) admin rows built: $COUNTRY_ROWS"
+          if [ -z "$COUNTRY_ROWS" ] || [ "$COUNTRY_ROWS" -eq 0 ]; then
+            echo "::error::[$REGION] zero complete country-level admin polygons — this region's Geofabrik extract cannot resolve driving side for ANY node (see comment above). Every roundabout exit count, and every left/right maneuver, would be wrong region-wide. Pack rejected. Fix: build admins.sqlite from a WHOLE-COUNTRY (or larger) PBF that contains the closed national boundary, not from this region's own PBF, before shipping a sub-country region."
+            exit 1
+          fi
 
       - name: Build graph tiles (verify-and-retry)
         id: tiles
@@ -715,6 +770,33 @@ jobs:
           jq -e 'type == "array" and length >= 1 and (.[0].response.trip != null)' \
             "${REGION}-corridors.json" > /dev/null
           echo "Corridor asset written: ${REGION}-corridors.json ($(stat -c%s "${REGION}-corridors.json") bytes)"
+
+          # Defense in depth alongside the admin-completeness gate above: if the
+          # sanity pairs we already queried happen to cross 2+ roundabouts, their
+          # roundabout_exit_count values must not all be identical. Free — reuses
+          # the responses already fetched for the route-correctness check, no new
+          # queries, no curated coordinates, and it catches a wrong-but-non-empty
+          # admin build (or any other cause) the admin_level=2 row-count check
+          # above wouldn't. Fewer than 2 roundabout maneuvers in these pairs proves
+          # nothing either way, so it's a pass, not a skip-reported-as-green.
+          EXIT_COUNTS=$(echo "$CORRIDORS" | jq -r \
+            '[.[].response.trip.legs[]?.maneuvers[]? | select(.roundabout_exit_count != null) | .roundabout_exit_count] | @csv')
+          N=$(echo "$EXIT_COUNTS" | tr -cd ',' | wc -c)
+          N=$((N + 1))
+          if [ -n "$EXIT_COUNTS" ] && [ "$EXIT_COUNTS" != '""' ]; then
+            UNIQ=$(echo "$EXIT_COUNTS" | tr ',' '\n' | sort -u | wc -l | tr -d '[:space:]')
+            echo "Roundabout exit counts seen in sanity routes: $EXIT_COUNTS (unique=$UNIQ)"
+            if [ "$N" -ge 2 ] && [ "$UNIQ" -eq 1 ]; then
+              echo "::error::[$REGION] ${N} roundabout maneuvers in the sanity routes ALL report the same roundabout_exit_count ($EXIT_COUNTS) — this is the signature of the driving-side defect (see admin-completeness gate). Pack rejected."
+              echo "roundabout_variance=FAIL-constant" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            echo "roundabout_variance=ok(${N} sampled, ${UNIQ} distinct)" >> "$GITHUB_OUTPUT"
+          else
+            echo "No roundabout maneuvers in the sanity routes for $REGION — variance check not applicable."
+            echo "roundabout_variance=not_applicable" >> "$GITHUB_OUTPUT"
+          fi
+
           rm -f work/verify_extract.tar
           sudo rm -rf work/verify_tiles
 
@@ -734,10 +816,14 @@ jobs:
             --argjson retried "${{ steps.tiles.outputs.retried }}" \
             --argjson gph_count "${{ steps.pack.outputs.gph_count }}" \
             --arg image "$VALHALLA_REF" \
+            --arg valhalla_version "${{ steps.image.outputs.valhalla_version }}" \
+            --arg admin_country_rows "${{ steps.admin_check.outputs.country_rows }}" \
+            --arg roundabout_variance "${{ steps.sanity.outputs.roundabout_variance }}" \
             '{region: $region, pbf_mb: $pbf_mb, tiles_seconds: $tiles_seconds,
               gz_bytes: $gz_bytes, gz_mb: $gz_mb, sha256: $sha256, sha16: $sha16,
               sanity: $sanity, concurrency: $concurrency, retried: $retried,
-              gph_count: $gph_count, image: $image}' \
+              gph_count: $gph_count, image: $image, valhalla_version: $valhalla_version,
+              admin_country_rows: $admin_country_rows, roundabout_variance: $roundabout_variance}' \
             > "valhalla-report-${REGION}.json"
           cat "valhalla-report-${REGION}.json"
           {
