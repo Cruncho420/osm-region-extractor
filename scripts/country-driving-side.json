@@ -545,5 +545,75 @@
     "iso": "PR",
     "name": "Puerto Rico",
     "driveOnRight": true
+  },
+  "isle-of-man": {
+    "iso": "IM",
+    "name": "Isle of Man",
+    "driveOnRight": false
+  },
+  "jersey": {
+    "iso": "JE",
+    "name": "Jersey",
+    "driveOnRight": false
+  },
+  "guernsey": {
+    "iso": "GG",
+    "name": "Guernsey",
+    "driveOnRight": false
+  },
+  "monaco": {
+    "iso": "MC",
+    "name": "Monaco",
+    "driveOnRight": true
+  },
+  "san-marino": {
+    "iso": "SM",
+    "name": "San Marino",
+    "driveOnRight": true
+  },
+  "vatican-city": {
+    "iso": "VA",
+    "name": "Vatican City",
+    "driveOnRight": true
+  },
+  "liechtenstein": {
+    "iso": "LI",
+    "name": "Liechtenstein",
+    "driveOnRight": true
+  },
+  "gibraltar": {
+    "iso": "GI",
+    "name": "Gibraltar",
+    "driveOnRight": true
+  },
+  "faroe-islands": {
+    "iso": "FO",
+    "name": "Faroe Islands",
+    "driveOnRight": true
+  },
+  "aland": {
+    "iso": "AX",
+    "name": "Åland",
+    "driveOnRight": true
+  },
+  "svalbard": {
+    "iso": "SJ",
+    "name": "Svalbard",
+    "driveOnRight": true
+  },
+  "georgia": {
+    "iso": "GE",
+    "name": "Georgia",
+    "driveOnRight": true
+  },
+  "armenia": {
+    "iso": "AM",
+    "name": "Armenia",
+    "driveOnRight": true
+  },
+  "azerbaijan": {
+    "iso": "AZ",
+    "name": "Azerbaijan",
+    "driveOnRight": true
   }
 }

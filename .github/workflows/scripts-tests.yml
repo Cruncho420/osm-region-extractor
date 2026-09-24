@@ -27,6 +27,7 @@ on:
       - '.github/workflows/test-osm-notification.yml'
       - '.github/workflows/valhalla-tiles.yml'
       - '.github/workflows/chain-valhalla-after-extract.yml'
+      - '.github/workflows/region-slices-pilot.yml'
   pull_request:
     paths:
       - 'scripts/**'
@@ -37,6 +38,7 @@ on:
       - '.github/workflows/test-osm-notification.yml'
       - '.github/workflows/valhalla-tiles.yml'
       - '.github/workflows/chain-valhalla-after-extract.yml'
+      - '.github/workflows/region-slices-pilot.yml'
   workflow_dispatch:
 
 permissions:
@@ -70,6 +72,11 @@ jobs:
       - name: Run tests
         working-directory: scripts
         run: npm test
+
+      # The driving-side repair decides left- vs right-hand traffic for every node of every
+      # pack; its planner and checker are pure Python with no dependencies.
+      - name: Driving-side repair tests
+        run: python3 -m unittest discover -s scripts -p 'test_driving_side*.py'
 
       # The merge script is what edits production manifest.json, so a syntax
       # error in it must fail here rather than mid-rollout. `--check` parses

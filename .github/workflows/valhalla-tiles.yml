@@ -475,12 +475,8 @@ jobs:
           # never ships unverified, the endpoints are just no longer required to
           # be hand-written.
           COORDS=$(jq -rn --argjson m "$SANITY_ROUTES" --arg id "$REGION" '$m[$id] // empty')
-          # bbox feeds the admin-completeness repair below: a sub-country region's
-          # own bbox, padded, stands in for the missing/degenerate country boundary
-          # polygon (see "Repair missing country admin row" — every node Geofabrik
-          # ships for this region is already confined to the true country, so a
-          # padded bbox rectangle is a safe superset, not an approximation that can
-          # misclassify a node).
+          # bbox bounds the driving-side repair below: countries whose real outline touches the
+          # region's extent (padded 1 degree) and have no admin row get one (scripts/repair-driving-side.sh).
           BBOX=$(jq -c --arg id "$REGION" '.regions[] | select(.id==$id) | .bbox' scripts/regions.json)
           echo "geo_path=$GEO_PATH" >> "$GITHUB_OUTPUT"
           echo "coords=$COORDS" >> "$GITHUB_OUTPUT"
@@ -618,135 +614,37 @@ jobs:
         id: admin_check
         run: |
           set -euo pipefail
-          # ROOT CAUSE (found 2026-09-24, Bayern roundabout_exit_count constant-2
-          # investigation): a Geofabrik SUB-COUNTRY extract (a German state, a US
-          # state, a French region, a UK county — anything below whole-country)
-          # never contains a COMPLETE country-level (admin_level=2) boundary
-          # relation, because that relation's way members run through neighboring
-          # states/countries the extract doesn't include. valhalla_build_admins
-          # logs "<Country> is missing way member ... is degenerate and will be
-          # skipped" and inserts ZERO rows for it. drive_on_right is looked up
-          # per-node via `drive_on_right[admin_index]` (src/mjolnir/graphbuilder.cc)
-          # on an unordered_map — a miss on a MISSING country row silently
-          # default-constructs to false (left-hand driving) for EVERY node in the
-          # pack, region-wide, no error, no corruption marker. That flips which
-          # side maneuversbuilder.cc counts intersecting edges on for roundabout
-          # exits (AreRoundaboutsProcessable / prev_edge->drive_on_right() in
-          # src/odin/maneuversbuilder.cc) — reproduced on an isolated single
-          # roundabout: exit count was a constant 2 regardless of the real exit
-          # taken, until drive_on_right was corrected, after which 1st/2nd/3rd
-          # exits came out correctly. A whole-country extract (Lithuania, Great
-          # Britain, Estonia) has no such gap: its own border is closed and
-          # self-contained, so this step is a no-op for those regions below.
+          # ROOT CAUSE (2026-09-24, Bayern roundabout_exit_count): a Geofabrik SUB-COUNTRY extract (a
+          # German state, a US state, a UK county) or even a whole-country one (nigeria, ethiopia)
+          # can build ZERO country (admin_level=2) rows, and Valhalla's drive_on_right then defaults
+          # to false (LEFT-hand) for every node: wrong roundabout exits, wrong keep-left/right.
+          # Valhalla also resolves the side by country NAME and gets some wrong (Brunei).
           #
-          # This is a driving-side defect, not just a roundabout one — every
-          # left/right turn call, every "keep left/right", inherits the same wrong
-          # flag.
-          #
-          # THE REPAIR (added here, was a hard-fail-only gate before): a
-          # sub-country region's OWN bbox is a safe stand-in for the missing
-          # country polygon, because Geofabrik already clips the extract's actual
-          # road data to the true national boundary — a rectangle drawn AROUND
-          # that data can only ever contain nodes that are genuinely inside the
-          # country, never a neighbor's, even though the rectangle itself is not
-          # the true border shape. So: synthesize one admin_level=2 row covering
-          # the region's padded bbox, with iso_code/name/drive_on_right from the
-          # static ci/scripts/country-driving-side.json table (a verified ISO
-          # 3166-1 fact table), and INSERT it directly into admins.sqlite.
-          #
-          # Why not ask Valhalla to resolve drive_on_right itself, e.g. by feeding
-          # it a synthetic OSM boundary relation tagged with the real ISO code?
-          # PROVEN NOT TO WORK during this investigation: valhalla_build_admins
-          # resolves drive_on_right by matching the relation's OSM `name` tag
-          # against an internal, undocumented list of left-hand-traffic COUNTRY
-          # NAMES — not the ISO code, and NOT the `driving_side` tag (tested
-          # explicitly: a relation named "UKTest", iso=GB, driving_side=left still
-          # came out drive_on_right=1; only renaming it to the exact string
-          # "United Kingdom" produced the correct 0). Trusting that string match
-          # would just move the same class of silent-wrong-default bug one layer
-          # over. A directly-controlled, explicitly-verified table is the more
-          # robust of the two options open here (osmium-merging a synthetic
-          # relation vs. patching admins.sqlite post-build) for exactly this
-          # reason, at the cost of listing countries here as new sub-country
-          # regions are added (enforced by the hard failure below, not silent).
-          SQL() { docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" spatialite /data/admins.sqlite "$1" | tr -d '[:space:]'; }
-          COUNTRY_ROWS=$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2;")
-          echo "Country-level (admin_level=2) admin rows built: $COUNTRY_ROWS"
-          docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" spatialite /data/admins.sqlite \
-            "SELECT iso_code, name, drive_on_right FROM admins WHERE admin_level=2;" || true
-
-          # Every region resolves an entry in the table — 2026-09-24 full rebuild
-          # showed WHOLE-country extracts (nigeria, ethiopia, tanzania) also come
-          # back with zero country rows, and that a country token is not always
-          # one driving side (china/hong-kong, china/macau and us/us-virgin-islands
-          # drive on the LEFT). Lookup: "<country>/<subregion>" first, then the
-          # country token. No entry = hard failure, never a guess.
+          # REPAIR (2026-09-25, replaces the padded-bbox row): a missing country row gets the REAL
+          # Natural Earth 1:10m outline, buffered ~2 km, and so does every NEIGHBOUR of the extract
+          # buffer that has no row - a padded rectangle gave neighbour nodes this country's side
+          # (Shenzhen inside the hong-kong extract as left-hand). Then EVERY country row is checked
+          # against scripts/country-driving-side.json: a wrong side is corrected, a country with no
+          # verified entry fails the build (never a guess). Logic + tests: scripts/driving-side-repair.py.
           GEO_PATH="${{ steps.meta.outputs.geo_path }}"
           NPARTS=$(echo "$GEO_PATH" | awk -F'/' '{print NF}')
           SUB=$(echo "$GEO_PATH" | awk -F'/' '{print $NF}' | sed 's/-latest\.osm\.pbf$//')
-          if [ "$NPARTS" -eq 3 ]; then
-            TOKEN=$(echo "$GEO_PATH" | cut -d'/' -f2)
-          else
-            TOKEN="$SUB"
-          fi
+          if [ "$NPARTS" -eq 3 ]; then TOKEN=$(echo "$GEO_PATH" | cut -d'/' -f2); else TOKEN="$SUB"; fi
           ENTRY=$(jq -c --arg k "$TOKEN/$SUB" --arg t "$TOKEN" '.[$k] // .[$t] // empty' scripts/country-driving-side.json)
           if [ -z "$ENTRY" ]; then
-            echo "::error::[$REGION] country token '$TOKEN' (from $GEO_PATH) has no entry in scripts/country-driving-side.json. Add a verified {iso, name, driveOnRight} entry before this region can ship — a missing or degenerate country row silently makes every node left-hand."
+            echo "::error::[$REGION] country token '$TOKEN' (from $GEO_PATH) has no entry in scripts/country-driving-side.json. Add a verified {iso, name, driveOnRight} entry before this region can ship."
             exit 1
           fi
+          REQUIRE=$(echo "$ENTRY" | jq -r '(.members // [.iso]) | join(",")')
           ISO=$(echo "$ENTRY" | jq -r '.iso')
-          NAME=$(echo "$ENTRY" | jq -r '.name')
-          EXPECT_DOR=$(echo "$ENTRY" | jq -r 'if .driveOnRight then 1 else 0 end')
-          OWN_ROWS=$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2 AND iso_code='$ISO';")
-
-          # Repair whenever THIS region's own country row is missing — not only
-          # when there are zero rows at all: an extract can build a neighbour's
-          # row and still lose its own country (partial-row case).
-          if [ -z "$OWN_ROWS" ] || [ "$OWN_ROWS" -eq 0 ]; then
-            echo "Repairing: '$TOKEN/$SUB' -> iso=$ISO name=\"$NAME\" drive_on_right=$EXPECT_DOR"
-            # Padded bbox stands in for the missing country polygon: Geofabrik
-            # already clips the road data to the real border, so the rectangle
-            # only ever contains nodes of this region (bbox = [minLon, minLat,
-            # maxLon, maxLat] per scripts/regions.json).
-            BBOX='${{ steps.meta.outputs.bbox }}'
-            read -r MINLON MINLAT MAXLON MAXLAT <<< "$(echo "$BBOX" | jq -r '.[0], .[1], .[2], .[3]' | tr '\n' ' ')"
-            PAD=0.2
-            MINLON=$(awk -v v="$MINLON" -v p="$PAD" 'BEGIN{printf "%.6f", v-p}')
-            MINLAT=$(awk -v v="$MINLAT" -v p="$PAD" 'BEGIN{printf "%.6f", v-p}')
-            MAXLON=$(awk -v v="$MAXLON" -v p="$PAD" 'BEGIN{printf "%.6f", v+p}')
-            MAXLAT=$(awk -v v="$MAXLAT" -v p="$PAD" 'BEGIN{printf "%.6f", v+p}')
-            WKT="MULTIPOLYGON((($MINLON $MINLAT, $MAXLON $MINLAT, $MAXLON $MAXLAT, $MINLON $MAXLAT, $MINLON $MINLAT)))"
-            docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" spatialite /data/admins.sqlite \
-              "INSERT INTO admins (admin_level, iso_code, parent_admin, name, name_en, drive_on_right, allow_intersection_names, default_language, supported_languages, geom) VALUES (2, '$ISO', NULL, '$NAME', '$NAME', $EXPECT_DOR, 0, NULL, NULL, GeomFromText('$WKT', 4326));"
-            echo "admin_repaired=true" >> "$GITHUB_OUTPUT"
-            echo "admin_repair_country=$TOKEN/$SUB" >> "$GITHUB_OUTPUT"
-          else
-            echo "admin_repaired=false" >> "$GITHUB_OUTPUT"
-          fi
-
-          # Correct, then assert, every natural row of this extract's member
-          # countries. Valhalla sets drive_on_right by matching the relation NAME
-          # against its own list, so a natural row can be wrong: the 2026-09-24
-          # rebuild built Brunei ("Brunei بروني") as RIGHT-hand inside the
-          # malaysia-singapore-brunei extract. `members` lists every country of a
-          # multi-country extract (default: just iso); all share one side.
-          MEMBERS=$(echo "$ENTRY" | jq -r '[(.members // [.iso])[] | "'"'"'" + . + "'"'"'"] | join(",")')
-          WRONG=$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2 AND iso_code IN ($MEMBERS) AND drive_on_right<>$EXPECT_DOR;")
-          if [ "$WRONG" -ne 0 ]; then
-            echo "Correcting $WRONG natural admin_level=2 row(s) in ($MEMBERS) to drive_on_right=$EXPECT_DOR:"
-            docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" spatialite /data/admins.sqlite \
-              "SELECT iso_code, name, drive_on_right FROM admins WHERE admin_level=2 AND iso_code IN ($MEMBERS) AND drive_on_right<>$EXPECT_DOR; UPDATE admins SET drive_on_right=$EXPECT_DOR WHERE admin_level=2 AND iso_code IN ($MEMBERS);"
-            echo "admin_side_corrected=$WRONG" >> "$GITHUB_OUTPUT"
-          fi
-          FOREIGN=$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2 AND (iso_code IS NULL OR iso_code NOT IN ($MEMBERS));")
-          if [ "$FOREIGN" -ne 0 ]; then
-            echo "::warning::[$REGION] $FOREIGN admin_level=2 row(s) outside ($MEMBERS) left as Valhalla built them (neighbour inside the extract buffer)"
-          fi
-          OWN_ROWS=$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2 AND iso_code='$ISO';")
-          BAD_ROWS=$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2 AND iso_code IN ($MEMBERS) AND drive_on_right<>$EXPECT_DOR;")
-          echo "Driving side verified: $OWN_ROWS admin_level=2 row(s) for iso=$ISO, every row in ($MEMBERS) drive_on_right=$EXPECT_DOR"
-          COUNTRY_ROWS=$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2;")
-          echo "country_rows=$COUNTRY_ROWS" >> "$GITHUB_OUTPUT"
+          SQL() { docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" spatialite /data/admins.sqlite "$1" | tr -d '[:space:]'; }
+          BEFORE=$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2 AND iso_code='$ISO';")
+          # The build input's extent, padded 1 degree: every neighbour an extract buffer can carry.
+          BBOX=$(echo '${{ steps.meta.outputs.bbox }}' | jq -r '"\(.[0]-1),\(.[1]-1),\(.[2]+1),\(.[3]+1)"')
+          scripts/repair-driving-side.sh "$PWD/work" "$VALHALLA_REF" "$BBOX" "$REQUIRE"
+          echo "admin_repaired=$([ "${BEFORE:-0}" -eq 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "admin_repair_country=$TOKEN/$SUB" >> "$GITHUB_OUTPUT"
+          echo "country_rows=$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2;")" >> "$GITHUB_OUTPUT"
 
       - name: Build graph tiles (verify-and-retry)
         id: tiles
