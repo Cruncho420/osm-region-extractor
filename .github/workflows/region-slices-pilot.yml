@@ -383,15 +383,15 @@ jobs:
         run: |
           set -euo pipefail
           for c in $(echo '${{ needs.plan.outputs.countries }}' | jq -r '.[]'); do
-            gh release download "$TAG" --pattern "$c-slice-report.json" -D parts/reports || echo "::warning::no routing report for $c"
+            gh release download "$TAG" -R "$GITHUB_REPOSITORY" --pattern "$c-slice-report.json" -D parts/reports || echo "::warning::no routing report for $c"
           done
           jq -s 'reduce .[] as $x ({}; . * $x)' parts/*.json > parts/road-map.json
           jq -s '[.[] | .packs | to_entries[] | select(.key != "whole") | {(.key): .value}] | add' parts/reports/*.json > parts/routing.json
           # Accumulate: a re-run of one country must not drop the other country's rows.
-          gh release download "$TAG" --pattern slices-pilot-sizes.json -D prev 2>/dev/null || { mkdir -p prev; echo '{}' > prev/slices-pilot-sizes.json; }
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" --pattern slices-pilot-sizes.json -D prev 2>/dev/null || { mkdir -p prev; echo '{}' > prev/slices-pilot-sizes.json; }
           jq -s '.[0] * .[1] * .[2]' prev/slices-pilot-sizes.json parts/road-map.json parts/routing.json |
             jq 'with_entries(.value += {totalSize: ((.value.sqliteSize // 0) + (.value.valhallaSize // 0) + (.value.mapSize // 0))})' > slices-pilot-sizes.json
-          gh release upload "$TAG" slices-pilot-sizes.json --clobber
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" slices-pilot-sizes.json --clobber
           echo "| Piece | Road MB | Routing MB | Map MB (zoom) | Total MB |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---:|---:|---:|---:|" >> "$GITHUB_STEP_SUMMARY"
           jq -r 'to_entries[] | "| \(.key) | \((.value.sqliteSize // 0)/1048576|floor) | \((.value.valhallaSize // 0)/1048576|floor) | \((.value.mapSize // 0)/1048576|floor) (z\(.value.mapMaxZoom // "-")) | \(.value.totalSize/1048576|floor) |"' \
