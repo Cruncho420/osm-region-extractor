@@ -156,6 +156,8 @@ env:
   SANITY_ROUTES: >-
     {"europe-estonia":"59.437,24.754|58.378,26.729",
     "europe-germany-bayern":"48.137,11.575|49.454,11.077",
+    "europe-germany-bremen":"53.083,8.813|53.170,8.625",
+    "asia-india-north-eastern-zone":"26.144,91.736|25.578,91.893",
     "europe-lithuania":"54.687,25.280|54.897,23.914",
     "north-america-us-california":"34.05,-118.24|32.72,-117.16",
     "north-america-us-hawaii":"21.307,-157.858|21.593,-158.104",
