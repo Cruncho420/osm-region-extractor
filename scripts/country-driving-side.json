@@ -1,6 +1,6 @@
 {
   "_comment": "Country driving-side truth table for the Valhalla admin-completeness repair (ci/valhalla-roundabout-exit-probe). Keyed by the 'country token' extracted from a regions.json geofabrikPath: for a sub-country path (continent/country/subregion-latest.osm.pbf) the token is the MIDDLE segment ('germany' from europe/germany/bayern-latest.osm.pbf); for a whole-country path (continent/country-latest.osm.pbf) it is the filename with '-latest.osm.pbf' stripped ('lithuania' from europe/lithuania-latest.osm.pbf). driveOnRight is a plain fact (ISO 3166-1 country, left-vs-right-hand traffic) verified against the public list of left-hand-traffic countries, not derived from OSM or Valhalla's own (undocumented, name-string-matched, and proven fragile in this investigation) admin build. iso/name feed the synthesized admin_level=2 row's iso_code/name/name_en columns.",
-  "_scope": "Every country token in scripts/regions.json has an entry (2026-09-24: whole-country extracts also lose their country row, e.g. nigeria, ethiopia, tanzania, so the table can no longer cover only sub-country parents). '<country>/<subregion>' keys override the country for sub-regions that drive on the other side. Multi-country extracts (gcc-states, haiti-and-domrep, ireland-and-northern-ireland, israel-and-palestine, malaysia-singapore-brunei) are one driving side throughout; iso is the largest member. Left-hand tokens: australia, bangladesh, cyprus, great-britain, india, indonesia, ireland-and-northern-ireland, japan, kenya, malaysia-singapore-brunei, malta, nepal, new-zealand, pakistan, south-africa, sri-lanka, tanzania, thailand.",
+  "_scope": "Every country token in scripts/regions.json has an entry (2026-09-24: whole-country extracts also lose their country row, e.g. nigeria, ethiopia, tanzania, so the table can no longer cover only sub-country parents). '<country>/<subregion>' keys override the country for sub-regions that drive on the other side. Multi-country extracts (gcc-states, haiti-and-domrep, ireland-and-northern-ireland, israel-and-palestine, malaysia-singapore-brunei) are one driving side throughout; iso is the largest member. Left-hand tokens: australia, bangladesh, cyprus, great-britain, india, indonesia, ireland-and-northern-ireland, japan, kenya, malaysia-singapore-brunei, malta, nepal, new-zealand, pakistan, south-africa, sri-lanka, tanzania, thailand. 'members' lists every country of a multi-country extract; natural rows of those countries are corrected to the entry's side (Valhalla built Brunei right-hand).",
   "afghanistan": {
     "iso": "AF",
     "name": "Afghanistan",
@@ -164,7 +164,15 @@
   "gcc-states": {
     "iso": "SA",
     "name": "Saudi Arabia",
-    "driveOnRight": true
+    "driveOnRight": true,
+    "members": [
+      "SA",
+      "AE",
+      "KW",
+      "QA",
+      "BH",
+      "OM"
+    ]
   },
   "germany": {
     "iso": "DE",
@@ -189,7 +197,11 @@
   "haiti-and-domrep": {
     "iso": "DO",
     "name": "Dominican Republic",
-    "driveOnRight": true
+    "driveOnRight": true,
+    "members": [
+      "DO",
+      "HT"
+    ]
   },
   "honduras": {
     "iso": "HN",
@@ -229,12 +241,20 @@
   "ireland-and-northern-ireland": {
     "iso": "IE",
     "name": "Ireland",
-    "driveOnRight": false
+    "driveOnRight": false,
+    "members": [
+      "IE",
+      "GB"
+    ]
   },
   "israel-and-palestine": {
     "iso": "IL",
     "name": "Israel",
-    "driveOnRight": true
+    "driveOnRight": true,
+    "members": [
+      "IL",
+      "PS"
+    ]
   },
   "italy": {
     "iso": "IT",
@@ -294,7 +314,12 @@
   "malaysia-singapore-brunei": {
     "iso": "MY",
     "name": "Malaysia",
-    "driveOnRight": false
+    "driveOnRight": false,
+    "members": [
+      "MY",
+      "SG",
+      "BN"
+    ]
   },
   "malta": {
     "iso": "MT",
