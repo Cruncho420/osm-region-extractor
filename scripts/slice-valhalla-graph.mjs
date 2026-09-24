@@ -11,6 +11,12 @@
  * refuses a duplicate path with different bytes (Rods ValhallaGenerationStage). Pieces cut
  * from one build are identical where they overlap, so two neighbours route across their
  * border exactly as the whole graph does, as long as the route stays inside their union.
+ *
+ * Measured (pilot 2026-09-24): a piece carries every 4-degree motorway tile (level 0) and
+ * 1-degree arterial tile (level 1) that touches it, so it routes far beyond its own outline on
+ * main roads (Wales + Scotland alone routed Cardiff -> Glasgow) and its routing pack is bigger
+ * than its share (GB pieces +28 % over the whole pack, Wales 2x). The app's coverage file, not
+ * the tile set, decides where a piece may route offline.
  */
 import { createHash } from 'node:crypto';
 import { linkSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
