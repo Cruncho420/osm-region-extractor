@@ -154,6 +154,15 @@ jobs:
           ENTRY=$(jq -c --arg t "$TOKEN" '.[$t]' scripts/country-driving-side.json)
           ISO=$(echo "$ENTRY" | jq -r .iso); DOR=$(echo "$ENTRY" | jq -r 'if .driveOnRight then 1 else 0 end')
           SQL() { D spatialite /data/admins.sqlite "$1" | tr -d '[:space:]'; }
+          if [ "$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2 AND iso_code='$ISO';")" -eq 0 ]; then
+            # Same repair as valhalla-tiles.yml: an extract that lacks its full country
+            # boundary (great-britain has no Northern Ireland) builds no country row, which
+            # silently makes every node left-hand. A padded bbox row stands in for it.
+            NAME=$(echo "$ENTRY" | jq -r .name)
+            read -r X0 Y0 X1 Y1 <<< "$(jq -r --arg c "$COUNTRY" '.regions[] | select(.id==$c) | .bbox | "\(.[0]-0.2) \(.[1]-0.2) \(.[2]+0.2) \(.[3]+0.2)"' scripts/regions.json)"
+            D spatialite /data/admins.sqlite "INSERT INTO admins (admin_level, iso_code, parent_admin, name, name_en, drive_on_right, allow_intersection_names, default_language, supported_languages, geom) VALUES (2, '$ISO', NULL, '$NAME', '$NAME', $DOR, 0, NULL, NULL, GeomFromText('MULTIPOLYGON((($X0 $Y0, $X1 $Y0, $X1 $Y1, $X0 $Y1, $X0 $Y0)))', 4326));"
+            echo "Repaired missing $ISO country row with padded bbox $X0 $Y0 $X1 $Y1"
+          fi
           [ "$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2 AND iso_code='$ISO';")" -ge 1 ] || { echo "::error::no $ISO country row"; exit 1; }
           D spatialite /data/admins.sqlite "UPDATE admins SET drive_on_right=$DOR WHERE admin_level=2 AND iso_code='$ISO';"
           echo "Driving side $ISO drive_on_right=$DOR verified"
@@ -378,7 +387,9 @@ jobs:
           done
           jq -s 'reduce .[] as $x ({}; . * $x)' parts/*.json > parts/road-map.json
           jq -s '[.[] | .packs | to_entries[] | select(.key != "whole") | {(.key): .value}] | add' parts/reports/*.json > parts/routing.json
-          jq -s '.[0] * .[1]' parts/road-map.json parts/routing.json |
+          # Accumulate: a re-run of one country must not drop the other country's rows.
+          gh release download "$TAG" --pattern slices-pilot-sizes.json -D prev 2>/dev/null || { mkdir -p prev; echo '{}' > prev/slices-pilot-sizes.json; }
+          jq -s '.[0] * .[1] * .[2]' prev/slices-pilot-sizes.json parts/road-map.json parts/routing.json |
             jq 'with_entries(.value += {totalSize: ((.value.sqliteSize // 0) + (.value.valhallaSize // 0) + (.value.mapSize // 0))})' > slices-pilot-sizes.json
           gh release upload "$TAG" slices-pilot-sizes.json --clobber
           echo "| Piece | Road MB | Routing MB | Map MB (zoom) | Total MB |" >> "$GITHUB_STEP_SUMMARY"
