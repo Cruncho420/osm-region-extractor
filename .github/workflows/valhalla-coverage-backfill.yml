@@ -1,0 +1,114 @@
+name: Valhalla Coverage Backfill
+
+# Purpose: give every pack on an existing valhalla-* release its exact coverage file.
+#
+# The Rods app refuses to route on a pack without {region}-valhalla-coverage.json and its
+# manifest pin (valhallaCoverageSize / valhallaCoverageChecksum). valhalla-tiles.yml now
+# builds it for every region and its finalize step fails without it; this workflow repairs
+# a release published before that (valhalla-2026-09-02 had it for 3 of 234 regions).
+#
+# What it touches, and nothing else:
+#   - uploads {region}-valhalla-coverage.json for each manifest region WITHOUT a coverage pin
+#   - adds the two coverage fields to those regions in manifest.json + valhalla-manifest.json
+# Regions that already have a pin keep their file and pin byte-for-byte. Packs, corridors,
+# their sizes and checksums are never touched, and the release stays a prerelease; the
+# run fails if any of that changed. The pre-backfill manifest is kept as a run artifact.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'valhalla-<YYYY-MM-DD> release to backfill'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test the coverage generator
+        run: node --test scripts/generate-valhalla-coverage.test.mjs
+
+      - name: Snapshot the release
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^valhalla-[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "::error::tag must be valhalla-YYYY-MM-DD"; exit 1; }
+          [ "$(gh release view "$TAG" --json isPrerelease -q .isPrerelease)" = true ] \
+            || { echo "::error::$TAG is not a prerelease, refusing to touch it"; exit 1; }
+          mkdir -p before out
+          gh release download "$TAG" -D before -p manifest.json -p valhalla-manifest.json
+          cmp before/manifest.json before/valhalla-manifest.json \
+            || { echo "::error::manifest.json and valhalla-manifest.json already differ on $TAG"; exit 1; }
+          gh release view "$TAG" --json assets -q '.assets[] | select(.name | endswith("-valhalla-coverage.json") | not) | "\(.name) \(.size)"' \
+            | grep -v -E '^(manifest|valhalla-manifest)\.json ' | sort > before/other-assets.txt
+          echo "$(wc -l < before/other-assets.txt) non-coverage assets snapshotted"
+
+      - name: Keep the pre-backfill manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest-before-coverage-backfill
+          path: before/manifest.json
+          retention-days: 90
+
+      - name: Generate coverage for every region without a pin
+        run: |
+          set -euo pipefail
+          jq -r '.regions | to_entries[] | select(.value.valhallaCoverageChecksum == null) | .key' before/manifest.json > todo.txt
+          echo "$(wc -l < todo.txt) region(s) need coverage"
+          echo '{}' > pins.json
+          while read -r REGION; do
+            GEO_PATH=$(jq -r --arg id "$REGION" '.regions[] | select(.id==$id) | .geofabrikPath' scripts/regions.json)
+            [ -n "$GEO_PATH" ] && [ "$GEO_PATH" != null ] || { echo "::error::$REGION not in scripts/regions.json"; exit 1; }
+            curl -fsSL --retry 3 --retry-delay 10 -o region.poly "https://download.geofabrik.de/${GEO_PATH%-latest.osm.pbf}.poly"
+            F="out/${REGION}-valhalla-coverage.json"
+            node scripts/generate-valhalla-coverage.mjs --input region.poly --output "$F"
+            jq --arg r "$REGION" --argjson size "$(stat -c%s "$F")" --arg sha "$(sha256sum "$F" | cut -c1-16)" \
+              '.[$r] = {valhallaCoverageSize: $size, valhallaCoverageChecksum: $sha}' pins.json > pins.tmp && mv pins.tmp pins.json
+          done < todo.txt
+          # ADD ONLY: the jq below can set coverage fields on listed regions and nothing else.
+          jq --slurpfile pins pins.json '.regions |= with_entries(.value += ($pins[0][.key] // {}))' \
+            before/manifest.json > manifest.json
+          jq -S 'del(.regions[] | .valhallaCoverageSize, .valhallaCoverageChecksum)' before/manifest.json > a.json
+          jq -S 'del(.regions[] | .valhallaCoverageSize, .valhallaCoverageChecksum)' manifest.json > b.json
+          cmp a.json b.json || { echo "::error::backfill would change a non-coverage manifest field"; exit 1; }
+          jq -e --slurpfile b before/manifest.json '[.regions | to_entries[] | select($b[0].regions[.key].valhallaCoverageChecksum != null)
+            | .value.valhallaCoverageChecksum == $b[0].regions[.key].valhallaCoverageChecksum] | all' manifest.json > /dev/null \
+            || { echo "::error::backfill would change an existing coverage pin"; exit 1; }
+          cp manifest.json valhalla-manifest.json
+
+      - name: Upload coverage files, then the manifests
+        run: |
+          set -euo pipefail
+          if [ -n "$(ls out)" ]; then
+            gh release upload "$TAG" out/*-valhalla-coverage.json --clobber
+          fi
+          # Manifests LAST: a pin must never point at a file that is not there yet.
+          gh release upload "$TAG" manifest.json valhalla-manifest.json --clobber
+
+      - name: Prove the release
+        run: |
+          set -euo pipefail
+          bash scripts/check-valhalla-coverage.sh "$TAG" manifest.json
+          mkdir -p after
+          gh release download "$TAG" -D after -p manifest.json -p valhalla-manifest.json
+          cmp after/manifest.json manifest.json && cmp after/valhalla-manifest.json manifest.json
+          gh release view "$TAG" --json assets -q '.assets[] | select(.name | endswith("-valhalla-coverage.json") | not) | "\(.name) \(.size)"' \
+            | grep -v -E '^(manifest|valhalla-manifest)\.json ' | sort > after-other-assets.txt
+          cmp before/other-assets.txt after-other-assets.txt \
+            || { echo "::error::a pack or corridor asset changed"; exit 1; }
+          [ "$(gh release view "$TAG" --json isPrerelease -q .isPrerelease)" = true ]
+          {
+            echo "### Coverage backfill on $TAG"
+            echo "- regions backfilled: $(jq 'length' pins.json)"
+            echo "- regions in manifest: $(jq '.regions | length' manifest.json), all with coverage"
+            echo "- pack/corridor assets unchanged: $(wc -l < after-other-assets.txt)"
+          } >> "$GITHUB_STEP_SUMMARY"

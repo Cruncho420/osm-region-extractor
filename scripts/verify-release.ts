@@ -53,6 +53,8 @@
 import { spawn } from 'child_process';
 import { statSync, readFileSync } from 'fs';
 import { join, dirname } from 'path';
+import { createHash } from 'crypto';
+import { isValidCoverageDocument } from './generate-valhalla-coverage.mjs';
 
 // -----------------------------------------------------------------------------
 // Config / constants
@@ -72,6 +74,9 @@ interface ManifestRegion {
   /** Set only once a region has a Valhalla offline-routing pack published. */
   valhallaSize?: number;
   valhallaChecksum?: string;
+  /** Exact pack boundary sidecar. The app refuses to route on a pack without it. */
+  valhallaCoverageSize?: number;
+  valhallaCoverageChecksum?: string;
 }
 interface Manifest {
   version: string;
@@ -235,6 +240,42 @@ async function checkRemote(regionId: string, region: ManifestRegion, baseUrl: st
  * (buildValhallaPackUrl in the Rods repo), so it verifies the URL a device will
  * really request rather than one that merely resembles it.
  */
+/**
+ * The coverage sidecar is as load-bearing as the pack: the app downloads it beside
+ * the tar and REFUSES to route when it is missing, mis-pinned or fails its schema.
+ * 231 of 234 packs on valhalla-2026-09-02 once had none while this verifier was green.
+ */
+async function checkRemoteCoverage(
+  regionId: string,
+  region: ManifestRegion,
+  manifestVersion: string,
+  repoBase: string,
+): Promise<Result> {
+  const label = `${regionId} [coverage]`;
+  if (!region.valhallaCoverageSize || !/^[a-f0-9]{16}$/.test(region.valhallaCoverageChecksum ?? '')) {
+    return { regionId: label, status: 'MISSING', detail: 'no valhallaCoverageSize/valhallaCoverageChecksum pin' };
+  }
+  const url = `${repoBase}/releases/download/valhalla-${manifestVersion}/${regionId}-valhalla-coverage.json`;
+  try {
+    const response = await fetch(url, { redirect: 'follow' });
+    if (!response.ok) return { regionId: label, status: 'MISSING', detail: `HTTP ${response.status}` };
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length !== region.valhallaCoverageSize) {
+      return { regionId: label, status: 'SIZE_MISMATCH', detail: `${bytes.length} B != manifest ${region.valhallaCoverageSize} B` };
+    }
+    const sha16 = createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+    if (sha16 !== region.valhallaCoverageChecksum) {
+      return { regionId: label, status: 'CHECKSUM_MISMATCH', detail: `${sha16} != manifest ${region.valhallaCoverageChecksum}` };
+    }
+    if (!isValidCoverageDocument(JSON.parse(bytes.toString('utf8')))) {
+      return { regionId: label, status: 'CORRUPT', detail: 'fails the app coverage schema' };
+    }
+    return { regionId: label, status: 'ok', detail: `sha256 matches (${sha16}), schema valid` };
+  } catch (error) {
+    return { regionId: label, status: 'CORRUPT', detail: (error instanceof Error ? error.message : String(error)).slice(0, 300) };
+  }
+}
+
 async function checkRemoteValhalla(
   regionId: string,
   region: ManifestRegion,
@@ -393,6 +434,9 @@ async function main(): Promise<void> {
     valhallaResults = await runPool(valhallaRegions, concurrency, ([regionId, region]) =>
       checkRemoteValhalla(regionId, region, manifest.version, repoBase),
     );
+    valhallaResults.push(...(await runPool(valhallaRegions, concurrency, ([regionId, region]) =>
+      checkRemoteCoverage(regionId, region, manifest.version, repoBase),
+    )));
   }
 
   const results = [...sqliteResults, ...valhallaResults];
@@ -436,7 +480,9 @@ async function main(): Promise<void> {
       // would send whoever reads the annotation looking for a file that does not exist.
       const asset = f.regionId.endsWith(' [valhalla]')
         ? `${f.regionId.replace(' [valhalla]', '')}-valhalla.tar.gz`
-        : `${f.regionId}.sqlite.gz`;
+        : f.regionId.endsWith(' [coverage]')
+          ? `${f.regionId.replace(' [coverage]', '')}-valhalla-coverage.json`
+          : `${f.regionId}.sqlite.gz`;
       console.error(`::error title=Region ${f.regionId} ${f.status}::${asset} failed integrity (${f.status}): ${f.detail}`);
     }
     console.error(
