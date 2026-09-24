@@ -159,6 +159,9 @@ env:
     "europe-germany-bremen":"53.083,8.813|53.170,8.625",
     "asia-afghanistan":"34.529,69.172|34.431,70.447",
     "asia-china-guizhou":"26.647,106.630|27.725,106.927",
+    "asia-kazakhstan":"43.238,76.945|51.169,71.449",
+    "asia-jordan":"31.953,35.910|29.532,35.006",
+    "asia-malaysia-singapore-brunei":"3.139,101.687|1.492,103.741",
     "asia-india-north-eastern-zone":"26.144,91.736|25.578,91.893",
     "europe-lithuania":"54.687,25.280|54.897,23.914",
     "north-america-us-california":"34.05,-118.24|32.72,-117.16",
@@ -673,16 +676,27 @@ jobs:
             echo "admin_repaired=false" >> "$GITHUB_OUTPUT"
           fi
 
-          # Assert (repaired or natural): every row for this country carries the
-          # table's driving side. A natural row can be wrong too — Valhalla sets
-          # drive_on_right by matching the relation NAME against its own list.
-          OWN_ROWS=$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2 AND iso_code='$ISO';")
-          BAD_ROWS=$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2 AND iso_code='$ISO' AND drive_on_right<>$EXPECT_DOR;")
-          if [ "$OWN_ROWS" -lt 1 ] || [ "$BAD_ROWS" -ne 0 ]; then
-            echo "::error::[$REGION] driving side not as expected for iso=$ISO (rows=$OWN_ROWS, wrong-side rows=$BAD_ROWS, want drive_on_right=$EXPECT_DOR). Pack rejected."
-            exit 1
+          # Correct, then assert, every natural row of this extract's member
+          # countries. Valhalla sets drive_on_right by matching the relation NAME
+          # against its own list, so a natural row can be wrong: the 2026-09-24
+          # rebuild built Brunei ("Brunei بروني") as RIGHT-hand inside the
+          # malaysia-singapore-brunei extract. `members` lists every country of a
+          # multi-country extract (default: just iso); all share one side.
+          MEMBERS=$(echo "$ENTRY" | jq -r '[(.members // [.iso])[] | "'"'"'" + . + "'"'"'"] | join(",")')
+          WRONG=$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2 AND iso_code IN ($MEMBERS) AND drive_on_right<>$EXPECT_DOR;")
+          if [ "$WRONG" -ne 0 ]; then
+            echo "Correcting $WRONG natural admin_level=2 row(s) in ($MEMBERS) to drive_on_right=$EXPECT_DOR:"
+            docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" spatialite /data/admins.sqlite \
+              "SELECT iso_code, name, drive_on_right FROM admins WHERE admin_level=2 AND iso_code IN ($MEMBERS) AND drive_on_right<>$EXPECT_DOR; UPDATE admins SET drive_on_right=$EXPECT_DOR WHERE admin_level=2 AND iso_code IN ($MEMBERS);"
+            echo "admin_side_corrected=$WRONG" >> "$GITHUB_OUTPUT"
           fi
-          echo "Driving side verified: $OWN_ROWS admin_level=2 row(s) for iso=$ISO, all drive_on_right=$EXPECT_DOR"
+          FOREIGN=$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2 AND (iso_code IS NULL OR iso_code NOT IN ($MEMBERS));")
+          if [ "$FOREIGN" -ne 0 ]; then
+            echo "::warning::[$REGION] $FOREIGN admin_level=2 row(s) outside ($MEMBERS) left as Valhalla built them (neighbour inside the extract buffer)"
+          fi
+          OWN_ROWS=$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2 AND iso_code='$ISO';")
+          BAD_ROWS=$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2 AND iso_code IN ($MEMBERS) AND drive_on_right<>$EXPECT_DOR;")
+          echo "Driving side verified: $OWN_ROWS admin_level=2 row(s) for iso=$ISO, every row in ($MEMBERS) drive_on_right=$EXPECT_DOR"
           COUNTRY_ROWS=$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2;")
           echo "country_rows=$COUNTRY_ROWS" >> "$GITHUB_OUTPUT"
 
