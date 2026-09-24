@@ -74,6 +74,11 @@ on:
         required: false
         default: ''
         type: string
+      osm_date:
+        description: 'Geofabrik dated snapshot YYMMDD every region downloads (<path>-YYMMDD.osm.pbf). Empty = the 1st of the dataVersion month (YYMM01; Geofabrik keeps those for years).'
+        required: false
+        default: ''
+        type: string
       prune_old_smoke:
         description: 'Delete older valhalla-smoke-* prereleases after upload'
         required: false
@@ -98,14 +103,23 @@ permissions:
 # number of concurrent batches; the queue was not.
 
 env:
-  # Pinned to the digest `:latest` resolved to on 2026-09-24 (valhalla 3.7.0-d37aa595e),
-  # the same build every prior smoke/production run used. A floating `:latest` means a
-  # digest resolved today is not the digest a rebuild resolves next month — the roundabout
-  # driving-side investigation (BUG: constant roundabout_exit_count on sub-country regions,
-  # see the admin-completeness gate below) needed to diff behavior against a KNOWN version,
-  # and a float would have made "did the image change under us" one more untested variable.
-  # Bump this deliberately (new commit, noted why) when Valhalla ships a fix Rods needs.
-  VALHALLA_IMAGE: ghcr.io/valhalla/valhalla@sha256:4eec7684289daa17afe33b13c8ae9b5a590434acda1d805213c6feb704431239
+  # RT-18 (Rods FEAT-090): ONE engine for packs, phone and server. The phone embeds
+  # upstream Valhalla 3.6.3 @ e2f017b (valhalla-mobile rods-0.5.1-k21-r4 + one meili
+  # map-matching patch that no graph-build tool calls); the online server builds its
+  # continuous graph with this SAME image. This is upstream's own 3.6.3 release image
+  # (tag 3.6.3, built 2026-02-19 from e2f017b), pinned by digest.
+  #
+  # History, so nobody "restores" a float: until 2026-09-24 this was `:latest`, so every
+  # run built with whatever master was that day - 08-06 e84a20c3, 08-10 5a3d68ad,
+  # 08-20 70173a8b, 09-02 a7d0d02e (the published valhalla-2026-09-02 packs, master
+  # ~7f372987b), 09-23 c9c1f9e6 (3.9.0-0baa5c687). PR #9 then pinned 4eec7684
+  # (3.7.0-d37aa595e, a July master build that was only a stale LOCAL `:latest`).
+  # None of those is the engine that reads the packs. Change this only together with
+  # the phone engine (valhalla-mobile) and the server pin (Rods engine-pin.json).
+  VALHALLA_IMAGE: ghcr.io/valhalla/valhalla@sha256:2b19ea46551a9687b245022551183829d817fdee9b58c5e7b2adb6e422749c43
+  # What `valhalla_build_tiles --version` must print from that image; the build fails otherwise.
+  VALHALLA_EXPECTED_VERSION: '3.6.3'
+  VALHALLA_CORE_SHA: e2f017b16080f49203de245a211b09efab09cf72
   # Hardcoded in-region sanity route endpoints, "lat,lon|lat,lon" (city pairs).
   # A region WITHOUT an entry here fails fast ON PURPOSE: the sanity route is the
   # only end-to-end proof the shipped pack can actually route. Generalize this
@@ -261,7 +275,10 @@ jobs:
       tag_name: ${{ steps.info.outputs.tag_name }}
       version: ${{ steps.info.outputs.version }}
       channel: ${{ steps.info.outputs.channel }}
+      osm_date: ${{ steps.snapshot.outputs.osm_date }}
+      osm_snapshot: ${{ steps.snapshot.outputs.osm_snapshot }}
     steps:
+      - uses: actions/checkout@v4
       - name: Resolve tag + dataVersion
         id: info
         run: |
@@ -300,6 +317,26 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
           echo "Channel: $CHANNEL   Tag: $TAG   dataVersion: $VERSION"
+
+      # ONE OSM snapshot per release (RT-18 "one data release"). Every region job
+      # downloads Geofabrik's DATED file <path>-<osm_date>.osm.pbf instead of
+      # -latest, so a batch that runs across Geofabrik's ~20:00 UTC roll, or days
+      # later, still gets the same data - and so can the server's graph build box.
+      # The snapshot id is the PBF header's replication timestamp, read here once
+      # from the first 256 KB of a small probe file; every region must match it.
+      - name: Resolve the OSM snapshot
+        id: snapshot
+        run: |
+          set -euo pipefail
+          OSM_DATE="${{ inputs.osm_date }}"
+          VERSION="${{ steps.info.outputs.version }}"
+          [ -n "$OSM_DATE" ] || OSM_DATE="$(echo "$VERSION" | cut -c3-4)$(echo "$VERSION" | cut -c6-7)01"
+          [[ "$OSM_DATE" =~ ^[0-9]{6}$ ]] || { echo "::error::osm_date '$OSM_DATE' is not YYMMDD"; exit 1; }
+          curl -fsSL --retry 3 -r 0-262143 -o probe.pbf "https://download.geofabrik.de/europe/andorra-${OSM_DATE}.osm.pbf"
+          SNAP=$(python3 scripts/pbf_snapshot.py probe.pbf)
+          echo "osm_date=$OSM_DATE" >> "$GITHUB_OUTPUT"
+          echo "osm_snapshot=$SNAP" >> "$GITHUB_OUTPUT"
+          echo "OSM snapshot: Geofabrik $OSM_DATE = $SNAP"
 
       - name: Create the release if it does not exist
         if: inputs.upload
@@ -422,9 +459,18 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p work
-          URL="https://download.geofabrik.de/${{ steps.meta.outputs.geo_path }}"
+          GEO_PATH="${{ steps.meta.outputs.geo_path }}"
+          OSM_DATE="${{ needs.prepare-release.outputs.osm_date }}"
+          case "$GEO_PATH" in *-latest.osm.pbf) ;; *) echo "::error::geofabrikPath '$GEO_PATH' is not <name>-latest.osm.pbf"; exit 1;; esac
+          URL="https://download.geofabrik.de/${GEO_PATH%-latest.osm.pbf}-${OSM_DATE}.osm.pbf"
           echo "URL: $URL"
           curl -fL --retry 3 --retry-delay 30 --connect-timeout 30 -o work/region.osm.pbf "$URL"
+          SNAP=$(python3 scripts/pbf_snapshot.py work/region.osm.pbf)
+          if [ "$SNAP" != "${{ needs.prepare-release.outputs.osm_snapshot }}" ]; then
+            echo "::error::[$REGION] PBF snapshot $SNAP is not the release snapshot ${{ needs.prepare-release.outputs.osm_snapshot }}"
+            exit 1
+          fi
+          echo "osm_snapshot=$SNAP" >> "$GITHUB_OUTPUT"
           PBF_BYTES=$(stat -c%s work/region.osm.pbf)
           echo "pbf_bytes=$PBF_BYTES" >> "$GITHUB_OUTPUT"
           echo "pbf_mb=$((PBF_BYTES / 1024 / 1024))" >> "$GITHUB_OUTPUT"
@@ -455,6 +501,10 @@ jobs:
           VALHALLA_VERSION=$(docker run --rm "$VALHALLA_REF" valhalla_build_tiles --version | tail -1)
           echo "valhalla_version=$VALHALLA_VERSION" >> "$GITHUB_OUTPUT"
           echo "Valhalla engine version: $VALHALLA_VERSION"
+          if [ "$VALHALLA_VERSION" != "$VALHALLA_EXPECTED_VERSION" ]; then
+            echo "::error::image reports $VALHALLA_VERSION, the phone/server engine is $VALHALLA_EXPECTED_VERSION (RT-18: one engine) - refusing to build"
+            exit 1
+          fi
 
       - name: Compute timezone cache key (month-scoped)
         id: tzkey
@@ -932,7 +982,8 @@ jobs:
             --arg admin_repaired "${{ steps.admin_check.outputs.admin_repaired }}" \
             --arg admin_repair_country "${{ steps.admin_check.outputs.admin_repair_country }}" \
             --arg roundabout_variance "${{ steps.sanity.outputs.roundabout_variance }}" \
-            '{region: $region, pbf_mb: $pbf_mb, tiles_seconds: $tiles_seconds,
+            --arg osm_snapshot "${{ steps.pbf.outputs.osm_snapshot }}" \
+            '{region: $region, osm_snapshot: $osm_snapshot, pbf_mb: $pbf_mb, tiles_seconds: $tiles_seconds,
               gz_bytes: $gz_bytes, gz_mb: $gz_mb, sha256: $sha256, sha16: $sha16,
               sanity: $sanity, concurrency: $concurrency, retried: $retried,
               gph_count: $gph_count, image: $image, valhalla_version: $valhalla_version,
@@ -1207,8 +1258,35 @@ jobs:
 
           # Only the manifests: every tar and corridors.json was uploaded by the
           # build job that produced it, right after its sanity gate.
+          # RT-18 release-inputs contract, read by the Rods server's graph build
+          # (server/valhalla-online/graph/build-graph.sh): the exact engine image,
+          # OSM snapshot and driving-side table these packs were built from, so the
+          # server's continuous graph is built from the same inputs and stamped
+          # with the same releaseId. Accumulates like manifest.json, and refuses a
+          # batch whose engine, snapshot or table differs from earlier batches.
+          IMAGES=$(jq -r '.image' reports/*.json | sort -u)
+          SNAPS=$(jq -r '.osm_snapshot' reports/*.json | sort -u)
+          [ "$(echo "$IMAGES" | wc -l)" -eq 1 ] || { echo "::error::regions built with different images: $IMAGES"; exit 1; }
+          [ "$(echo "$SNAPS" | wc -l)" -eq 1 ] || { echo "::error::regions built from different OSM snapshots: $SNAPS"; exit 1; }
+          jq -n --arg releaseId "${{ steps.info.outputs.version }}" --arg tag "$TAG" \
+            --arg image "$IMAGES" --arg ver "$(jq -r '.valhalla_version' reports/*.json | sort -u | head -1)" \
+            --arg core "$VALHALLA_CORE_SHA" --arg snap "$SNAPS" \
+            --arg osmDate "${{ needs.prepare-release.outputs.osm_date }}" \
+            --arg commit "$GITHUB_SHA" --arg table "$(sha256sum scripts/country-driving-side.json | cut -d' ' -f1)" \
+            '{releaseId: $releaseId, tag: $tag, valhallaBuildImage: $image, valhallaBuildVersion: $ver,
+              valhallaCoreSha: $core, osmSnapshot: $snap, osmDate: $osmDate,
+              pbfUrlTemplate: ("https://download.geofabrik.de/{path}-" + $osmDate + ".osm.pbf"),
+              extractorCommit: $commit, drivingSideTableSha256: $table}' > release-files/valhalla-release-inputs.json
+          if gh release download "$TAG" -D prev-inputs --pattern 'valhalla-release-inputs.json' 2>/dev/null; then
+            for k in releaseId valhallaBuildImage osmSnapshot drivingSideTableSha256; do
+              a=$(jq -r ".$k" prev-inputs/valhalla-release-inputs.json); b=$(jq -r ".$k" release-files/valhalla-release-inputs.json)
+              [ "$a" = "$b" ] || { echo "::error::$TAG already published $k=$a, this batch has $b - one release, one engine + snapshot"; exit 1; }
+            done
+          fi
+          cat release-files/valhalla-release-inputs.json
+
           cd release-files
-          gh release upload "$TAG" manifest.json valhalla-manifest.json --clobber
+          gh release upload "$TAG" manifest.json valhalla-manifest.json valhalla-release-inputs.json --clobber
           echo "Manifests uploaded to $TAG."
 
       - name: Delete older smoke prereleases
