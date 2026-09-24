@@ -1,5 +1,5 @@
 /**
- * PURPOSE: Cut ONE country's Valhalla graph build into region-slice routing packs.
+ * PURPOSE: Cut ONE Valhalla graph build (a country, or a whole release) into routing packs.
  * RESPONSIBILITY: Put each graph tile into every piece whose outline touches it (so border
  *   tiles are shared, byte-identical, by both neighbours), give a tile that touches no outline
  *   to the nearest piece (so the union of all pieces is exactly the whole graph), hard-link
@@ -109,11 +109,12 @@ function distanceToOutline([x, y], outline) {
 }
 
 /** pieces: [{id, outline}] -> { assignments: Map(tile -> [pieceIds]), orphans: [tiles given to nearest] } */
-export function assignTiles(tiles, pieces) {
+export function assignTiles(tiles, pieces, { dropOrphans = false } = {}) {
   const assignments = new Map(); const orphans = [];
   for (const tile of tiles) {
     const box = tileBounds(tile);
     let owners = pieces.filter((p) => outlineTouchesBox(p.outline, box)).map((p) => p.id);
+    if (!owners.length && dropOrphans) { orphans.push(tile); assignments.set(tile, []); continue; }
     if (!owners.length) {
       const centre = [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2];
       const nearest = pieces.map((p) => [distanceToOutline(centre, p.outline), p.id]).sort((a, b) => a[0] - b[0])[0];
@@ -139,10 +140,10 @@ function sha256File(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
-export function slice({ tilesDir, pieces, outDir }) {
+export function slice({ tilesDir, pieces, outDir, dropOrphans = false }) {
   const tiles = listTiles(tilesDir);
   if (!tiles.length) throw new Error('No graph tiles found');
-  const { assignments, orphans } = assignTiles(tiles, pieces);
+  const { assignments, orphans } = assignTiles(tiles, pieces, { dropOrphans });
   const report = { tileCount: tiles.length, orphanTiles: orphans, pieces: {} };
   const inventories = Object.fromEntries(pieces.map((p) => [p.id, {}]));
   for (const tile of tiles) {
@@ -167,15 +168,28 @@ export function slice({ tilesDir, pieces, outDir }) {
   return report;
 }
 
+/**
+ * Two modes. Country (pilot): --slices region-slices.json --country <id>. Release (one graph build per
+ * release, Rods FEAT-090): --packs <json [{id}]> cuts EVERY pack of the release from the same build, so
+ * any two packs share byte-identical tiles wherever they overlap. --drop-orphans (trial cuts of a
+ * few packs only) leaves tiles that touch no outline out instead of giving them to the nearest pack.
+ */
 function main() {
-  const { values: args } = parseArgs({ options: Object.fromEntries(
-    ['slices', 'country', 'polys', 'tiles', 'out'].map((k) => [k, { type: 'string' }])) });
-  const config = JSON.parse(readFileSync(args.slices, 'utf8'));
-  const country = config.countries.find((c) => c.country === args.country);
-  if (!country) throw new Error(`Country ${args.country} not in ${args.slices}`);
-  const pieces = country.pieces.map((p) => ({
-    id: p.id, outline: prepareOutline(readFileSync(join(args.polys, `${p.id}.poly`), 'utf8')) }));
-  const report = slice({ tilesDir: args.tiles, pieces, outDir: args.out });
+  const { values: args } = parseArgs({ options: { ...Object.fromEntries(
+    ['slices', 'country', 'packs', 'polys', 'tiles', 'out'].map((k) => [k, { type: 'string' }])),
+  'drop-orphans': { type: 'boolean', default: false } } });
+  let ids;
+  if (args.packs) {
+    ids = JSON.parse(readFileSync(args.packs, 'utf8')).map((p) => p.id);
+  } else {
+    const config = JSON.parse(readFileSync(args.slices, 'utf8'));
+    const country = config.countries.find((c) => c.country === args.country);
+    if (!country) throw new Error(`Country ${args.country} not in ${args.slices}`);
+    ids = country.pieces.map((p) => p.id);
+  }
+  const pieces = ids.map((id) => ({
+    id, outline: prepareOutline(readFileSync(join(args.polys, `${id}.poly`), 'utf8')) }));
+  const report = slice({ tilesDir: args.tiles, pieces, outDir: args.out, dropOrphans: args['drop-orphans'] });
   console.log(JSON.stringify(report));
 }
 

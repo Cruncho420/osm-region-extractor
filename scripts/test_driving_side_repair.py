@@ -69,5 +69,15 @@ class RepairTests(unittest.TestCase):
         self.assertTrue(table['FR'][1])
 
 
+
+class PartBoxTests(unittest.TestCase):
+    def test_a_country_spanning_the_globe_is_matched_by_its_parts_not_its_overall_box(self):
+        us = {'type': 'MultiPolygon', 'coordinates': [square(-125, 25, 50)['coordinates'], square(172, 51, 7)['coordinates'],
+                                                      square(-180, 51, 10)['coordinates']]}
+        table = {'US': ('United States', True)}
+        sql, added = r.plan([], table, {'US': us}, (19.9, 52.9, 27.8, 57.5), [])
+        self.assertEqual(added, [])
+
+
 if __name__ == '__main__':
     unittest.main()

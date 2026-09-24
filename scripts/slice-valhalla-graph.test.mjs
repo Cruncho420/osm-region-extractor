@@ -56,3 +56,16 @@ test('border tiles go to both pieces, orphans to the nearest, union is the whole
   assert.equal(union.size, Object.keys(tiles).length);
   rmSync(root, { recursive: true });
 });
+
+test('a trial cut can drop orphans instead of loading them onto the nearest pack', () => {
+  const root = mkdtempSync(join(tmpdir(), 'slice-'));
+  const tilesDir = join(root, 'tiles');
+  const near = l2(24.0, 54.25), far = l2(30.0, 54.25);
+  for (const rel of [near, far]) { mkdirSync(dirname(join(tilesDir, rel)), { recursive: true }); writeFileSync(join(tilesDir, rel), rel); }
+  const report = slice({ tilesDir, outDir: join(root, 'out'), dropOrphans: true,
+    pieces: [{ id: 'west', outline: square('w', 23, 24.9) }] });
+  assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(root, 'out', 'west.tiles.json'), 'utf8'))), [near]);
+  assert.deepEqual(report.orphanTiles, [far]);
+  assert.equal(report.pieces.west.tiles, 1);
+  rmSync(root, { recursive: true });
+});

@@ -1,0 +1,81 @@
+name: Release Graph Trial
+
+# TRIAL of "one Valhalla graph build per release" (Rods FEAT-090, PM 2026-09-25): build ONE graph from
+# the whole Europe extract on a free runner at concurrency 1, cut it into a few packs, and MEASURE
+# peak disk, peak RAM, build time and how much packs grow at borders against today's per-country
+# packs. Publishes NOTHING: the report and the packs' sizes go to a workflow artifact only. The
+# per-country valhalla-tiles.yml stays the path that ships until the release build is proven.
+# Running out of disk is itself the answer (recorded in the step summary).
+
+on:
+  workflow_dispatch:
+    inputs:
+      pbf_url:
+        description: 'Input extract (dated Geofabrik URL)'
+        required: true
+        default: 'https://download.geofabrik.de/europe-260901.osm.pbf'
+        type: string
+      concurrency:
+        description: 'valhalla_build_tiles concurrency'
+        required: false
+        default: '1'
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  VALHALLA_IMAGE: ghcr.io/valhalla/valhalla@sha256:2b19ea46551a9687b245022551183829d817fdee9b58c5e7b2adb6e422749c43
+
+jobs:
+  europe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Free runner disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache /opt/microsoft /usr/local/share/powershell /usr/share/swift 2>/dev/null || true
+          sudo docker image prune -af > /dev/null || true
+          df -h / ; free -h ; nproc
+      - name: Pull the pinned engine
+        run: |
+          set -euo pipefail
+          docker pull -q "$VALHALLA_IMAGE"
+          echo "VALHALLA_REF=$(docker inspect --format '{{index .RepoDigests 0}}' "$VALHALLA_IMAGE")" >> "$GITHUB_ENV"
+      - name: One Europe build, cut into the trial packs
+        id: build
+        run: |
+          set -o pipefail
+          scripts/build-release-graph.sh --pbf-url "${{ inputs.pbf_url }}" --packs scripts/release-trial-packs.json \
+            --release europe-trial --work "$PWD/work" --image "$VALHALLA_REF" --bbox -32,27,46,82 \
+            --concurrency "${{ inputs.concurrency }}" --drop-orphans 2>&1 | tee build-output.log
+          echo "rc=$?" >> "$GITHUB_OUTPUT"
+      - name: Record the outcome (including an out-of-disk failure)
+        if: always()
+        run: |
+          {
+            echo "## Europe release-graph trial"
+            df -h / ; free -h
+            echo '```'; tail -40 build-output.log 2>/dev/null; echo '```'
+            if [ -s work/out/europe-trial-release-report.json ]; then
+              echo '```json'; jq '{seconds, pbfBytes, tileDirBytes, peakDiskUsedBytes, peakMemUsedBytes, slice: {tileCount: .slice.tileCount, orphanTiles: .slice.orphanTiles}, packs}' work/out/europe-trial-release-report.json; echo '```'
+            else
+              echo "No report: peak disk $(cat work/peak-disk 2>/dev/null) B, peak RAM $(cat work/peak-mem 2>/dev/null) B at failure"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the report (artifact only, never a release)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: europe-release-trial
+          path: |
+            work/out/europe-trial-release-report.json
+            work/slice.json
+            work/peak-disk
+            work/peak-mem
+            build-output.log
+          if-no-files-found: warn

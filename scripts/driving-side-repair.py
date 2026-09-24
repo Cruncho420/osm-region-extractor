@@ -63,11 +63,15 @@ def geometry_wkt(geometry):
     return 'MULTIPOLYGON(' + ', '.join('(' + ', '.join(ring_wkt(r) for r in p) + ')' for p in polygons) + ')'
 
 
-def bbox_of(geometry):
+def part_boxes(geometry):
+    """One box per polygon part: a country's overall box can span the globe (US via the Aleutians)."""
     polygons = [geometry['coordinates']] if geometry['type'] == 'Polygon' else geometry['coordinates']
-    xs = [x for p in polygons for r in p for x, _ in r]
-    ys = [y for p in polygons for r in p for _, y in r]
-    return min(xs), min(ys), max(xs), max(ys)
+    boxes = []
+    for polygon in polygons:
+        xs = [x for x, _ in polygon[0]]
+        ys = [y for _, y in polygon[0]]
+        boxes.append((min(xs), min(ys), max(xs), max(ys)))
+    return boxes
 
 
 def outlines(ne_path):
@@ -92,8 +96,7 @@ def plan(rows, table, ne, bbox, required):
     for iso, geometry in sorted(ne.items()):
         if iso in have or iso not in table:
             continue
-        a, b, c, d = bbox_of(geometry)
-        if c < x0 or a > x1 or d < y0 or b > y1:
+        if not any(c >= x0 and a <= x1 and d >= y0 and b <= y1 for a, b, c, d in part_boxes(geometry)):
             continue
         name, side = table[iso]
         name = name.replace("'", "''")
@@ -138,11 +141,13 @@ def main():
     if args.mode == 'plan':
         bbox = [float(v) for v in args.bbox.split(',')]
         sql, added = plan(rows, table, outlines(args.ne), bbox, [i for i in args.require.split(',') if i])
-        print('\n'.join(sql))
+        if sql:
+            print('\n'.join(sql))
         print(f'driving-side plan: added Natural Earth rows for {added or "none"}', file=sys.stderr)
         return 0
     fixes, unknown, anonymous = check(rows, table)
-    print('\n'.join(fixes))
+    if fixes:
+        print('\n'.join(fixes))
     print(f'driving-side check: {len(rows)} country rows, {len(fixes)} corrected, {anonymous} without ISO',
           file=sys.stderr)
     if unknown:
