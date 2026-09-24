@@ -1,0 +1,22 @@
+[
+ {"name": "Carlisle -> Dumfries (England N | Scotland)", "from": [54.8925, -2.9329], "to": [55.0708, -3.6051], "pieces": ["europe-great-britain-england-north", "europe-great-britain-scotland"]},
+ {"name": "Newcastle -> Edinburgh (England N | Scotland)", "from": [54.9783, -1.6178], "to": [55.9533, -3.1883], "pieces": ["europe-great-britain-england-north", "europe-great-britain-scotland"]},
+ {"name": "Berwick-upon-Tweed -> Kelso (England N | Scotland)", "from": [55.7702, -2.0054], "to": [55.5985, -2.4331], "pieces": ["europe-great-britain-england-north", "europe-great-britain-scotland"]},
+ {"name": "Chester -> Wrexham (England N | Wales)", "from": [53.1934, -2.8931], "to": [53.0462, -2.9930], "pieces": ["europe-great-britain-england-north", "europe-great-britain-wales"]},
+ {"name": "Shrewsbury -> Welshpool (England N | Wales)", "from": [52.7073, -2.7553], "to": [52.6607, -3.1466], "pieces": ["europe-great-britain-england-north", "europe-great-britain-wales"]},
+ {"name": "Hereford -> Abergavenny (England N | Wales)", "from": [52.0565, -2.7160], "to": [51.8245, -3.0167], "pieces": ["europe-great-britain-england-north", "europe-great-britain-wales"]},
+ {"name": "Bristol -> Cardiff (England S | Wales)", "from": [51.4545, -2.5879], "to": [51.4816, -3.1791], "pieces": ["europe-great-britain-england-south", "europe-great-britain-wales"]},
+ {"name": "Gloucester -> Monmouth (England S | Wales)", "from": [51.8642, -2.2382], "to": [51.8116, -2.7163], "pieces": ["europe-great-britain-england-south", "europe-great-britain-wales"]},
+ {"name": "Birmingham -> Oxford (England N | S)", "from": [52.4862, -1.8904], "to": [51.7520, -1.2577], "pieces": ["europe-great-britain-england-north", "europe-great-britain-england-south"]},
+ {"name": "Northampton -> Milton Keynes (England N | S)", "from": [52.2405, -0.9027], "to": [52.0406, -0.7594], "pieces": ["europe-great-britain-england-north", "europe-great-britain-england-south"]},
+ {"name": "Nottingham -> Cambridge (England N | S)", "from": [52.9548, -1.1581], "to": [52.2053, 0.1218], "pieces": ["europe-great-britain-england-north", "europe-great-britain-england-south"]},
+ {"name": "Stamford -> Peterborough (England N | S)", "from": [52.6528, -0.4800], "to": [52.5695, -0.2405], "pieces": ["europe-great-britain-england-north", "europe-great-britain-england-south"]},
+ {"name": "Worcester -> Cheltenham (England N | S)", "from": [52.1936, -2.2216], "to": [51.8994, -2.0783], "pieces": ["europe-great-britain-england-north", "europe-great-britain-england-south"]},
+ {"name": "London -> Brighton (inside England S only)", "from": [51.5074, -0.1278], "to": [50.8225, -0.1372], "pieces": ["europe-great-britain-england-south"]},
+ {"name": "Cardiff -> Birmingham (Wales | England S | England N)", "from": [51.4816, -3.1791], "to": [52.4862, -1.8904], "pieces": ["europe-great-britain-wales", "europe-great-britain-england-south", "europe-great-britain-england-north"]},
+ {"name": "Bristol -> Glasgow (England S | England N | Scotland)", "from": [51.4545, -2.5879], "to": [55.8642, -4.2518], "pieces": ["europe-great-britain-england-south", "europe-great-britain-england-north", "europe-great-britain-scotland"]},
+ {"name": "Swansea -> Manchester (Wales | England N | England S)", "from": [51.6214, -3.9436], "to": [53.4808, -2.2426], "pieces": ["europe-great-britain-wales", "europe-great-britain-england-north", "europe-great-britain-england-south"]},
+ {"name": "Cardiff -> Edinburgh (all four pieces)", "from": [51.4816, -3.1791], "to": [55.9533, -3.1883], "pieces": ["europe-great-britain-wales", "europe-great-britain-england-south", "europe-great-britain-england-north", "europe-great-britain-scotland"]},
+ {"name": "NEGATIVE Cardiff -> Glasgow with only Wales + Scotland", "from": [51.4816, -3.1791], "to": [55.8642, -4.2518], "pieces": ["europe-great-britain-wales", "europe-great-britain-scotland"], "expect": "fail"},
+ {"name": "NEGATIVE Bristol -> Cardiff with only England S", "from": [51.4545, -2.5879], "to": [51.4816, -3.1791], "pieces": ["europe-great-britain-england-south"], "expect": "fail"}
+]
