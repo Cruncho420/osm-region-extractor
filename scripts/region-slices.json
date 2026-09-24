@@ -1,40 +1,67 @@
 {
   "schemaVersion": 1,
-  "_comment": "Region slices (Rods FEAT-090, owner rule 2026-09-24: split only a region whose full download - road + routing + map z0-14 - is over 2,000 MB, along natural sub-regions, into the fewest pieces of at most 2,000 MB). PILOT ONLY: read by region-slices-pilot.yml, never by the monthly osm-extract / valhalla-tiles runs. sources = Geofabrik paths (no -latest.osm.pbf) whose dated extracts make the piece's road data; outline = how scripts/build-slice-polys.py derives the stored scripts/polys/<id>.poly (absent = the single source's own Geofabrik .poly); clipRoadData = cut the merged sources to the outline (needed when the outline is smaller than its sources); mapMaxZoom defaults to 14.",
+  "_comment": "Region slices (Rods FEAT-090, owner rule 2026-09-24: split only a region whose full download - road + routing + map z0-14 - is over 2,000 MB, along natural sub-regions, into the fewest pieces of at most 2,000 MB). PILOT ONLY (phase 2: GB = 2 pieces as decided by Tadas 2026-09-24; Russia/Italy/Spain/Poland added to measure the near-cap pieces): read by region-slices-pilot.yml, never by the monthly osm-extract / valhalla-tiles runs. sources = Geofabrik paths (no -latest.osm.pbf) whose dated extracts make the piece's road data; outline = how scripts/build-slice-polys.py derives the stored scripts/polys/<id>.poly (absent = the single source's own Geofabrik .poly); clipRoadData = cut the merged sources to the outline (needed when the outline is smaller than its sources); mapMaxZoom defaults to 14.",
   "capMb": 2000,
   "countries": [
     {
       "country": "europe-great-britain",
       "pbf": "europe/great-britain",
       "pieces": [
-        { "id": "europe-great-britain-scotland", "name": "Scotland", "sources": ["europe/united-kingdom/scotland"] },
-        { "id": "europe-great-britain-wales", "name": "Wales", "sources": ["europe/united-kingdom/wales"] },
         {
-          "id": "europe-great-britain-england-north",
-          "name": "England - North and Midlands",
-          "sources": ["europe/united-kingdom/england"],
+          "id": "europe-great-britain-north",
+          "name": "England North, Wales and Scotland",
+          "sources": [
+            "europe/united-kingdom/england",
+            "europe/united-kingdom/wales",
+            "europe/united-kingdom/scotland"
+          ],
           "clipRoadData": true,
           "outline": {
             "union": [
-              "europe/united-kingdom/england/northumberland", "europe/united-kingdom/england/tyne-and-wear", "europe/united-kingdom/england/durham",
-              "europe/united-kingdom/england/cumbria", "europe/united-kingdom/england/lancashire", "europe/united-kingdom/england/merseyside",
-              "europe/united-kingdom/england/greater-manchester", "europe/united-kingdom/england/cheshire",
-              "europe/united-kingdom/england/north-yorkshire", "europe/united-kingdom/england/west-yorkshire", "europe/united-kingdom/england/south-yorkshire",
+              "europe/united-kingdom/england/northumberland",
+              "europe/united-kingdom/england/tyne-and-wear",
+              "europe/united-kingdom/england/durham",
+              "europe/united-kingdom/england/cumbria",
+              "europe/united-kingdom/england/lancashire",
+              "europe/united-kingdom/england/merseyside",
+              "europe/united-kingdom/england/greater-manchester",
+              "europe/united-kingdom/england/cheshire",
+              "europe/united-kingdom/england/north-yorkshire",
+              "europe/united-kingdom/england/west-yorkshire",
+              "europe/united-kingdom/england/south-yorkshire",
               "europe/united-kingdom/england/east-yorkshire-with-hull",
-              "europe/united-kingdom/england/derbyshire", "europe/united-kingdom/england/nottinghamshire", "europe/united-kingdom/england/lincolnshire",
-              "europe/united-kingdom/england/leicestershire", "europe/united-kingdom/england/rutland", "europe/united-kingdom/england/northamptonshire",
-              "europe/united-kingdom/england/shropshire", "europe/united-kingdom/england/staffordshire", "europe/united-kingdom/england/herefordshire",
-              "europe/united-kingdom/england/worcestershire", "europe/united-kingdom/england/warwickshire", "europe/united-kingdom/england/west-midlands"
-            ],
-            "within": "europe/united-kingdom/england"
+              "europe/united-kingdom/england/derbyshire",
+              "europe/united-kingdom/england/nottinghamshire",
+              "europe/united-kingdom/england/lincolnshire",
+              "europe/united-kingdom/england/leicestershire",
+              "europe/united-kingdom/england/rutland",
+              "europe/united-kingdom/england/northamptonshire",
+              "europe/united-kingdom/england/shropshire",
+              "europe/united-kingdom/england/staffordshire",
+              "europe/united-kingdom/england/herefordshire",
+              "europe/united-kingdom/england/worcestershire",
+              "europe/united-kingdom/england/warwickshire",
+              "europe/united-kingdom/england/west-midlands",
+              "europe/united-kingdom/wales",
+              "europe/united-kingdom/scotland"
+            ]
           }
         },
         {
           "id": "europe-great-britain-england-south",
-          "name": "England - South",
-          "sources": ["europe/united-kingdom/england"],
+          "name": "England South",
+          "sources": [
+            "europe/united-kingdom/england"
+          ],
           "clipRoadData": true,
-          "outline": { "union": ["europe/united-kingdom/england"], "minus": ["europe-great-britain-england-north"] }
+          "outline": {
+            "union": [
+              "europe/united-kingdom/england"
+            ],
+            "minus": [
+              "europe-great-britain-north"
+            ]
+          }
         }
       ]
     },
@@ -42,28 +69,335 @@
       "country": "north-america-canada",
       "pbf": "north-america/canada",
       "pieces": [
-        { "id": "north-america-canada-quebec", "name": "Quebec", "sources": ["north-america/canada/quebec"] },
-        { "id": "north-america-canada-ontario", "name": "Ontario", "sources": ["north-america/canada/ontario"] },
-        { "id": "north-america-canada-british-columbia", "name": "British Columbia", "sources": ["north-america/canada/british-columbia"] },
+        {
+          "id": "north-america-canada-quebec",
+          "name": "Quebec",
+          "sources": [
+            "north-america/canada/quebec"
+          ]
+        },
+        {
+          "id": "north-america-canada-ontario",
+          "name": "Ontario",
+          "sources": [
+            "north-america/canada/ontario"
+          ]
+        },
+        {
+          "id": "north-america-canada-british-columbia",
+          "name": "British Columbia",
+          "sources": [
+            "north-america/canada/british-columbia"
+          ]
+        },
         {
           "id": "north-america-canada-prairies",
           "name": "Alberta, Saskatchewan and Manitoba",
-          "sources": ["north-america/canada/alberta", "north-america/canada/saskatchewan", "north-america/canada/manitoba"],
-          "outline": { "union": ["north-america/canada/alberta", "north-america/canada/saskatchewan", "north-america/canada/manitoba"] }
+          "sources": [
+            "north-america/canada/alberta",
+            "north-america/canada/saskatchewan",
+            "north-america/canada/manitoba"
+          ],
+          "outline": {
+            "union": [
+              "north-america/canada/alberta",
+              "north-america/canada/saskatchewan",
+              "north-america/canada/manitoba"
+            ]
+          }
         },
         {
           "id": "north-america-canada-atlantic",
           "name": "Atlantic Canada",
-          "sources": ["north-america/canada/new-brunswick", "north-america/canada/nova-scotia", "north-america/canada/prince-edward-island", "north-america/canada/newfoundland-and-labrador"],
-          "outline": { "union": ["north-america/canada/new-brunswick", "north-america/canada/nova-scotia", "north-america/canada/prince-edward-island", "north-america/canada/newfoundland-and-labrador"] }
+          "sources": [
+            "north-america/canada/new-brunswick",
+            "north-america/canada/nova-scotia",
+            "north-america/canada/prince-edward-island",
+            "north-america/canada/newfoundland-and-labrador"
+          ],
+          "outline": {
+            "union": [
+              "north-america/canada/new-brunswick",
+              "north-america/canada/nova-scotia",
+              "north-america/canada/prince-edward-island",
+              "north-america/canada/newfoundland-and-labrador"
+            ]
+          }
         },
         {
           "id": "north-america-canada-north",
           "name": "Yukon and Northwest Territories",
-          "sources": ["north-america/canada/yukon", "north-america/canada/northwest-territories"],
-          "outline": { "union": ["north-america/canada/yukon", "north-america/canada/northwest-territories"] }
+          "sources": [
+            "north-america/canada/yukon",
+            "north-america/canada/northwest-territories"
+          ],
+          "outline": {
+            "union": [
+              "north-america/canada/yukon",
+              "north-america/canada/northwest-territories"
+            ]
+          }
         },
-        { "id": "north-america-canada-nunavut", "name": "Nunavut", "sources": ["north-america/canada/nunavut"], "mapMaxZoom": 12 }
+        {
+          "id": "north-america-canada-nunavut",
+          "name": "Nunavut",
+          "sources": [
+            "north-america/canada/nunavut"
+          ],
+          "mapMaxZoom": 12
+        }
+      ]
+    },
+    {
+      "country": "europe-italy",
+      "pbf": "europe/italy",
+      "pieces": [
+        {
+          "id": "europe-italy-north",
+          "name": "Northern Italy",
+          "sources": [
+            "europe/italy/nord-ovest",
+            "europe/italy/nord-est"
+          ],
+          "outline": {
+            "union": [
+              "europe/italy/nord-ovest",
+              "europe/italy/nord-est"
+            ]
+          }
+        },
+        {
+          "id": "europe-italy-centre-south",
+          "name": "Central and Southern Italy with the islands",
+          "sources": [
+            "europe/italy/centro",
+            "europe/italy/sud",
+            "europe/italy/isole"
+          ],
+          "outline": {
+            "union": [
+              "europe/italy/centro",
+              "europe/italy/sud",
+              "europe/italy/isole"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "country": "europe-spain",
+      "pbf": "europe/spain",
+      "pieces": [
+        {
+          "id": "europe-spain-north",
+          "name": "Northern Spain",
+          "sources": [
+            "europe/spain/galicia",
+            "europe/spain/asturias",
+            "europe/spain/cantabria",
+            "europe/spain/pais-vasco",
+            "europe/spain/navarra",
+            "europe/spain/la-rioja",
+            "europe/spain/aragon",
+            "europe/spain/castilla-y-leon"
+          ],
+          "outline": {
+            "union": [
+              "europe/spain/galicia",
+              "europe/spain/asturias",
+              "europe/spain/cantabria",
+              "europe/spain/pais-vasco",
+              "europe/spain/navarra",
+              "europe/spain/la-rioja",
+              "europe/spain/aragon",
+              "europe/spain/castilla-y-leon"
+            ]
+          }
+        },
+        {
+          "id": "europe-spain-south-east",
+          "name": "Southern and Eastern Spain",
+          "sources": [
+            "europe/spain/cataluna",
+            "europe/spain/valencia",
+            "europe/spain/islas-baleares",
+            "europe/spain/madrid",
+            "europe/spain/castilla-la-mancha",
+            "europe/spain/murcia",
+            "europe/spain/andalucia",
+            "europe/spain/extremadura",
+            "europe/spain/ceuta",
+            "europe/spain/melilla"
+          ],
+          "outline": {
+            "union": [
+              "europe/spain/cataluna",
+              "europe/spain/valencia",
+              "europe/spain/islas-baleares",
+              "europe/spain/madrid",
+              "europe/spain/castilla-la-mancha",
+              "europe/spain/murcia",
+              "europe/spain/andalucia",
+              "europe/spain/extremadura",
+              "europe/spain/ceuta",
+              "europe/spain/melilla"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "country": "europe-poland",
+      "pbf": "europe/poland",
+      "pieces": [
+        {
+          "id": "europe-poland-north",
+          "name": "Northern Poland (with Warsaw)",
+          "sources": [
+            "europe/poland/zachodniopomorskie",
+            "europe/poland/pomorskie",
+            "europe/poland/warminsko-mazurskie",
+            "europe/poland/podlaskie",
+            "europe/poland/mazowieckie",
+            "europe/poland/lodzkie",
+            "europe/poland/kujawsko-pomorskie"
+          ],
+          "outline": {
+            "union": [
+              "europe/poland/zachodniopomorskie",
+              "europe/poland/pomorskie",
+              "europe/poland/warminsko-mazurskie",
+              "europe/poland/podlaskie",
+              "europe/poland/mazowieckie",
+              "europe/poland/lodzkie",
+              "europe/poland/kujawsko-pomorskie"
+            ]
+          }
+        },
+        {
+          "id": "europe-poland-south",
+          "name": "Southern Poland",
+          "sources": [
+            "europe/poland/wielkopolskie",
+            "europe/poland/lubuskie",
+            "europe/poland/dolnoslaskie",
+            "europe/poland/opolskie",
+            "europe/poland/slaskie",
+            "europe/poland/malopolskie",
+            "europe/poland/podkarpackie",
+            "europe/poland/lubelskie",
+            "europe/poland/swietokrzyskie"
+          ],
+          "outline": {
+            "union": [
+              "europe/poland/wielkopolskie",
+              "europe/poland/lubuskie",
+              "europe/poland/dolnoslaskie",
+              "europe/poland/opolskie",
+              "europe/poland/slaskie",
+              "europe/poland/malopolskie",
+              "europe/poland/podkarpackie",
+              "europe/poland/lubelskie",
+              "europe/poland/swietokrzyskie"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "country": "asia-russia",
+      "pbf": "russia",
+      "pieces": [
+        {
+          "id": "asia-russia-central",
+          "name": "Central Russia (Moscow)",
+          "sources": [
+            "russia/central-fed-district"
+          ],
+          "outline": {
+            "union": [
+              "ne:RU:Moskva",
+              "ne:RU:Moskovskaya",
+              "ne:RU:Tver'",
+              "ne:RU:Yaroslavl'",
+              "ne:RU:Vladimir",
+              "ne:RU:Kostroma",
+              "ne:RU:Ivanovo",
+              "ne:RU:Ryazan'",
+              "ne:RU:Tula",
+              "ne:RU:Smolensk",
+              "ne:RU:Kaluga",
+              "ne:RU:Bryansk"
+            ]
+          },
+          "clipRoadData": true
+        },
+        {
+          "id": "asia-russia-south",
+          "name": "Southern Russia",
+          "sources": [
+            "russia/central-fed-district",
+            "russia/south-fed-district",
+            "russia/north-caucasus-fed-district",
+            "russia/crimean-fed-district"
+          ],
+          "outline": {
+            "union": [
+              "ne:RU:Voronezh",
+              "ne:RU:Lipetsk",
+              "ne:RU:Tambov",
+              "ne:RU:Orel",
+              "ne:RU:Kursk",
+              "ne:RU:Belgorod",
+              "russia/south-fed-district",
+              "russia/north-caucasus-fed-district",
+              "russia/crimean-fed-district"
+            ]
+          },
+          "clipRoadData": true
+        },
+        {
+          "id": "asia-russia-volga",
+          "name": "Volga",
+          "sources": [
+            "russia/volga-fed-district"
+          ]
+        },
+        {
+          "id": "asia-russia-north-west",
+          "name": "North-West Russia",
+          "sources": [
+            "russia/northwestern-fed-district"
+          ]
+        },
+        {
+          "id": "asia-russia-kaliningrad",
+          "name": "Kaliningrad",
+          "sources": [
+            "russia/kaliningrad"
+          ]
+        },
+        {
+          "id": "asia-russia-urals",
+          "name": "Urals",
+          "sources": [
+            "russia/ural-fed-district"
+          ]
+        },
+        {
+          "id": "asia-russia-siberia",
+          "name": "Siberia",
+          "sources": [
+            "russia/siberian-fed-district"
+          ]
+        },
+        {
+          "id": "asia-russia-far-east",
+          "name": "Russian Far East",
+          "sources": [
+            "russia/far-eastern-fed-district"
+          ]
+        }
       ]
     }
   ]

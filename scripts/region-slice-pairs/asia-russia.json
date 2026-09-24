@@ -1,0 +1,105 @@
+[
+{
+"name": "Moscow -> Nizhny Novgorod (Central | Volga)",
+"from": [
+55.7558,
+37.6173
+],
+"to": [
+56.2965,
+43.9361
+],
+"pieces": [
+"asia-russia-central",
+"asia-russia-volga"
+]
+},
+{
+"name": "Moscow -> Voronezh (Central | South)",
+"from": [
+55.7558,
+37.6173
+],
+"to": [
+51.672,
+39.1843
+],
+"pieces": [
+"asia-russia-central",
+"asia-russia-south"
+]
+},
+{
+"name": "Moscow -> St Petersburg (Central | North-West)",
+"from": [
+55.7558,
+37.6173
+],
+"to": [
+59.9343,
+30.3351
+],
+"pieces": [
+"asia-russia-central",
+"asia-russia-north-west"
+]
+},
+{
+"name": "Kazan -> Yekaterinburg (Volga | Urals)",
+"from": [
+55.7963,
+49.1088
+],
+"to": [
+56.8389,
+60.6057
+],
+"pieces": [
+"asia-russia-volga",
+"asia-russia-urals"
+]
+},
+{
+"name": "Samara -> Saratov (inside Volga only)",
+"from": [
+53.1959,
+50.1002
+],
+"to": [
+51.5331,
+46.0342
+],
+"pieces": [
+"asia-russia-volga"
+]
+},
+{
+"name": "Rostov-on-Don -> Voronezh (South, inside one piece)",
+"from": [
+47.2357,
+39.7015
+],
+"to": [
+51.672,
+39.1843
+],
+"pieces": [
+"asia-russia-south"
+]
+},
+{
+"name": "Tyumen -> Omsk (Urals | Siberia)",
+"from": [
+57.1522,
+65.5272
+],
+"to": [
+54.9885,
+73.3242
+],
+"pieces": [
+"asia-russia-urals",
+"asia-russia-siberia"
+]
+}
+]
