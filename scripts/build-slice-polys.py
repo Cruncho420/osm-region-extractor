@@ -6,10 +6,16 @@ scripts/region-slices.json describes, and write the result in Geofabrik .poly fo
 DEPENDENCIES: shapely (local use only; CI reads the committed .poly files and never runs this).
 CONSUMERS: scripts/polys/*.poly, read by region-slices-pilot.yml (partition, coverage, road data).
 
-Run from the repo root:  python3 scripts/build-slice-polys.py
+Run from the repo root:  python3 scripts/build-slice-polys.py [country-id ...]
+(no country ids = every country; name some to write only theirs and leave the others' committed
+files untouched, since Geofabrik outlines drift between runs).
 A piece with `outline` gets a file; `outline.union` lists Geofabrik paths to union,
 `outline.within` clips to one Geofabrik path, `outline.minus` subtracts other pieces'
 outlines (so two halves of one region share an exact border, with no gap or overlap).
+`outline.seaward` (degrees) widens an outline built from Natural Earth states out to sea by that
+much, minus every other state of the same country: Natural Earth coasts are coarser than the
+Geofabrik outline, so without it a coastal road can fall in the sea strip, which the `minus` then
+hands to the OTHER piece.
 """
 import json
 import urllib.request
@@ -48,6 +54,14 @@ def natural_earth(token):
     return NE_FILE[(iso, name)]
 
 
+def other_states(tokens):
+    """Every Natural Earth state of the tokens' countries that is not one of the tokens."""
+    natural_earth(tokens[0])  # loads NE_FILE
+    isos = {t.split(":", 2)[1] for t in tokens}
+    mine = {tuple(t.split(":", 2)[1:]) for t in tokens}
+    return unary_union([g for key, g in NE_FILE.items() if key[0] in isos and key not in mine])
+
+
 def parse(text):
     """Geofabrik .poly -> shapely geometry (outer rings unioned, '!' rings subtracted)."""
     lines = [l.strip() for l in text.splitlines() if l.strip()][1:]
@@ -81,8 +95,12 @@ def write(path, name, geom):
 
 
 def main():
+    import sys
     config = json.loads((ROOT / "region-slices.json").read_text())
+    only = set(sys.argv[1:])
     for country in config["countries"]:
+        if only and country["country"] not in only:
+            continue
         built = {}
         for piece in country["pieces"]:
             spec = piece.get("outline")
@@ -92,6 +110,8 @@ def main():
             # Close the few-hundred-metre gaps between neighbouring Geofabrik outlines,
             # or the piece that is later subtracted from its parent keeps them as slivers.
             geom = geom.buffer(CLOSE_DEG).buffer(-CLOSE_DEG)
+            if spec.get("seaward"):
+                geom = geom.buffer(spec["seaward"]).difference(other_states(spec["union"]))
             if spec.get("within"):
                 geom = geom.intersection(geofabrik_poly(spec["within"]))
             for other in spec.get("minus", []):
