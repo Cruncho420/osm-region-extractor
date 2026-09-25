@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "_comment": "Region slices (Rods FEAT-090, owner rule 2026-09-24: split only a region whose full download - road + routing + map z0-14 - is over 2,000 MB, along natural sub-regions, into the fewest pieces of at most 2,000 MB). PILOT ONLY (phase 2: GB = 2 pieces as decided by Tadas 2026-09-24; Russia/Italy/Spain/Poland added to measure the near-cap pieces): read by region-slices-pilot.yml, never by the monthly osm-extract / valhalla-tiles runs. sources = Geofabrik paths (no -latest.osm.pbf) whose dated extracts make the piece's road data; outline = how scripts/build-slice-polys.py derives the stored scripts/polys/<id>.poly (absent = the single source's own Geofabrik .poly); clipRoadData = cut the merged sources to the outline (needed when the outline is smaller than its sources); mapMaxZoom defaults to 14.",
+  "_comment": "Region slices (Rods FEAT-090, owner rule 2026-09-24: split only a region whose full download - road + routing + map z0-14 - is over 2,000 MB, along natural sub-regions, into the fewest pieces of at most 2,000 MB). The FINAL list (Tadas 2026-09-24: 12 regions -> 36 pieces; GB = 2 pieces). Read by region-slices-pilot.yml (road data + routing, pilot prerelease only) and by basemap-tiles.yml (production map files: a split country ships one map file per piece, never a whole-country file). Never read by the monthly osm-extract / valhalla-tiles runs. Japan, Indonesia, Norway, Australia, Mexico and Brazil-Sudeste were added 2026-09-25 (FEAT-090 L4) from the phase-2 piece names; their routing slices are not built yet. sources = Geofabrik paths (no -latest.osm.pbf) whose dated extracts make the piece's road data; outline = how scripts/build-slice-polys.py derives the stored scripts/polys/<id>.poly (absent = the single source's own Geofabrik .poly); clipRoadData = cut the merged sources to the outline (needed when the outline is smaller than its sources); mapMaxZoom defaults to 14.",
   "capMb": 2000,
   "countries": [
     {
@@ -397,6 +397,304 @@
           "sources": [
             "russia/far-eastern-fed-district"
           ]
+        }
+      ]
+    },
+    {
+      "country": "asia-japan",
+      "pbf": "asia/japan",
+      "pieces": [
+        {
+          "id": "asia-japan-east",
+          "name": "Eastern Japan (Hokkaido, Tohoku, Kanto)",
+          "sources": [
+            "asia/japan/hokkaido",
+            "asia/japan/tohoku",
+            "asia/japan/kanto"
+          ],
+          "outline": {
+            "union": [
+              "asia/japan/hokkaido",
+              "asia/japan/tohoku",
+              "asia/japan/kanto"
+            ]
+          },
+          "clipRoadData": true
+        },
+        {
+          "id": "asia-japan-central",
+          "name": "Central Japan (Chubu, Kansai)",
+          "sources": [
+            "asia/japan/chubu",
+            "asia/japan/kansai"
+          ],
+          "outline": {
+            "union": [
+              "asia/japan/chubu",
+              "asia/japan/kansai"
+            ],
+            "minus": [
+              "asia-japan-east"
+            ]
+          },
+          "clipRoadData": true
+        },
+        {
+          "id": "asia-japan-west",
+          "name": "Western Japan (Chugoku, Shikoku, Kyushu)",
+          "sources": [
+            "asia/japan/chugoku",
+            "asia/japan/shikoku",
+            "asia/japan/kyushu"
+          ],
+          "outline": {
+            "union": [
+              "asia/japan/chugoku",
+              "asia/japan/shikoku",
+              "asia/japan/kyushu"
+            ],
+            "minus": [
+              "asia-japan-east",
+              "asia-japan-central"
+            ]
+          },
+          "clipRoadData": true
+        }
+      ]
+    },
+    {
+      "country": "asia-indonesia",
+      "pbf": "asia/indonesia",
+      "pieces": [
+        {
+          "id": "asia-indonesia-java",
+          "name": "Java",
+          "sources": [
+            "asia/indonesia/java"
+          ],
+          "outline": {
+            "union": [
+              "asia/indonesia/java"
+            ]
+          },
+          "clipRoadData": true
+        },
+        {
+          "id": "asia-indonesia-outer",
+          "name": "Sumatra, Kalimantan and the eastern islands",
+          "sources": [
+            "asia/indonesia/sumatra",
+            "asia/indonesia/kalimantan",
+            "asia/indonesia/sulawesi",
+            "asia/indonesia/maluku",
+            "asia/indonesia/nusa-tenggara",
+            "asia/indonesia/papua"
+          ],
+          "outline": {
+            "union": [
+              "asia/indonesia/sumatra",
+              "asia/indonesia/kalimantan",
+              "asia/indonesia/sulawesi",
+              "asia/indonesia/maluku",
+              "asia/indonesia/nusa-tenggara",
+              "asia/indonesia/papua"
+            ],
+            "minus": [
+              "asia-indonesia-java"
+            ]
+          },
+          "clipRoadData": true
+        }
+      ]
+    },
+    {
+      "country": "europe-norway",
+      "pbf": "europe/norway",
+      "pieces": [
+        {
+          "id": "europe-norway-south",
+          "name": "Southern Norway",
+          "sources": [
+            "europe/norway/ostlandet",
+            "europe/norway/sorlandet",
+            "europe/norway/vestlandet"
+          ],
+          "outline": {
+            "union": [
+              "europe/norway/ostlandet",
+              "europe/norway/sorlandet",
+              "europe/norway/vestlandet"
+            ]
+          },
+          "clipRoadData": true
+        },
+        {
+          "id": "europe-norway-north",
+          "name": "Northern Norway (Trøndelag and north, with Svalbard)",
+          "sources": [
+            "europe/norway/trondelag",
+            "europe/norway/nord-norge",
+            "europe/norway/svalbard-janmayen"
+          ],
+          "outline": {
+            "union": [
+              "europe/norway/trondelag",
+              "europe/norway/nord-norge",
+              "europe/norway/svalbard-janmayen"
+            ],
+            "minus": [
+              "europe-norway-south"
+            ]
+          },
+          "clipRoadData": true
+        }
+      ]
+    },
+    {
+      "country": "australia-oceania-australia",
+      "pbf": "australia-oceania/australia",
+      "pieces": [
+        {
+          "id": "australia-oceania-australia-east",
+          "name": "Eastern Australia (NSW, ACT, Queensland, Victoria, Tasmania)",
+          "sources": [
+            "australia-oceania/australia/new-south-wales",
+            "australia-oceania/australia/act",
+            "australia-oceania/australia/queensland",
+            "australia-oceania/australia/victoria",
+            "australia-oceania/australia/tasmania",
+            "australia-oceania/australia/coral-sea-islands",
+            "australia-oceania/australia/norfolk-island"
+          ],
+          "outline": {
+            "union": [
+              "australia-oceania/australia/new-south-wales",
+              "australia-oceania/australia/act",
+              "australia-oceania/australia/queensland",
+              "australia-oceania/australia/victoria",
+              "australia-oceania/australia/tasmania",
+              "australia-oceania/australia/coral-sea-islands",
+              "australia-oceania/australia/norfolk-island"
+            ]
+          },
+          "clipRoadData": true
+        },
+        {
+          "id": "australia-oceania-australia-west",
+          "name": "Western and Central Australia (WA, SA, NT)",
+          "sources": [
+            "australia-oceania/australia/western-australia",
+            "australia-oceania/australia/south-australia",
+            "australia-oceania/australia/northern-territory",
+            "australia-oceania/australia/ashmore-cartier",
+            "australia-oceania/australia/christmas-island",
+            "australia-oceania/australia/cocos-islands",
+            "australia-oceania/australia/heard-mcdonald"
+          ],
+          "outline": {
+            "union": [
+              "australia-oceania/australia/western-australia",
+              "australia-oceania/australia/south-australia",
+              "australia-oceania/australia/northern-territory",
+              "australia-oceania/australia/ashmore-cartier",
+              "australia-oceania/australia/christmas-island",
+              "australia-oceania/australia/cocos-islands",
+              "australia-oceania/australia/heard-mcdonald"
+            ],
+            "minus": [
+              "australia-oceania-australia-east"
+            ]
+          },
+          "clipRoadData": true
+        }
+      ]
+    },
+    {
+      "country": "central-america-mexico",
+      "pbf": "north-america/mexico",
+      "pieces": [
+        {
+          "id": "central-america-mexico-north-west",
+          "name": "Northern and Western Mexico",
+          "sources": [
+            "north-america/mexico"
+          ],
+          "outline": {
+            "union": [
+              "ne:MX:Baja California",
+              "ne:MX:Baja California Sur",
+              "ne:MX:Sonora",
+              "ne:MX:Chihuahua",
+              "ne:MX:Coahuila",
+              "ne:MX:Nuevo León",
+              "ne:MX:Tamaulipas",
+              "ne:MX:Sinaloa",
+              "ne:MX:Durango",
+              "ne:MX:Zacatecas",
+              "ne:MX:San Luis Potosí",
+              "ne:MX:Aguascalientes",
+              "ne:MX:Nayarit",
+              "ne:MX:Jalisco",
+              "ne:MX:Colima"
+            ],
+            "within": "north-america/mexico",
+            "seaward": 0.2
+          },
+          "clipRoadData": true
+        },
+        {
+          "id": "central-america-mexico-centre-south",
+          "name": "Central and Southern Mexico",
+          "sources": [
+            "north-america/mexico"
+          ],
+          "outline": {
+            "union": [
+              "north-america/mexico"
+            ],
+            "minus": [
+              "central-america-mexico-north-west"
+            ]
+          },
+          "clipRoadData": true
+        }
+      ]
+    },
+    {
+      "country": "south-america-brazil-sudeste",
+      "pbf": "south-america/brazil/sudeste",
+      "pieces": [
+        {
+          "id": "south-america-brazil-sudeste-minas",
+          "name": "Minas Gerais and Espírito Santo",
+          "sources": [
+            "south-america/brazil/sudeste"
+          ],
+          "outline": {
+            "union": [
+              "ne:BR:Minas Gerais",
+              "ne:BR:Espírito Santo"
+            ],
+            "within": "south-america/brazil/sudeste",
+            "seaward": 0.2
+          },
+          "clipRoadData": true
+        },
+        {
+          "id": "south-america-brazil-sudeste-sp-rj",
+          "name": "São Paulo and Rio de Janeiro",
+          "sources": [
+            "south-america/brazil/sudeste"
+          ],
+          "outline": {
+            "union": [
+              "south-america/brazil/sudeste"
+            ],
+            "minus": [
+              "south-america-brazil-sudeste-minas"
+            ]
+          },
+          "clipRoadData": true
         }
       ]
     }

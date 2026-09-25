@@ -22,6 +22,21 @@ Each region produces a SQLite database (`{region-id}.sqlite.gz`) containing:
 - Road surfaces (asphalt, gravel, cobblestone, dirt, etc.)
 - Road ways (dense road geometry)
 
+## Offline map files (basemap) and split countries
+
+`basemap-tiles.yml` cuts one Protomaps PMTiles map file per unit onto a `basemap-<YYYY-MM-DD>`
+prerelease, with its own `manifest.json` written only when every unit is there. A unit is a region
+from `scripts/regions.json`, except that a country listed in `scripts/region-slices.json` (the 12
+countries whose download is over 2 GB: GB, Canada, Russia, Japan, Italy, Spain, Poland, Indonesia,
+Norway, Australia, Mexico, Brazil-Sudeste) ships as its pieces instead — 36
+`<piece-id>-basemap.pmtiles` files clipped to `scripts/polys/<piece-id>.poly` (or the piece's
+single Geofabrik outline), at zoom 14 unless the piece says otherwise (Nunavut: 12). A piece
+never drops a zoom to fit under 2 GiB; it fails the run instead. `scripts/basemap-units.mjs`
+is the unit list; `scripts/basemap-build-unit.sh` builds one. Regenerate a piece outline with
+`NE_ADMIN1=<ne_10m_admin_1_states_provinces.geojson> python3 scripts/build-slice-polys.py <country>`.
+R2 upload runs only when `R2_ACCOUNT_ID`, `R2_MAPS_ACCESS_KEY_ID` and `R2_MAPS_SECRET_ACCESS_KEY`
+(a bucket-scoped token, never an account-wide one) are all set; otherwise it is skipped.
+
 ## Manual Trigger
 
 To manually run the extraction:
