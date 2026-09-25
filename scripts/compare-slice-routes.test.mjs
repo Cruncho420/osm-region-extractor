@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { buildUnion, compareTrips, decodePolyline6 } from './compare-slice-routes.mjs';
+import { buildUnion, compareTrips, decodePolyline6, level2Tile, piecesAlongShape } from './compare-slice-routes.mjs';
+import { prepareOutline, tileBounds } from './slice-valhalla-graph.mjs';
 
 test('decodes a Valhalla polyline6', () => {
   // Google's reference example, at 1e6 precision.
@@ -31,4 +32,22 @@ test('a changed roundabout exit is reported even when the road is the same', () 
   assert.equal(same.identicalShape, true);
   assert.equal(same.maneuverDiffs.length, 0);
   assert.deepEqual(compareTrips(trip(2), trip(3)).maneuverDiffs.map((d) => d.index), [1]);
+});
+
+test('level2Tile is the inverse of the slicer tileBounds', () => {
+  for (const [lat, lon] of [[51.5074, -0.1278], [-33.87, 151.21], [64.1, -21.9], [0.01, 0.01]]) {
+    const [minLon, minLat, maxLon, maxLat] = tileBounds(level2Tile([lat, lon]));
+    assert.ok(lon >= minLon && lon < maxLon && lat >= minLat && lat < maxLat, `${lat},${lon}`);
+  }
+});
+
+test('a route needs every piece its shape enters; a point in no outline takes its tile owners', () => {
+  const box = (name, x0, x1) => `${name}\n1\n${x0} 0\n${x1} 0\n${x1} 1\n${x0} 1\n${x0} 0\nEND\nEND\n`;
+  const pieces = [{ id: 'w', outline: prepareOutline(box('w', 0, 0.5)) }, { id: 'e', outline: prepareOutline(box('e', 0.6, 1)) },
+    { id: 'x', outline: prepareOutline(box('x', 5, 6)) }];
+  const gap = [0.5, 0.55]; // [lat, lon] between w and e
+  const owners = new Map([[level2Tile(gap), ['w', 'x']]]);
+  assert.deepEqual(piecesAlongShape([[0.5, 0.1], [0.5, 0.2]], pieces, owners), ['w']);
+  assert.deepEqual(piecesAlongShape([[0.5, 0.1], [0.5, 0.8]], pieces, owners), ['e', 'w']);
+  assert.deepEqual(piecesAlongShape([[0.5, 0.1], gap], pieces, owners), ['w', 'x']);
 });
