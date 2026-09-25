@@ -324,6 +324,13 @@ jobs:
             # 4. The served descriptor is the one the report pinned, and it names exactly the map pieces.
             [ "$(stat -c%s "$DSC") $(sha256sum "$DSC" | cut -d' ' -f1)" = "$(jq -r '"\(.descriptor.bytes) \(.descriptor.sha256)"' "$R")" ] || { fail "descriptor bytes differ from the report pin"; continue; }
             [ "$(jq -c '[.regions[].regionId] | sort' "$DSC")" = "$(jq -c --arg c "$C" '[.countries[] | select(.country==$c) | .pieces[].id] | sort' scripts/region-slices.json)" ] || { fail "descriptor pieces differ from the map pieces"; continue; }
+            # 4b. Same BORDERS as the map pieces: each piece's outline pin is the committed
+            #     scripts/polys/<id>.poly that basemap-tiles.yml clips the map file with.
+            BORDER=true
+            while read -r ID PSHA; do
+              [ "$(sha256sum "scripts/polys/$ID.poly" | cut -d' ' -f1)" = "$PSHA" ] || { fail "$ID was cut from another outline than scripts/polys/$ID.poly"; BORDER=false; break; }
+            done < <(jq -r '.regions[] | "\(.regionId) \(.sourcePolygon.sha256)"' "$DSC")
+            $BORDER || continue
             # 5. Every file the descriptor names is served at its pinned size and sha256.
             OK=true
             while read -r FILE BYTES SHA; do
