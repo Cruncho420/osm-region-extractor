@@ -8,23 +8,25 @@
 #   valhalla_build_extract per pack -> N-pack install descriptor; plus a measurement report
 #   (peak disk, peak RAM, build time, per-pack sizes). Publishes NOTHING: callers upload.
 # USAGE:
-#   scripts/build-release-graph.sh --pbf-url URL --packs packs.json --release ID --work DIR \
+#   scripts/build-release-graph.sh --pbf-url URL [--pbf-url URL ...] --packs packs.json --release ID --work DIR \
 #       --image VALHALLA_REF --bbox minLon,minLat,maxLon,maxLat [--concurrency 1] [--drop-orphans]
+#   Several --pbf-url inputs are merged with osmium into ONE build (a multi-country trial).
 #   packs.json: [{"id": "europe-lithuania", "poly": "https://download.geofabrik.de/europe/lithuania.poly"}]
 #   (a "poly" of the form "file:<path>" uses a stored outline, e.g. scripts/polys/<id>.poly).
 # DEPENDENCIES: docker, node 20, python3, jq, curl, gzip, tar, sha256sum.
 # CONSUMERS: .github/workflows/release-graph-trial.yml (trial); the Scaleway monthly builder (owed).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-CONCURRENCY=1; DROP_ORPHANS=""
+CONCURRENCY=1; DROP_ORPHANS=""; PBF_URLS=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --pbf-url) PBF_URL=$2; shift 2;;
+    --pbf-url) PBF_URLS+=("$2"); shift 2;;
     --packs) PACKS=$(cd "$(dirname "$2")" && pwd)/$(basename "$2"); shift 2;;
     --release) RELEASE=$2; shift 2;;
     --work) WORK=$2; shift 2;;
     --image) REF=$2; shift 2;;
     --bbox) BBOX=$2; shift 2;;
+    --bbox=*) BBOX=${1#--bbox=}; shift;;
     --concurrency) CONCURRENCY=$2; shift 2;;
     --drop-orphans) DROP_ORPHANS=--drop-orphans; shift;;
     *) echo "unknown argument $1" >&2; exit 2;;
@@ -47,8 +49,23 @@ trap 'kill $SAMPLER 2>/dev/null || true' EXIT
 DISK0=$(df -B1 --output=used "$WORK" | tail -1 | tr -d ' ')
 T_START=$(date +%s)
 
-say "download $PBF_URL"
-curl -fL --retry 3 --retry-delay 30 -o "$WORK/input.osm.pbf" "$PBF_URL"
+PBF_URL=$(IFS=,; echo "${PBF_URLS[*]}")
+T0=$(date +%s)
+if [ "${#PBF_URLS[@]}" -eq 1 ]; then
+  say "download $PBF_URL"
+  curl -fL --retry 3 --retry-delay 30 -o "$WORK/input.osm.pbf" "${PBF_URLS[0]}"
+else
+  PARTS=()
+  for i in "${!PBF_URLS[@]}"; do
+    say "download ${PBF_URLS[$i]}"
+    curl -fL --retry 3 --retry-delay 30 -o "$WORK/part-$i.osm.pbf" "${PBF_URLS[$i]}"
+    PARTS+=("$WORK/part-$i.osm.pbf")
+  done
+  say "merge ${#PARTS[@]} extracts"
+  osmium merge --overwrite -o "$WORK/input.osm.pbf" "${PARTS[@]}"
+  rm -f "${PARTS[@]}"
+fi
+DOWNLOAD_S=$(( $(date +%s) - T0 ))
 PBF_BYTES=$(stat -c%s "$WORK/input.osm.pbf")
 SNAPSHOT=$(python3 "$HERE/pbf_snapshot.py" "$WORK/input.osm.pbf" || echo unknown)
 
@@ -114,13 +131,13 @@ fi
 
 kill $SAMPLER 2>/dev/null || true
 jq -n --arg release "$RELEASE" --arg url "$PBF_URL" --arg snap "$SNAPSHOT" --argjson pbf "$PBF_BYTES" \
-  --argjson admins "$ADMINS_S" --argjson tiles "$TILES_S" --argjson total "$(( $(date +%s) - T_START ))" \
+  --argjson download "$DOWNLOAD_S" --argjson admins "$ADMINS_S" --argjson tiles "$TILES_S" --argjson total "$(( $(date +%s) - T_START ))" \
   --argjson tileBytes "$TILE_BYTES" --argjson disk0 "$DISK0" --argjson peakDisk "$(cat "$WORK/peak-disk")" \
   --argjson peakMem "$(cat "$WORK/peak-mem")" --argjson conc "$CONCURRENCY" \
   --slurpfile slice "$WORK/slice.json" --slurpfile packs "$WORK/packs.json" --slurpfile desc "$WORK/descriptor-pin.json" \
   '{release: $release, pbfUrl: $url, osmSnapshot: $snap, pbfBytes: $pbf, concurrency: $conc,
-    seconds: {admins: $admins, tiles: $tiles, total: $total}, tileDirBytes: $tileBytes,
-    peakDiskUsedBytes: ($peakDisk - $disk0), peakMemUsedBytes: $peakMem,
+    seconds: {download: $download, admins: $admins, tiles: $tiles, total: $total}, tileDirBytes: $tileBytes,
+    peakDiskUsedBytes: ($peakDisk - $disk0), diskUsedBeforeBytes: $disk0, peakMemUsedBytes: $peakMem,
     slice: ($slice[0] | {tileCount, orphanTiles: (.orphanTiles | length), pieces}), packs: $packs[0], descriptor: $desc[0]}' \
   > "$WORK/out/$RELEASE-release-report.json"
 say "done: $WORK/out/$RELEASE-release-report.json"

@@ -22,7 +22,7 @@ rows() { SPATIALITE "SELECT IFNULL(iso_code,''), drive_on_right FROM admins WHER
 
 rows
 python3 "$HERE/driving-side-repair.py" plan --rows "$WORK/admin-rows.txt" --table "$HERE/country-driving-side.json" \
-  --ne "$NE" --bbox "$BBOX" --require "$REQUIRE" > "$WORK/admin-plan.sql"
+  --ne "$NE" --bbox="$BBOX" --require="$REQUIRE" > "$WORK/admin-plan.sql"
 if [ -s "$WORK/admin-plan.sql" ]; then
   docker run --rm -i -v "$WORK:/data" "$REF" spatialite /data/admins.sqlite < "$WORK/admin-plan.sql"
 fi

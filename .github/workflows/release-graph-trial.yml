@@ -10,10 +10,10 @@ name: Release Graph Trial
 on:
   workflow_dispatch:
     inputs:
-      pbf_url:
-        description: 'Input extract (dated Geofabrik URL)'
+      pbf_urls:
+        description: 'Space-separated dated Geofabrik extracts, merged into ONE build. Whole Europe (europe-260901) does not fit: its download alone took 3 h 18 min of the 6 h job cap (run 36076219258).'
         required: true
-        default: 'https://download.geofabrik.de/europe-260901.osm.pbf'
+        default: 'https://download.geofabrik.de/europe/lithuania-260901.osm.pbf https://download.geofabrik.de/europe/latvia-260901.osm.pbf https://download.geofabrik.de/europe/great-britain-260901.osm.pbf https://download.geofabrik.de/europe/germany/baden-wuerttemberg-260901.osm.pbf https://download.geofabrik.de/europe/germany/saarland-260901.osm.pbf https://download.geofabrik.de/europe/france/alsace-260901.osm.pbf https://download.geofabrik.de/europe/france/lorraine-260901.osm.pbf'
         type: string
       concurrency:
         description: 'valhalla_build_tiles concurrency'
@@ -41,6 +41,8 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache /opt/microsoft /usr/local/share/powershell /usr/share/swift 2>/dev/null || true
           sudo docker image prune -af > /dev/null || true
           df -h / ; free -h ; nproc
+      - name: Install osmium (merges several extracts into one build)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq osmium-tool
       - name: Pull the pinned engine
         run: |
           set -euo pipefail
@@ -50,8 +52,9 @@ jobs:
         id: build
         run: |
           set -o pipefail
-          scripts/build-release-graph.sh --pbf-url "${{ inputs.pbf_url }}" --packs scripts/release-trial-packs.json \
-            --release europe-trial --work "$PWD/work" --image "$VALHALLA_REF" --bbox -32,27,46,82 \
+          ARGS=(); for u in ${{ inputs.pbf_urls }}; do ARGS+=(--pbf-url "$u"); done
+          scripts/build-release-graph.sh "${ARGS[@]}" --packs scripts/release-trial-packs.json \
+            --release europe-trial --work "$PWD/work" --image "$VALHALLA_REF" --bbox=-11,41,28,61 \
             --concurrency "${{ inputs.concurrency }}" --drop-orphans 2>&1 | tee build-output.log
           echo "rc=$?" >> "$GITHUB_OUTPUT"
       - name: Record the outcome (including an out-of-disk failure)
