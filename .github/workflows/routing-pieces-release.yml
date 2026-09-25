@@ -255,7 +255,7 @@ jobs:
             --slurpfile slice work/slice.json --slurpfile packs work/packs.json --slurpfile routes work/routes.json \
             --slurpfile pin work/descriptor-pin.json --argjson provenance "$PROV" \
             '{country: $country, tag: $tag, runId: $run, image: $image, osmSnapshot: $snap, tileBuildSeconds: $tiles_s,
-              descriptor: {file: ($country + "-install-descriptor.json")} + $pin[0].descriptorPin,
+              descriptor: ({file: ($country + "-install-descriptor.json")} + $pin[0].descriptorPin),
               connectedGraphSha256: $pin[0].connectedGraphSha256,
               slice: ($slice[0] | {tileCount, orphanTiles: (.orphanTiles | length), pieces}), packs: $packs[0],
               parity: {need: $need, sampledCompared: ([$routes[0][] | select(.sampled == true)] | length),
