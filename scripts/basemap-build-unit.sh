@@ -9,7 +9,7 @@
 # CONSUMERS: .github/workflows/basemap-tiles.yml (build job, one call per unit of its batch).
 #
 # Args: $1 = unit JSON from scripts/basemap-units.mjs ({id, poly, maxZoom, country}).
-# Env:  TAG CHANNEL VERSION PLANET MAXZOOM UPLOAD REPO GH_TOKEN MAX_ASSET_BYTES
+# Env:  TAG CHANNEL VERSION PLANET MAXZOOM UPLOAD REPO GH_TOKEN MAX_ASSET_BYTES REBUILD_PIECES
 #       R2_ACCOUNT_ID R2_MAPS_ACCESS_KEY_ID R2_MAPS_SECRET_ACCESS_KEY (optional)
 set -euo pipefail
 UNIT="$1"
@@ -32,7 +32,9 @@ node scripts/poly-to-geojson.mjs "$W/region.poly" "$W/region.geojson"
 # ── reuse: a production resume where GitHub has the file but R2 does not. The R2 copy must be
 #    the SAME bytes the app pinned, so it is downloaded, never rebuilt.
 REUSE=false
-if [ "$CHANNEL" = production ] && gh release view "$TAG" -R "$REPO" --json assets -q '.assets[].name' | grep -qx "$F" \
+# rebuild_pieces (outline change): a piece is rebuilt and its published file replaced.
+REPLACE=false; [ "${REBUILD_PIECES:-false}" = true ] && [ -n "$PIECE_OF" ] && REPLACE=true
+if [ "$REPLACE" = false ] && [ "$CHANNEL" = production ] && gh release view "$TAG" -R "$REPO" --json assets -q '.assets[].name' | grep -qx "$F" \
    && gh release download "$TAG" -R "$REPO" -D "$W/prev" --pattern manifest-staging.json 2>/dev/null \
    && jq -e --arg r "$ID" '.regions[$r]' "$W/prev/manifest-staging.json" > /dev/null; then
   gh release download "$TAG" -R "$REPO" -D "$W" --pattern "$F"
@@ -79,10 +81,13 @@ else
   # ── GitHub upload (production assets are immutable)
   if [ "$UPLOAD" = true ]; then
     if [ "$CHANNEL" = production ]; then
-      if gh release view "$TAG" -R "$REPO" --json assets -q '.assets[].name' | grep -qx "$F"; then
+      if [ "$REPLACE" = true ]; then
+        gh release upload "$TAG" -R "$REPO" "$F" --clobber
+      elif gh release view "$TAG" -R "$REPO" --json assets -q '.assets[].name' | grep -qx "$F"; then
         echo "::error::$F already published on $TAG but not in its staging manifest — delete the asset and re-run"; exit 1
+      else
+        gh release upload "$TAG" -R "$REPO" "$F"
       fi
-      gh release upload "$TAG" -R "$REPO" "$F"
     else
       gh release upload "$TAG" -R "$REPO" "$F" --clobber
     fi
