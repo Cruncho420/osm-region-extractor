@@ -52,9 +52,9 @@ class RepairTests(unittest.TestCase):
             r.plan([], self.table, {}, (-9, 49, 2, 61), ['GB'])
 
     def test_check_corrects_wrong_sides_and_refuses_unknown_countries(self):
-        fixes, unknown, anonymous = r.check([('GB', 1), ('FR', 1), ('ZZ', 1), (None, 0)], self.table)
+        fixes, unknown, anonymous = r.check([('GB', 1), ('FR', 1), ('zz', 1), (None, 0)], self.table)
         self.assertEqual(fixes, ["UPDATE admins SET drive_on_right=0 WHERE admin_level=2 AND iso_code='GB';"])
-        self.assertEqual(unknown, ['ZZ'])
+        self.assertEqual(unknown, ['zz'])
         self.assertEqual(anonymous, 1)
 
     def test_parse_rows_and_multipolygon_wkt(self):
@@ -91,6 +91,17 @@ class OutlineTests(unittest.TestCase):
         self.assertEqual(len(fr['coordinates']), 2)
         table = {'FR': ('France', True)}
         self.assertEqual(r.plan([], table, {'FR': fr}, (0.4, 41.4, 2.8, 43.7), [])[1], ['FR'])
+
+
+class CompleteIsoTests(unittest.TestCase):
+    def test_countries_without_an_entry_resolve_from_the_left_hand_list(self):
+        table = r.load_table(Path(__file__).with_name('country-driving-side.json'))
+        self.assertEqual(table['LS'][1], False)   # Lesotho, an enclave in South Africa: left
+        self.assertEqual(table['NA'][1], False)   # Namibia: left
+        self.assertEqual(table['CH'][1], True)    # Switzerland: right
+        fixes, unknown, _ = r.check([('LS', 1), ('CH', 1)], table)
+        self.assertEqual(fixes, ["UPDATE admins SET drive_on_right=0 WHERE admin_level=2 AND iso_code='LS';"])
+        self.assertEqual(unknown, [])
 
 
 if __name__ == '__main__':

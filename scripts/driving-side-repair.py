@@ -26,19 +26,36 @@ import sys
 BUFFER_DEGREES = 0.02  # ~2 km: covers Natural Earth 1:10m border error against OSM's own rows.
 
 
+class Table(dict):
+    """ISO -> (name, driveOnRight). Explicit per-region entries first; any other ISO resolves from
+    the table's verified `_leftHandIso` list (every country not on it drives on the right)."""
+    left = frozenset()
+
+    def __missing__(self, iso):
+        if not isinstance(iso, str) or len(iso) != 2 or not iso.isupper():
+            raise KeyError(iso)
+        return (iso, iso not in self.left)
+
+    def __contains__(self, iso):
+        return dict.__contains__(self, iso) or (isinstance(iso, str) and len(iso) == 2 and iso.isupper())
+
+
 def load_table(path):
     """ISO -> (name, driveOnRight) from the verified per-region table (members share one side)."""
-    table = {}
+    table = Table()
     with open(path) as handle:
         data = json.load(handle)
+    table.left = frozenset(data.get('_leftHandIso', []))
     for key, entry in data.items():
         if key.startswith('_'):
             continue
         for iso in entry.get('members') or [entry['iso']]:
             side = bool(entry['driveOnRight'])
-            if iso in table and table[iso][1] != side:
+            if dict.__contains__(table, iso) and table[iso][1] != side:
                 raise ValueError(f'{iso} has two driving sides in the table')
             table[iso] = (entry['name'] if iso == entry['iso'] else iso, side)
+            if table.left and (iso in table.left) == side:
+                raise ValueError(f'{iso}: per-region entry disagrees with _leftHandIso')
     return table
 
 
