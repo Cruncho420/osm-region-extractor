@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "_comment": "Region slices (Rods FEAT-090, owner rule 2026-09-24: split only a region whose full download - road + routing + map z0-14 - is over 2,000 MB, along natural sub-regions, into the fewest pieces of at most 2,000 MB). The FINAL list (Tadas 2026-09-24: 12 regions -> 36 pieces; GB = 2 pieces). Read by region-slices-pilot.yml (road data + routing, pilot prerelease only) and by basemap-tiles.yml (production map files: a split country ships one map file per piece, never a whole-country file). Never read by the monthly osm-extract / valhalla-tiles runs. Japan, Indonesia, Norway, Australia, Mexico and Brazil-Sudeste were added 2026-09-25 (FEAT-090 L4) from the phase-2 piece names; their routing slices are not built yet. sources = Geofabrik paths (no -latest.osm.pbf) whose dated extracts make the piece's road data; outline = how scripts/build-slice-polys.py derives the stored scripts/polys/<id>.poly (absent = the single source's own Geofabrik .poly); clipRoadData = cut the merged sources to the outline (needed when the outline is smaller than its sources); mapMaxZoom defaults to 14.",
+  "_comment": "Region slices (Rods FEAT-090, owner rule 2026-09-24: split only a region whose full download - road + routing + map z0-14 - is over 2,000 MB, along natural sub-regions, into the fewest pieces of at most 2,000 MB). The FINAL list (Tadas 2026-09-24: 12 regions -> 36 pieces; GB = 2 pieces). Read by region-slices-pilot.yml (road data + routing, pilot prerelease only) and by basemap-tiles.yml (production map files: a split country ships one map file per piece, never a whole-country file). Every stored outline is REPARTITIONED by build-slice-polys.py (land stays with its admin units, sea and leftovers go to the nearest land; `land` = the admin units whose land counts when the extract is not a whole country, default the country's Natural Earth admin-0). Never read by the monthly osm-extract / valhalla-tiles runs. Japan, Indonesia, Norway, Australia, Mexico and Brazil-Sudeste were added 2026-09-25 (FEAT-090 L4) from the phase-2 piece names; their routing slices are not built yet. sources = Geofabrik paths (no -latest.osm.pbf) whose dated extracts make the piece's road data; outline = how scripts/build-slice-polys.py derives the stored scripts/polys/<id>.poly (every piece has one, so map, routing and app read the same repartitioned file); clipRoadData = cut the merged sources to the outline (needed when the outline is smaller than its sources); mapMaxZoom defaults to 14.",
   "capMb": 2000,
   "countries": [
     {
@@ -74,21 +74,36 @@
           "name": "Quebec",
           "sources": [
             "north-america/canada/quebec"
-          ]
+          ],
+          "outline": {
+            "union": [
+              "north-america/canada/quebec"
+            ]
+          }
         },
         {
           "id": "north-america-canada-ontario",
           "name": "Ontario",
           "sources": [
             "north-america/canada/ontario"
-          ]
+          ],
+          "outline": {
+            "union": [
+              "north-america/canada/ontario"
+            ]
+          }
         },
         {
           "id": "north-america-canada-british-columbia",
           "name": "British Columbia",
           "sources": [
             "north-america/canada/british-columbia"
-          ]
+          ],
+          "outline": {
+            "union": [
+              "north-america/canada/british-columbia"
+            ]
+          }
         },
         {
           "id": "north-america-canada-prairies",
@@ -144,7 +159,12 @@
           "sources": [
             "north-america/canada/nunavut"
           ],
-          "mapMaxZoom": 12
+          "mapMaxZoom": 12,
+          "outline": {
+            "union": [
+              "north-america/canada/nunavut"
+            ]
+          }
         }
       ]
     },
@@ -361,42 +381,75 @@
           "name": "Volga",
           "sources": [
             "russia/volga-fed-district"
-          ]
-        },
-        {
-          "id": "asia-russia-north-west",
-          "name": "North-West Russia",
-          "sources": [
-            "russia/northwestern-fed-district"
-          ]
+          ],
+          "outline": {
+            "union": [
+              "russia/volga-fed-district"
+            ]
+          }
         },
         {
           "id": "asia-russia-kaliningrad",
           "name": "Kaliningrad",
           "sources": [
             "russia/kaliningrad"
-          ]
+          ],
+          "outline": {
+            "union": [
+              "russia/kaliningrad"
+            ]
+          }
+        },
+        {
+          "id": "asia-russia-north-west",
+          "name": "North-West Russia",
+          "sources": [
+            "russia/northwestern-fed-district"
+          ],
+          "outline": {
+            "union": [
+              "russia/northwestern-fed-district"
+            ],
+            "minus": [
+              "asia-russia-kaliningrad"
+            ]
+          }
         },
         {
           "id": "asia-russia-urals",
           "name": "Urals",
           "sources": [
             "russia/ural-fed-district"
-          ]
+          ],
+          "outline": {
+            "union": [
+              "russia/ural-fed-district"
+            ]
+          }
         },
         {
           "id": "asia-russia-siberia",
           "name": "Siberia",
           "sources": [
             "russia/siberian-fed-district"
-          ]
+          ],
+          "outline": {
+            "union": [
+              "russia/siberian-fed-district"
+            ]
+          }
         },
         {
           "id": "asia-russia-far-east",
           "name": "Russian Far East",
           "sources": [
             "russia/far-eastern-fed-district"
-          ]
+          ],
+          "outline": {
+            "union": [
+              "russia/far-eastern-fed-district"
+            ]
+          }
         }
       ]
     },
@@ -696,6 +749,12 @@
           },
           "clipRoadData": true
         }
+      ],
+      "land": [
+        "ne:BR:Minas Gerais",
+        "ne:BR:Espírito Santo",
+        "ne:BR:São Paulo",
+        "ne:BR:Rio de Janeiro"
       ]
     }
   ]

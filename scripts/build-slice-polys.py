@@ -1,10 +1,21 @@
 #!/usr/bin/env python3
-"""PURPOSE: Write the stored outline (.poly) of every region-slice piece that is not a
-single Geofabrik region.
+"""PURPOSE: Write the stored outline (.poly) of EVERY region-slice piece.
 RESPONSIBILITY: Union / intersect / subtract Geofabrik .poly files exactly as
-scripts/region-slices.json describes, and write the result in Geofabrik .poly format.
-DEPENDENCIES: shapely (local use only; CI reads the committed .poly files and never runs this).
-CONSUMERS: scripts/polys/*.poly, read by region-slices-pilot.yml (partition, coverage, road data).
+scripts/region-slices.json describes, then REPARTITION the country: each piece keeps only its own
+land, and everything else (sea, the extract's buffer into neighbouring countries, overlaps between
+neighbouring Geofabrik outlines, land slivers) goes to the piece whose land is nearest. Written in
+Geofabrik .poly format.
+DEPENDENCIES: shapely >= 2.1 (local use only; CI reads the committed .poly files and never runs
+this); Natural Earth 1:10m admin-0 ($NE_ADMIN0) and admin-1 ($NE_ADMIN1), v5.1.2.
+CONSUMERS: scripts/polys/*.poly, read by basemap-tiles.yml (map files), routing-pieces-release.yml
+and region-slices-pilot.yml (routing, coverage, road data), and the Rods app's region-pieces.json.
+
+WHY THE REPARTITION (FEAT-090 border review 2026-09-25): Geofabrik outlines reach far out to sea,
+so "country minus the first piece" handed the second piece the first piece's whole coastline:
+Blackpool was 1 km from England South, Cabo San Lucas 23 km from Central Mexico, and the phone
+queues a neighbour within 30 km. Land borders stay where the admin units put them; the sea and
+every other leftover is split by nearest land, so a coastal city is as far from the other piece as
+its land border is.
 
 Run from the repo root:  python3 scripts/build-slice-polys.py [country-id ...]
 (no country ids = every country; name some to write only theirs and leave the others' committed
@@ -21,8 +32,11 @@ import json
 import urllib.request
 from pathlib import Path
 
-from shapely.geometry import MultiPolygon, Polygon
-from shapely import set_precision
+import math
+import os
+
+from shapely.geometry import MultiPoint, MultiPolygon, Polygon, shape
+from shapely import coverage_simplify, coverage_union_all, get_coordinates, set_precision, voronoi_polygons
 from shapely.ops import unary_union
 
 ROOT = Path(__file__).resolve().parent
@@ -52,6 +66,49 @@ def natural_earth(token):
                    for f in json.load(open(os.environ["NE_ADMIN1"]))["features"]}
     _, iso, name = token.split(":", 2)
     return NE_FILE[(iso, name)]
+
+
+MIN_SLIVER_KM2 = 50   # a smaller land part touching ANOTHER piece's land is a sliver, not an island
+SAMPLE_DEG = 0.02     # ~2 km between the land-edge samples that decide "nearest land"
+SIMPLIFY_DEG = 0.002  # ~200 m, applied to all pieces together so they keep shared edges
+
+
+def country_land(iso):
+    """Natural Earth 1:10m land of one country (ISO_A2_EH: Norway's ISO_A2 is -99)."""
+    feats = json.load(open(os.environ["NE_ADMIN0"]))["features"]
+    return unary_union([shape(f["geometry"]) for f in feats if f["properties"]["ISO_A2_EH"] == iso]).buffer(0)
+
+
+def parts(geom):
+    return list(geom.geoms) if hasattr(geom, "geoms") else ([] if geom.is_empty else [geom])
+
+
+def km2(geom):
+    return geom.area * 111.32 ** 2 * math.cos(math.radians(geom.centroid.y))
+
+
+def repartition(raw, land):
+    """raw: {id: outline as the config draws it} -> {id: outline}. The result covers the same
+    extent, each piece's land is its own admin units, and the rest goes to the nearest land."""
+    ids = list(raw)
+    extent = unary_union(list(raw.values()))
+    cores = {i: raw[i].intersection(land).difference(unary_union([raw[j] for j in ids if j != i])) for i in ids}
+    for i in ids:  # drop slivers: small land parts pressed against another piece's land
+        others = unary_union([cores[j] for j in ids if j != i])
+        cores[i] = unary_union([p for p in parts(cores[i]) if km2(p) >= MIN_SLIVER_KM2 or p.distance(others) > 0.01])
+    rest = extent.difference(unary_union(list(cores.values())))
+    points, owner, seen = [], [], set()
+    for i in ids:
+        edge = cores[i].simplify(SAMPLE_DEG / 4).boundary.segmentize(SAMPLE_DEG)
+        for x, y in get_coordinates(edge):
+            key = (round(x, 6), round(y, 6))
+            if key not in seen:
+                seen.add(key); points.append(key); owner.append(i)
+    cells = voronoi_polygons(MultiPoint(points), extend_to=extent.envelope.buffer(1), ordered=True)
+    near = {i: coverage_union_all([c for c, o in zip(cells.geoms, owner) if o == i]) for i in ids}
+    out = {i: unary_union([cores[i], rest.intersection(near[i])]).buffer(0) for i in ids}
+    simple = coverage_simplify([out[i] for i in ids], SIMPLIFY_DEG)
+    return {i: g.buffer(0) for i, g in zip(ids, simple)}
 
 
 def other_states(tokens):
@@ -94,6 +151,13 @@ def write(path, name, geom):
     path.write_text("\n".join(out) + "\n")
 
 
+def country_iso(pbf):
+    """The country's ISO code, by the token rule of valhalla-tiles.yml (continent/country/sub -> country)."""
+    bits = pbf.split("/")
+    token = bits[1] if len(bits) == 3 else bits[-1]
+    return json.loads((ROOT / "country-driving-side.json").read_text())[token]["iso"]
+
+
 def main():
     import sys
     config = json.loads((ROOT / "region-slices.json").read_text())
@@ -103,9 +167,7 @@ def main():
             continue
         built = {}
         for piece in country["pieces"]:
-            spec = piece.get("outline")
-            if not spec:
-                continue
+            spec = piece.get("outline") or {"union": [piece["sources"][0]]}
             geom = unary_union([geofabrik_poly(p) for p in spec["union"]])
             # Close the few-hundred-metre gaps between neighbouring Geofabrik outlines,
             # or the piece that is later subtracted from its parent keeps them as slivers.
@@ -116,15 +178,18 @@ def main():
                 geom = geom.intersection(geofabrik_poly(spec["within"]))
             for other in spec.get("minus", []):
                 geom = geom.difference(built[other])
+            built[piece["id"]] = geom.buffer(0)
+        land = (unary_union([natural_earth(t) for t in country["land"]]).buffer(0) if country.get("land")
+                else country_land(country_iso(country["pbf"])))
+        final = repartition(built, land)
+        for pid, geom in final.items():
             # Snap to the written precision so the file re-reads as valid geometry.
-            geom = set_precision(geom.buffer(0), 1e-7)
-            assert geom.is_valid and not geom.is_empty, piece["id"]
-            built[piece["id"]] = geom
-            target = ROOT / "polys" / f"{piece['id']}.poly"
+            geom = set_precision(unary_union([p for p in parts(geom) if km2(p) >= 0.01]), 1e-7)
+            assert geom.is_valid and not geom.is_empty, pid
+            target = ROOT / "polys" / f"{pid}.poly"
             target.parent.mkdir(exist_ok=True)
-            write(target, piece["id"], geom)
-            parts = len(geom.geoms) if isinstance(geom, MultiPolygon) else 1
-            print(f"{target.relative_to(ROOT.parent)}: {parts} polygon(s)")
+            write(target, pid, geom)
+            print(f"{target.relative_to(ROOT.parent)}: {len(parts(geom))} polygon(s), {km2(geom):,.0f} km2")
 
 
 if __name__ == "__main__":

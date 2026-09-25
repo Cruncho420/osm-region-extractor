@@ -82,6 +82,11 @@ on:
         required: false
         default: ''
         type: string
+      rebuild_pieces:
+        description: 'Production only: rebuild the split countries PIECES in place after an outline change (their manifest entries may change; nothing else may)'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -106,6 +111,7 @@ jobs:
         env:
           REGIONS_INPUT: ${{ inputs.regions }}
           TAG_INPUT: ${{ inputs.tag }}
+          REBUILD_PIECES: ${{ inputs.rebuild_pieces }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           R2_ON: ${{ secrets.R2_ACCOUNT_ID != '' && secrets.R2_MAPS_ACCESS_KEY_ID != '' && secrets.R2_MAPS_SECRET_ACCESS_KEY != '' }}
@@ -147,6 +153,11 @@ jobs:
               fi
             fi ;;
           esac
+          # rebuild_pieces: the pieces' outlines changed (scripts/polys), so they are never "done".
+          if [ "$REBUILD_PIECES" = true ]; then
+            node scripts/basemap-units.mjs scripts/regions.json scripts/region-slices.json | jq -r '.[] | select(.country) | .id' | sort -u > pieces.txt
+            comm -23 done.txt pieces.txt > done.tmp && mv done.tmp done.txt
+          fi
           comm -23 wanted.txt done.txt > todo.txt
           COUNT=$(grep -c . todo.txt || true)
           # GitHub caps a matrix at 256 jobs and there are 258 units: batch them, at most 200 jobs.
@@ -244,6 +255,7 @@ jobs:
           PLANET: ${{ needs.get-regions.outputs.planet }}
           MAXZOOM: ${{ inputs.maxzoom }}
           UPLOAD: ${{ inputs.upload }}
+          REBUILD_PIECES: ${{ inputs.rebuild_pieces }}
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_MAPS_ACCESS_KEY_ID: ${{ secrets.R2_MAPS_ACCESS_KEY_ID }}
           R2_MAPS_SECRET_ACCESS_KEY: ${{ secrets.R2_MAPS_SECRET_ACCESS_KEY }}
@@ -275,6 +287,7 @@ jobs:
           TAG: ${{ needs.prepare-release.outputs.tag_name }}
           VERSION: ${{ needs.prepare-release.outputs.version }}
           CHANNEL: ${{ needs.prepare-release.outputs.channel }}
+          REBUILD_PIECES: ${{ inputs.rebuild_pieces }}
           R2_ON: ${{ secrets.R2_ACCOUNT_ID != '' && secrets.R2_MAPS_ACCESS_KEY_ID != '' && secrets.R2_MAPS_SECRET_ACCESS_KEY != '' }}
         run: |
           set -euo pipefail
@@ -331,9 +344,19 @@ jobs:
           jq '{version, generatedAt, schema, regions: (.regions | map_values({basemapSize, basemapChecksum, basemapMaxZoom, basemapPlanet} + (if .pieceOf then {pieceOf} else {} end)))}' \
             "$ACC" > manifest.json
           if gh release download "$TAG" -R "$REPO" -D live --pattern manifest.json 2>/dev/null; then
-            cmp -s <(jq -S .regions live/manifest.json) <(jq -S .regions manifest.json) \
-              || { echo "::error::$TAG already has a DIFFERENT manifest.json — production manifests are immutable"; exit 1; }
-            echo "manifest.json already published and identical"
+            if [ "$REBUILD_PIECES" = true ]; then
+              # Outline change: ONLY piece entries may differ, and the set of units may not.
+              PIECES=$(jq -c '[.[] | select(.country) | .id]' units.json)
+              strip() { jq -S --argjson p "$PIECES" '.regions | with_entries(select(.key as $k | $p | index($k) | not))' "$1"; }
+              cmp -s <(strip live/manifest.json) <(strip manifest.json) || { echo "::error::rebuild_pieces changed a non-piece entry"; exit 1; }
+              cmp -s <(jq -S '.regions | keys' live/manifest.json) <(jq -S '.regions | keys' manifest.json) || { echo "::error::rebuild_pieces changed the unit set"; exit 1; }
+              gh release upload "$TAG" -R "$REPO" manifest.json --clobber
+              echo "manifest.json republished: piece entries only"
+            else
+              cmp -s <(jq -S .regions live/manifest.json) <(jq -S .regions manifest.json) \
+                || { echo "::error::$TAG already has a DIFFERENT manifest.json — production manifests are immutable"; exit 1; }
+              echo "manifest.json already published and identical"
+            fi
           else
             gh release upload "$TAG" -R "$REPO" manifest.json
           fi
