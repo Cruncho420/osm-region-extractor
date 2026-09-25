@@ -1,0 +1,379 @@
+name: Routing Pieces Release
+
+# Purpose: PRODUCTION routing packs for the pieces of a split country (Rods FEAT-090 L4). The map
+# files already ship per piece (basemap-tiles.yml); this publishes the matching routing packs so
+# the app's production pack manager can install the piece you are in instead of the whole country.
+#
+# Per country: ONE graph build from the same dated Geofabrik extract as the target valhalla-<date>
+# release, with the same digest-pinned engine and the driving-side repair from real outlines, cut
+# into pieces by whole tiles (scripts/slice-valhalla-graph.mjs) along exactly the outlines the map
+# pieces use (scripts/region-slices.json + scripts/polys). Then N sampled cross-piece routes are
+# driven on the union of the pieces each route needs and on the whole graph, and must be identical
+# (scripts/sample-slice-pairs.mjs + compare-slice-routes.mjs). Only a country that passes uploads.
+#
+# Release layout (what services/valhalla/valhallaPieceSource.ts reads, on the SAME release as the
+# country's whole pack, resolved as valhalla-<manifest version>):
+#   <piece>-valhalla.tar.gz, <piece>.inventory.json, <piece>.coverage.json  per piece
+#   <country>-install-descriptor.json                                      the connected-install pin set
+#   <country>-routing-pieces-report.json                                   evidence (parity, sizes, provenance)
+#   manifest.json + valhalla-manifest.json: regions[<country>].valhallaConnected = {file, bytes, sha256}
+#
+# Two steps on purpose: BUILD uploads assets nothing references yet; PUBLISH (the `publish` list)
+# adds valhallaConnected to the manifest only after the completeness gate: every piece of the
+# country served at its pinned bytes and sha256, the descriptor pin matching, and the parity
+# evidence complete. A country built but not in `publish` stays invisible to every app. To publish
+# a held country later, re-dispatch with countries empty and publish=<it>.
+#
+# R2: when the bucket-scoped secrets R2_ACCOUNT_ID, R2_MAPS_ACCESS_KEY_ID and
+# R2_MAPS_SECRET_ACCESS_KEY exist, the published pieces' archives are also copied to bucket
+# rods-maps (releases/<version>/<piece>/<file>). Without them that step skips.
+
+on:
+  workflow_dispatch:
+    inputs:
+      countries:
+        description: 'Countries to BUILD (comma list from scripts/region-slices.json, "all", or empty to build nothing)'
+        required: false
+        default: 'all'
+        type: string
+      publish:
+        description: 'Countries to PUBLISH to the manifest after the gate (comma list, or empty)'
+        required: false
+        default: 'europe-great-britain,north-america-canada,europe-italy,europe-spain,europe-poland,asia-russia'
+        type: string
+      tag:
+        description: 'Production routing release the pieces join (valhalla-YYYY-MM-DD, must already exist)'
+        required: false
+        default: 'valhalla-2026-09-02'
+        type: string
+      pairs:
+        description: 'Sampled cross-piece routes that must be compared per country'
+        required: false
+        default: '30'
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  # Same engine pin as valhalla-tiles.yml: upstream 3.6.3 @ e2f017b, the phone engine's core.
+  VALHALLA_IMAGE: ghcr.io/valhalla/valhalla@sha256:2b19ea46551a9687b245022551183829d817fdee9b58c5e7b2adb6e422749c43
+  VALHALLA_EXPECTED_VERSION: '3.6.3'
+
+jobs:
+  plan:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      countries: ${{ steps.plan.outputs.countries }}
+      build: ${{ steps.plan.outputs.build }}
+      osm_date: ${{ steps.plan.outputs.osm_date }}
+      osm_snapshot: ${{ steps.plan.outputs.osm_snapshot }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve countries and the target release
+        id: plan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COUNTRIES: ${{ inputs.countries }}
+          PUBLISH: ${{ inputs.publish }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^valhalla-[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "::error::tag must be valhalla-YYYY-MM-DD"; exit 1; }
+          # PRERELEASE is load-bearing: the release carries a manifest.json, and a normal release could
+          # become releases/latest, which every app resolves for the road-data manifest.
+          [ "$(gh release view "$TAG" --json isPrerelease -q .isPrerelease)" = true ] || { echo "::error::$TAG missing or not a prerelease"; exit 1; }
+          ALL=$(jq -c '[.countries[].country]' scripts/region-slices.json)
+          list() { echo "$1" | tr -d ' ' | jq -R -c 'split(",") | map(select(. != ""))'; }
+          C=$(list "$COUNTRIES"); [ "$(echo "$COUNTRIES" | tr -d ' ')" = all ] && C="$ALL"
+          P=$(list "$PUBLISH")
+          UNKNOWN=$(jq -rn --argjson all "$ALL" --argjson c "$C" --argjson p "$P" '($c + $p) - $all | join(" ")')
+          [ -z "$UNKNOWN" ] || { echo "::error::unknown country: $UNKNOWN"; exit 1; }
+          # The pieces must come from the release's own inputs: same OSM snapshot, same engine.
+          gh release download "$TAG" -p valhalla-release-inputs.json -D rel
+          [ "$(jq -r .valhallaBuildImage rel/valhalla-release-inputs.json)" = "$VALHALLA_IMAGE" ] || { echo "::error::$TAG was built with another engine image"; exit 1; }
+          { echo "countries=$C"; echo "build=$([ "$C" = '[]' ] && echo false || echo true)"
+            echo "osm_date=$(jq -r .osmDate rel/valhalla-release-inputs.json)"
+            echo "osm_snapshot=$(jq -r .osmSnapshot rel/valhalla-release-inputs.json)"; } >> "$GITHUB_OUTPUT"
+          echo "Build: $C  Publish: $P  Release inputs: $(jq -c '{osmDate, osmSnapshot}' rel/valhalla-release-inputs.json)"
+
+  routing:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      max-parallel: 6  # Geofabrik politeness
+      matrix:
+        country: ${{ fromJson(needs.plan.outputs.countries) }}
+    env:
+      COUNTRY: ${{ matrix.country }}
+      TAG: ${{ inputs.tag }}
+      OSM_DATE: ${{ needs.plan.outputs.osm_date }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuse to rebuild a published country (its pins are live)
+        run: |
+          set -euo pipefail
+          gh release download "$TAG" -p valhalla-manifest.json -D live
+          if jq -e --arg c "$COUNTRY" '.regions[$c].valhallaConnected' live/valhalla-manifest.json > /dev/null; then
+            echo "::error::$COUNTRY is already published on $TAG; production assets are immutable"; exit 1
+          fi
+      - name: Free runner disk (Canada's graph needs it)
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache /opt/microsoft /usr/local/share/powershell /usr/share/swift 2>/dev/null || true
+          df -h /
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Pull the pinned engine
+        run: |
+          set -euo pipefail
+          docker pull -q "$VALHALLA_IMAGE"
+          VALHALLA_REF=$(docker inspect --format '{{index .RepoDigests 0}}' "$VALHALLA_IMAGE")
+          V=$(docker run --rm "$VALHALLA_REF" valhalla_build_tiles --version | tail -1)
+          [ "$V" = "$VALHALLA_EXPECTED_VERSION" ] || { echo "::error::engine $V, expected $VALHALLA_EXPECTED_VERSION"; exit 1; }
+          echo "VALHALLA_REF=$VALHALLA_REF" >> "$GITHUB_ENV"
+
+      - name: Download the dated country extract (ONE graph build per country)
+        run: |
+          set -euo pipefail
+          mkdir -p work
+          PBF=$(jq -r --arg c "$COUNTRY" '.countries[] | select(.country==$c) | .pbf' scripts/region-slices.json)
+          echo "PBF_URL=https://download.geofabrik.de/${PBF}-${OSM_DATE}.osm.pbf" >> "$GITHUB_ENV"
+          curl -fL --retry 3 --retry-delay 30 -o work/region.osm.pbf "https://download.geofabrik.de/${PBF}-${OSM_DATE}.osm.pbf"
+          SNAP=$(python3 scripts/pbf_snapshot.py work/region.osm.pbf)
+          [ "$SNAP" = "${{ needs.plan.outputs.osm_snapshot }}" ] || { echo "::error::extract snapshot $SNAP, release was built from ${{ needs.plan.outputs.osm_snapshot }}"; exit 1; }
+          echo "OSM_SNAPSHOT=$SNAP" >> "$GITHUB_ENV"
+
+      - name: Restore world timezone DB
+        uses: actions/cache@v4
+        with:
+          path: work/tz_world.sqlite
+          key: valhalla-tzdata-slices-${{ needs.plan.outputs.osm_date }}
+
+      - name: Build admins + graph tiles (recipe of valhalla-tiles.yml, concurrency 1)
+        run: |
+          set -euo pipefail
+          D() { docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" "$@"; }
+          [ -s work/tz_world.sqlite ] || D valhalla_build_timezones > work/tz_world.sqlite
+          D valhalla_build_config --mjolnir-tile-dir /data/valhalla_tiles --mjolnir-tile-extract /data/unused.tar \
+            --mjolnir-timezone /data/tz_world.sqlite --mjolnir-admin /data/admins.sqlite > work/valhalla-base.json
+          jq '.mjolnir.concurrency = 1 | .mjolnir.max_cache_size = 262144000' work/valhalla-base.json > work/valhalla.json
+          D valhalla_build_admins -c /data/valhalla.json /data/region.osm.pbf
+          # Driving side from real outlines (PR #21); the token rule is valhalla-tiles.yml's
+          # (continent/country/sub -> country), so brazil/sudeste checks against Brazil.
+          PBF=$(jq -r --arg c "$COUNTRY" '.countries[] | select(.country==$c) | .pbf' scripts/region-slices.json)
+          TOKEN=$(echo "$PBF" | awk -F/ '{ print (NF == 3 ? $2 : $NF) }')
+          REQUIRE=$(jq -r --arg t "$TOKEN" '.[$t] // error("no driving-side entry for \($t)") | (.members // [.iso]) | join(",")' scripts/country-driving-side.json)
+          BBOX=$(jq -r --arg c "$COUNTRY" '.regions[] | select(.id==$c) | .bbox | "\(.[0]-1),\(.[1]-1),\(.[2]+1),\(.[3]+1)"' scripts/regions.json)
+          sudo chown -R "$(id -u):$(id -g)" work
+          scripts/repair-driving-side.sh "$PWD/work" "$VALHALLA_REF" "$BBOX" "$REQUIRE"
+          T0=$(date +%s)
+          D valhalla_build_tiles -c /data/valhalla.json /data/region.osm.pbf 2>&1 | tee work/build.log | tail -5
+          if grep -qE "Mismatch in end offset|terminate called" work/build.log || [ ! -d work/valhalla_tiles/2 ]; then
+            echo "::error::tile build failed or corrupt"; exit 1
+          fi
+          echo "TILES_SECONDS=$(( $(date +%s) - T0 ))" >> "$GITHUB_ENV"
+          sudo rm -f work/region.osm.pbf
+          sudo chown -R "$(id -u):$(id -g)" work
+
+      - name: Collect piece outlines (the map pieces' own)
+        run: |
+          set -euo pipefail
+          mkdir -p work/polys
+          jq -r --arg c "$COUNTRY" '.countries[] | select(.country==$c) | .pieces[] | "\(.id) \(if .outline then "stored" else .sources[0] end)"' scripts/region-slices.json |
+          while read -r ID SRC; do
+            if [ "$SRC" = stored ]; then cp "scripts/polys/$ID.poly" "work/polys/$ID.poly"
+            else curl -fsSL --retry 3 -o "work/polys/$ID.poly" "https://download.geofabrik.de/$SRC.poly"; fi
+          done
+
+      - name: Cut the graph into pieces (whole tiles, shared borders)
+        run: |
+          set -euo pipefail
+          node scripts/slice-valhalla-graph.mjs --slices scripts/region-slices.json --country "$COUNTRY" \
+            --polys work/polys --tiles work/valhalla_tiles --out work/pieces > work/slice.json
+          jq '{tileCount, orphans: (.orphanTiles | length), pieces}' work/slice.json
+
+      - name: Parity - sampled cross-piece routes, union of pieces vs whole graph
+        run: |
+          set -euo pipefail
+          node scripts/sample-slice-pairs.mjs --slices scripts/region-slices.json --country "$COUNTRY" --polys work/polys \
+            --tiles "$PWD/work/valhalla_tiles" --config work/valhalla.json --image "$VALHALLA_REF" --work "$PWD/work/sample" \
+            --count $(( ${{ inputs.pairs }} * 2 )) --seed 20260925 --out work/pairs.json
+          # The pilot's hand-picked pairs (incl. negative controls) run too, where a country has them.
+          [ -f "scripts/region-slice-pairs/$COUNTRY.json" ] && jq -s add "scripts/region-slice-pairs/$COUNTRY.json" work/pairs.json > work/all-pairs.json || cp work/pairs.json work/all-pairs.json
+          set +e
+          node scripts/compare-slice-routes.mjs --whole "$PWD/work/valhalla_tiles" --pieces-root "$PWD/work/pieces" \
+            --pairs work/all-pairs.json --config work/valhalla.json --image "$VALHALLA_REF" --polys work/polys \
+            --need "${{ inputs.pairs }}" --work "$PWD/work/compare" --out work/routes.json > work/compare.log 2>&1
+          RC=$?
+          set -e
+          cut -c1-300 work/compare.log
+          jq -r '.[] | "\(if .pass == null then "SKIP" elif .pass then "PASS" else "FAIL" end) \(.name) pieces=\(.pieces | if type == "array" then join("+") else . end) hausdorff=\(.hausdorffM // "-")"' \
+            work/routes.json >> "$GITHUB_STEP_SUMMARY"
+          [ "$RC" = 0 ] || { echo "::error::cross-piece routing differs from the whole graph, or too few pairs compared - nothing uploaded"; exit 1; }
+
+      - name: Package each piece, write the install descriptor
+        run: |
+          set -euo pipefail
+          D() { docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" "$@"; }
+          echo '{}' > work/packs.json
+          mkdir -p work/assets out
+          for ID in $(jq -r '.pieces | keys[]' work/slice.json); do
+            jq --arg d "/data/pieces/$ID" --arg t "/data/$ID.tar" '.mjolnir.tile_dir = $d | .mjolnir.tile_extract = $t' work/valhalla.json > work/extract.json
+            D valhalla_build_extract -c /data/extract.json > /dev/null
+            TAR_BYTES=$(stat -c%s "work/$ID.tar"); TAR_SHA=$(sha256sum "work/$ID.tar" | cut -d' ' -f1)
+            gzip -f "work/$ID.tar"
+            mv "work/$ID.tar.gz" "out/$ID-valhalla.tar.gz"
+            # Phone inventory: every tile + this pack's own index.bin.
+            MEMBER=$(tar -tzf "out/$ID-valhalla.tar.gz" | grep -E '(^|/)index\.bin$' | head -1)
+            INDEX=$(tar -xzOf "out/$ID-valhalla.tar.gz" "$MEMBER" | sha256sum | cut -d' ' -f1)
+            IBYTES=$(tar -xzOf "out/$ID-valhalla.tar.gz" "$MEMBER" | wc -c)
+            jq -c --arg s "$INDEX" --argjson b "$IBYTES" '. + {"index.bin": {bytes: $b, sha256: $s}}' "work/pieces/$ID.tiles.json" > "out/$ID.inventory.json"
+            cp "out/$ID.inventory.json" work/assets/
+            node scripts/generate-valhalla-coverage.mjs --input "work/polys/$ID.poly" --output "work/assets/$ID-valhalla-coverage.json"
+            GZ=$(stat -c%s "out/$ID-valhalla.tar.gz"); SHA=$(sha256sum "out/$ID-valhalla.tar.gz" | cut -d' ' -f1)
+            jq --arg id "$ID" --argjson gz "$GZ" --arg sha "$SHA" --argjson tb "$TAR_BYTES" --arg ts "$TAR_SHA" \
+              '.[$id] = {archive: {bytes: $gz, sha256: $sha}, tar: {bytes: $tb, sha256: $ts}}' work/packs.json > work/p.tmp && mv work/p.tmp work/packs.json
+          done
+          jq -n --arg image "$VALHALLA_REF" --arg v "$VALHALLA_EXPECTED_VERSION" --arg commit "$GITHUB_SHA" \
+            --arg url "$PBF_URL" --arg snap "$OSM_SNAPSHOT" \
+            '{toolchain: {valhallaImage: $image, valhallaVersion: $v, extractorCommit: $commit},
+              inputs: {countryPbf: $url, osmSnapshot: $snap}}' > work/inputs.json
+          # The builder refuses unless the union of every piece's tiles is the whole graph.
+          node scripts/build-slice-install-descriptor.mjs --work work --assets work/assets --country "$COUNTRY" \
+            --inputs work/inputs.json --out work/descriptor > work/descriptor-pin.json
+          cp work/descriptor/*.coverage.json "work/descriptor/$COUNTRY-install-descriptor.json" out/
+          PROV=$(for f in work/descriptor/"$COUNTRY"-provenance-*; do jq -n --arg n "${f##*-provenance-}" --rawfile t "$f" '{($n): $t}'; done | jq -s add)
+          jq -n --arg country "$COUNTRY" --arg tag "$TAG" --arg image "$VALHALLA_REF" --arg snap "$OSM_SNAPSHOT" \
+            --arg run "$GITHUB_RUN_ID" --argjson tiles_s "$TILES_SECONDS" --argjson need "${{ inputs.pairs }}" \
+            --slurpfile slice work/slice.json --slurpfile packs work/packs.json --slurpfile routes work/routes.json \
+            --slurpfile pin work/descriptor-pin.json --argjson provenance "$PROV" \
+            '{country: $country, tag: $tag, runId: $run, image: $image, osmSnapshot: $snap, tileBuildSeconds: $tiles_s,
+              descriptor: {file: ($country + "-install-descriptor.json")} + $pin[0].descriptorPin,
+              connectedGraphSha256: $pin[0].connectedGraphSha256,
+              slice: ($slice[0] | {tileCount, orphanTiles: (.orphanTiles | length), pieces}), packs: $packs[0],
+              parity: {need: $need, sampledCompared: ([$routes[0][] | select(.sampled == true)] | length),
+                       skipped: ([$routes[0][] | select(.pass == null)] | length),
+                       failed: ([$routes[0][] | select(.pass == false)] | length), routes: $routes[0]},
+              provenance: $provenance}' > "out/$COUNTRY-routing-pieces-report.json"
+          jq '{descriptor, parity: (.parity | del(.routes)), packs: (.packs | map_values(.archive.bytes))}' "out/$COUNTRY-routing-pieces-report.json"
+          ls -la out
+
+      - name: Upload to the release (nothing references these until publish)
+        run: |
+          set -euo pipefail
+          # Report last: its presence marks the country's upload complete for the publish gate.
+          gh release upload "$TAG" $(ls out/* | grep -v -- '-routing-pieces-report.json$') --clobber
+          gh release upload "$TAG" "out/$COUNTRY-routing-pieces-report.json" --clobber
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: routing-pieces-evidence-${{ matrix.country }}
+          path: |
+            work/routes.json
+            work/pairs.json
+            work/slice.json
+            work/compare.log
+          retention-days: 30
+
+  publish:
+    needs: [plan, routing]
+    # Also after a failed country: the gate publishes only countries whose upload is complete.
+    if: ${{ !cancelled() && inputs.publish != '' && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    concurrency:
+      group: valhalla-manifest-${{ inputs.tag }}
+      cancel-in-progress: false
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PUBLISH: ${{ inputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Completeness gate (per country; a failing country is not published)
+        run: |
+          set -euo pipefail
+          mkdir -p gate
+          BASE="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+          gh release view "$TAG" --json assets -q '.assets[] | "\(.name) \(.size)"' | sort > gate/assets.txt
+          gh release download "$TAG" -p valhalla-manifest.json -D gate/live
+          : > gate/ok.txt; BAD=""
+          for C in $(echo "$PUBLISH" | tr ',' ' '); do
+            fail() { echo "::error::[$C] $1 - not published"; BAD="$BAD $C"; }
+            if jq -e --arg c "$C" '.regions[$c].valhallaConnected' gate/live/valhalla-manifest.json > /dev/null; then
+              echo "$C already published"; continue
+            fi
+            gh release download "$TAG" -p "$C-routing-pieces-report.json" -p "$C-install-descriptor.json" -D "gate/$C" --clobber 2>/dev/null \
+              || { fail "report or descriptor missing on $TAG (not built?)"; continue; }
+            R="gate/$C/$C-routing-pieces-report.json"; DSC="gate/$C/$C-install-descriptor.json"
+            # 1. The app merges the routing overlay only for a region that has a whole pack pin.
+            jq -e --arg c "$C" '.regions[$c].valhallaSize > 0' gate/live/valhalla-manifest.json > /dev/null || { fail "no whole-country entry in the manifest"; continue; }
+            # 2. Same inputs as the release.
+            [ "$(jq -r .osmSnapshot "$R")" = "${{ needs.plan.outputs.osm_snapshot }}" ] || { fail "OSM snapshot differs from the release"; continue; }
+            [ "$(jq -r .image "$R")" = "$VALHALLA_IMAGE" ] || { fail "engine image differs"; continue; }
+            # 3. Parity evidence complete and clean.
+            jq -e '.parity.failed == 0 and .parity.sampledCompared >= .parity.need and .parity.need >= 30' "$R" > /dev/null || { fail "parity incomplete: $(jq -c '.parity | del(.routes)' "$R")"; continue; }
+            # 4. The served descriptor is the one the report pinned, and it names exactly the map pieces.
+            [ "$(stat -c%s "$DSC") $(sha256sum "$DSC" | cut -d' ' -f1)" = "$(jq -r '"\(.descriptor.bytes) \(.descriptor.sha256)"' "$R")" ] || { fail "descriptor bytes differ from the report pin"; continue; }
+            [ "$(jq -c '[.regions[].regionId] | sort' "$DSC")" = "$(jq -c --arg c "$C" '[.countries[] | select(.country==$c) | .pieces[].id] | sort' scripts/region-slices.json)" ] || { fail "descriptor pieces differ from the map pieces"; continue; }
+            # 5. Every file the descriptor names is served at its pinned size and sha256.
+            OK=true
+            while read -r FILE BYTES SHA; do
+              grep -qx "$FILE $BYTES" gate/assets.txt || { fail "$FILE not served at $BYTES B"; OK=false; break; }
+              GOT=$(curl -fsSL --retry 3 "$BASE/$FILE" | sha256sum | cut -d' ' -f1)
+              [ "$GOT" = "$SHA" ] || { fail "$FILE served sha256 $GOT, pinned $SHA"; OK=false; break; }
+            done < <(jq -r '.regions[] | (.archive, .inventory, .coverage) | "\(.file) \(.bytes) \(.sha256)"' "$DSC")
+            $OK || continue
+            jq -n --arg c "$C" --arg f "$C-install-descriptor.json" --argjson b "$(stat -c%s "$DSC")" --arg s "$(sha256sum "$DSC" | cut -d' ' -f1)" \
+              '{($c): {file: $f, bytes: $b, sha256: $s}}' >> gate/ok.txt
+            echo "$C passed the gate"
+          done
+          echo "BAD=$BAD" >> "$GITHUB_ENV"
+      - name: Add valhallaConnected to the release manifest (additive only)
+        run: |
+          set -euo pipefail
+          [ -s gate/ok.txt ] || { echo "Nothing new passed the gate - manifest untouched"; [ -z "$BAD" ]; exit $?; }
+          jq -s add gate/ok.txt > gate/pins.json
+          for M in manifest.json valhalla-manifest.json; do
+            gh release download "$TAG" -p "$M" -D "gate/before" --clobber
+            jq --slurpfile p gate/pins.json '.regions |= with_entries(if $p[0][.key] then .value.valhallaConnected = $p[0][.key] else . end)' \
+              "gate/before/$M" > "gate/$M"
+            # Additive: removing every valhallaConnected just added must give back the old file.
+            cmp -s <(jq -S --slurpfile p gate/pins.json '.regions |= with_entries(if $p[0][.key] then del(.value.valhallaConnected) else . end)' "gate/$M") \
+                   <(jq -S . "gate/before/$M") || { echo "::error::$M merge was not additive"; exit 1; }
+          done
+          bash scripts/check-valhalla-coverage.sh "$TAG" gate/manifest.json
+          cd gate && gh release upload "$TAG" manifest.json valhalla-manifest.json --clobber && cd ..
+          gh release download "$TAG" -p valhalla-manifest.json -D gate/after
+          cmp -s gate/after/valhalla-manifest.json gate/valhalla-manifest.json || { echo "::error::served manifest differs from the one written"; exit 1; }
+          echo "Published: $(jq -c 'keys' gate/pins.json)" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ -z "$BAD" ] || { echo "::error::not published:$BAD"; exit 1; }
+      - name: Copy published pieces to R2 (skips without the bucket-scoped secrets)
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_MAPS_ACCESS_KEY_ID: ${{ secrets.R2_MAPS_ACCESS_KEY_ID }}
+          R2_MAPS_SECRET_ACCESS_KEY: ${{ secrets.R2_MAPS_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          { [ -n "$R2_ACCOUNT_ID" ] && [ -n "$R2_MAPS_ACCESS_KEY_ID" ] && [ -n "$R2_MAPS_SECRET_ACCESS_KEY" ]; } \
+            || { echo "R2 secrets not configured - skipped"; exit 0; }
+          [ -s gate/pins.json ] || { echo "nothing newly published"; exit 0; }
+          # Copies only (immutable keys, read back + re-hashed by r2.py). The pointer is not touched:
+          # the app installs pieces from the release the descriptor pins, and a second publish
+          # (held countries) would collide with an immutable releases/<v>/routing-manifest.json.
+          VERSION="${TAG#valhalla-}"; BASE="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+          for C in $(jq -r 'keys[]' gate/pins.json); do
+            while read -r ID FILE; do
+              curl -fsSL --retry 3 -o "$FILE" "$BASE/$FILE"
+              python3 scripts/r2.py put "$FILE" "releases/$VERSION/$ID/$FILE"
+              rm -f "$FILE"
+            done < <(jq -r '.regions[] | "\(.regionId) \(.archive.file)"' "gate/$C/$C-install-descriptor.json")
+          done

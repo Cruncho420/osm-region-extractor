@@ -10,6 +10,14 @@
  *
  * Usage: node compare-slice-routes.mjs --whole <tiles> --pieces-root <dir with <id>/ tiles>
  *   --pairs <pairs.json> --config <valhalla.json> --image <ref> --work <dir> --out <report.json>
+ *   [--polys <dir with <id>.poly> --need <n>]
+ *
+ * A pair with `pieces: "auto"` (sample-slice-pairs.mjs) is routed on the whole graph first and
+ * then on the union of the pieces its route passes through: the piece whose outline holds each
+ * shape point, or for a point in no outline, the pieces holding that point's level-2 tile. That
+ * is the least the phone installs for the route (B-12 adds neighbours within 10 km). A sampled
+ * pair with no route on the whole graph (an island, a ferry-only link) is skipped, not failed;
+ * --need fails the run unless that many sampled pairs were actually compared.
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -17,6 +25,8 @@ import { linkSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync }
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import { prepareOutline } from './slice-valhalla-graph.mjs';
+import { pieceAt } from './sample-slice-pairs.mjs';
 
 const SEARCH_CUTOFF_M = 450; // Rods valhallaRoutingProvider SNAP_RADIUS_MAX_M, sent on every location
 
@@ -81,6 +91,36 @@ export function compareTrips(whole, union) {
     timeS: [whole.trip.summary.time, union.trip.summary.time] };
 }
 
+/** Level-2 (0.25 degree) tile path holding [lat, lon] - the inverse of the slicer's tileBounds. */
+export function level2Tile([lat, lon]) {
+  const digits = String(Math.floor((lat + 90) / 0.25) * 1440 + Math.floor((lon + 180) / 0.25)).padStart(9, '0');
+  return `2/${digits.slice(0, 3)}/${digits.slice(3, 6)}/${digits.slice(6)}.gph`;
+}
+
+/** The pieces a route's shape ([lat, lon] points) passes through. */
+export function piecesAlongShape(shape, pieces, tileOwners) {
+  const need = new Set();
+  for (const [lat, lon] of shape) {
+    const id = pieceAt([lon, lat], pieces);
+    if (id) need.add(id);
+    else for (const owner of tileOwners.get(level2Tile([lat, lon])) ?? []) need.add(owner);
+  }
+  return [...need].sort();
+}
+
+function loadAutoPieces(piecesRoot, polys) {
+  const ids = readdirSync(piecesRoot).filter((f) => f.endsWith('.tiles.json')).map((f) => f.slice(0, -'.tiles.json'.length));
+  const tileOwners = new Map();
+  for (const id of ids) {
+    for (const tile of Object.keys(JSON.parse(readFileSync(join(piecesRoot, `${id}.tiles.json`), 'utf8')))) {
+      if (!tileOwners.has(tile)) tileOwners.set(tile, []);
+      tileOwners.get(tile).push(id);
+    }
+  }
+  const pieces = ids.map((id) => ({ id, outline: prepareOutline(readFileSync(join(polys, `${id}.poly`), 'utf8')) }));
+  return { pieces, tileOwners };
+}
+
 const digests = new Map();
 function sha(path) {
   if (!digests.has(path)) digests.set(path, createHash('sha256').update(readFileSync(path)).digest('hex'));
@@ -133,29 +173,46 @@ function route(image, config, tilesDir, work, pair) {
 
 function main() {
   const { values: a } = parseArgs({ options: Object.fromEntries(
-    ['whole', 'pieces-root', 'pairs', 'config', 'image', 'work', 'out'].map((k) => [k, { type: 'string' }])) });
+    ['whole', 'pieces-root', 'pairs', 'config', 'image', 'work', 'out', 'polys', 'need'].map((k) => [k, { type: 'string' }])) });
   mkdirSync(a.work, { recursive: true });
+  const pairs = JSON.parse(readFileSync(a.pairs, 'utf8'));
+  const auto = pairs.some((p) => p.pieces === 'auto') ? loadAutoPieces(a['pieces-root'], a.polys) : null;
+  const need = Number(a.need ?? 0);
   const results = []; const unions = new Map();
-  for (const pair of JSON.parse(readFileSync(a.pairs, 'utf8'))) {
-    // One union directory per piece combination, built once (hashing a country is minutes).
-    const combo = [...pair.pieces].sort().join('+');
-    const unionDir = join(a.work, 'unions', combo);
-    if (!unions.has(combo)) unions.set(combo, buildUnion(pair.pieces.map((id) => join(a['pieces-root'], id)), unionDir));
-    const tiles = unions.get(combo);
+  let sampled = 0;
+  for (const pair of pairs) {
+    const isAuto = pair.pieces === 'auto';
+    if (isAuto && need && sampled >= need) continue;
     const whole = route(a.image, a.config, a.whole, a.work, pair);
+    if (isAuto && whole.error) {
+      results.push({ name: pair.name, pieces: 'auto', skipped: `no route on the whole graph: ${whole.error}`, pass: null });
+      continue;
+    }
+    const pieceIds = isAuto
+      ? piecesAlongShape(whole.trip.legs.flatMap((l) => decodePolyline6(l.shape)), auto.pieces, auto.tileOwners)
+      : pair.pieces;
+    // One union directory per piece combination, built once (hashing a country is minutes).
+    const combo = [...pieceIds].sort().join('+');
+    const unionDir = join(a.work, 'unions', combo);
+    if (!unions.has(combo)) unions.set(combo, buildUnion(pieceIds.map((id) => join(a['pieces-root'], id)), unionDir));
     const union = route(a.image, a.config, unionDir, a.work, pair);
-    const row = { name: pair.name, pieces: pair.pieces, expect: pair.expect ?? 'same', unionTiles: tiles,
+    const row = { name: pair.name, pieces: pieceIds, sampled: isAuto, expect: pair.expect ?? 'same', unionTiles: unions.get(combo),
       wholeOk: !whole.error, unionOk: !union.error, unionError: union.error ?? null };
     if (!whole.error && !union.error) Object.assign(row, compareTrips(whole, union));
     row.pass = row.expect === 'fail'
       ? row.wholeOk && !row.unionOk
       : row.wholeOk && row.unionOk && row.hausdorffM <= 1 && row.maneuverDiffs.length === 0;
+    if (isAuto) sampled++;
     results.push(row);
     console.log(`${row.pass ? 'PASS' : 'FAIL'} ${pair.name}: ${JSON.stringify({ ...row, maneuverDiffs: row.maneuverDiffs?.length })}`);
   }
   rmSync(join(a.work, 'unions'), { recursive: true, force: true });
   writeFileSync(a.out, `${JSON.stringify(results, null, 1)}\n`);
-  if (results.some((r) => !r.pass)) process.exitCode = 1;
+  if (results.some((r) => r.pass === false)) process.exitCode = 1;
+  if (need && sampled < need) {
+    console.error(`only ${sampled} sampled pairs routed on the whole graph, ${need} needed`);
+    process.exitCode = 1;
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
