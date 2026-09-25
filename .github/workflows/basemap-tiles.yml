@@ -24,21 +24,32 @@ name: Basemap PMTiles
 #                        URL + checksum the app pinned can never change under it.
 # - the manifest carries basemapSize + full sha256 + maxZoom + planet date per region.
 #
-# Max zoom is an INPUT (owner decision pending, D-ME02-4): 14 by default (the app
-# overzooms to 17); 15 roughly doubles size. Files over 2 GiB fail the region: GitHub's
-# per-asset cap, and the app's background downloader carries the size as a 32-bit int.
+# Max zoom is an INPUT: 14 by default ("Normal", owner decision D8; the app overzooms to 17).
+# Files must stay under 2 GiB: GitHub's per-asset cap, and the app's background downloader
+# carries the size as a 32-bit int. A region over the cap is rebuilt one zoom lower
+# (never below 12) and the manifest records the zoom it really has (basemapMaxZoom); the
+# run summary lists every such region, because it is a deviation from D8.
+#
+# PRODUCTION RELEASE GATE (basemap-<YYYY-MM-DD>) — the 2026-07-29 / 2026-08-01 lessons:
+# the app treats a basemap release as live the moment `manifest.json` exists on it. So a
+# production run NEVER writes manifest.json until every region in scripts/regions.json is
+# on the release with the exact size + sha256 in the manifest. Until then it accumulates
+# into `manifest-staging.json`, which no app reads. A failed region leaves no asset behind
+# (it is deleted if its served bytes do not verify), and a re-run with regions=all builds
+# only the regions the staging manifest does not have yet — so recovery is "run it again".
+#
+# R2 (FEAT-090 ME-13b): when the bucket-scoped secrets R2_ACCOUNT_ID, R2_MAPS_ACCESS_KEY_ID
+# and R2_MAPS_SECRET_ACCESS_KEY exist, every production file is also uploaded to bucket
+# rods-maps at releases/<version>/<region>/<file> (immutable, read back + re-hashed), and
+# the root pointer manifest.json gets this release's basemap entries LAST, only after the
+# GitHub manifest is complete. Without the secrets those steps skip. Never give this public
+# repo an account-wide key: the account also holds the website buckets.
 
 on:
-  # Registration shim: GitHub will not register workflow_dispatch for a workflow that has
-  # only ever existed on a feature branch. REMOVE this `push` block at the merge to main.
-  # It starts nothing: every job below is gated on workflow_dispatch.
-  push:
-    branches: [feat/basemap-pmtiles]
-    paths: ['.github/workflows/basemap-tiles.yml']
   workflow_dispatch:
     inputs:
       regions:
-        description: 'Comma list of regions (region id, id suffix, or geofabrik path fragment)'
+        description: 'Comma list of regions (region id, id suffix, or geofabrik path fragment), or "all"'
         required: true
         default: 'lithuania,latvia'
         type: string
@@ -78,6 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.resolve.outputs.matrix }}
+      count: ${{ steps.resolve.outputs.count }}
       planet: ${{ steps.planet.outputs.planet }}
     steps:
       - uses: actions/checkout@v4
@@ -85,9 +97,14 @@ jobs:
         id: resolve
         env:
           REGIONS_INPUT: ${{ inputs.regions }}
+          TAG_INPUT: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          R2_ON: ${{ secrets.R2_MAPS_ACCESS_KEY_ID != '' }}
         run: |
           set -euo pipefail
           IDS=""
+          [ "$(echo "$REGIONS_INPUT" | tr -d '[:space:]')" = all ] && REGIONS_INPUT=$(jq -r '[.regions[].id] | join(",")' scripts/regions.json)
           IFS=',' read -ra TOKENS <<< "$REGIONS_INPUT"
           for tok in "${TOKENS[@]}"; do
             tok="$(echo "$tok" | tr -d '[:space:]')"
@@ -103,9 +120,25 @@ jobs:
             IDS="${IDS}${MATCHES}"$'\n'
           done
           [ -n "$IDS" ] || { echo "::error::No regions provided"; exit 1; }
-          MATRIX=$(printf '%s' "$IDS" | grep . | sort -u | jq -R . | jq -sc .)
-          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-          echo "Resolved regions: $MATRIX"
+          printf '%s' "$IDS" | grep . | sort -u > wanted.txt
+          # Production resume: a region already in the staging manifest (and on R2 when R2 is
+          # configured) is done. Re-running the same tag builds only what is missing.
+          : > done.txt
+          case "$TAG_INPUT" in basemap-[0-9]*)
+            if gh release download "$TAG_INPUT" -R "$REPO" -D prev --pattern manifest-staging.json 2>/dev/null; then
+              if [ "$R2_ON" = true ]; then
+                jq -r '.regions | to_entries[] | select(.value.r2Key) | .key' prev/manifest-staging.json | sort -u > done.txt
+              else
+                jq -r '.regions | keys[]' prev/manifest-staging.json | sort -u > done.txt
+              fi
+            fi ;;
+          esac
+          comm -23 wanted.txt done.txt > todo.txt
+          COUNT=$(grep -c . todo.txt || true)
+          [ "$COUNT" -le 256 ] || { echo "::error::$COUNT regions exceeds the 256-job matrix cap"; exit 1; }
+          MATRIX=$(jq -R . todo.txt | jq -sc .)
+          { echo "matrix=$MATRIX"; echo "count=$COUNT"; } >> "$GITHUB_OUTPUT"
+          echo "Resolved $(grep -c . wanted.txt) regions, $(grep -c . done.txt || true) already done, building $COUNT"
       - name: Resolve the planet build ONCE (every region of a run must share it)
         id: planet
         env:
@@ -163,12 +196,14 @@ jobs:
 
   build:
     needs: [get-regions, prepare-release]
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && needs.get-regions.outputs.count != '0'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
       fail-fast: false
-      max-parallel: 8
+      # 12 concurrent range-readers against build.protomaps.com (be a polite client of a
+      # free service); 234 regions take about an hour.
+      max-parallel: 12
       matrix:
         region: ${{ fromJson(needs.get-regions.outputs.matrix) }}
     steps:
@@ -189,7 +224,29 @@ jobs:
           POLY_URL="https://download.geofabrik.de/${GF%-latest.osm.pbf}.poly"
           curl -sfL --retry 3 "$POLY_URL" -o region.poly
           node scripts/poly-to-geojson.mjs region.poly region.geojson
+      - name: Reuse the published file when this production tag already has it
+        id: existing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGION: ${{ matrix.region }}
+          TAG: ${{ needs.prepare-release.outputs.tag_name }}
+          CHANNEL: ${{ needs.prepare-release.outputs.channel }}
+        run: |
+          set -euo pipefail
+          # Only happens on a resume where GitHub has the file but R2 does not: the R2 copy
+          # must be the SAME bytes the app pinned, so it is downloaded, never rebuilt.
+          F="${REGION}-basemap.pmtiles"
+          if [ "$CHANNEL" = production ] && gh release view "$TAG" --json assets -q '.assets[].name' | grep -qx "$F" \
+             && gh release download "$TAG" -D prev --pattern manifest-staging.json 2>/dev/null \
+             && jq -e --arg r "$REGION" '.regions[$r]' prev/manifest-staging.json > /dev/null; then
+            gh release download "$TAG" --pattern "$F"
+            jq --arg r "$REGION" '.regions[$r] + {region:$r}' prev/manifest-staging.json > staged.json
+            echo "reuse=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "reuse=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Extract (HTTP range reads from the planet build)
+        if: steps.existing.outputs.reuse != 'true'
         env:
           REGION: ${{ matrix.region }}
           PLANET: ${{ needs.get-regions.outputs.planet }}
@@ -197,35 +254,47 @@ jobs:
         run: |
           set -euo pipefail
           START=$(date +%s)
-          pmtiles extract "https://build.protomaps.com/${PLANET}.pmtiles" "${REGION}-basemap.pmtiles" \
-            --region=region.geojson --maxzoom="$MAXZOOM" --download-threads=8 2>&1 | tee extract.log
-          echo "SECONDS_EXTRACT=$(( $(date +%s) - START ))" >> "$GITHUB_ENV"
-          pmtiles verify "${REGION}-basemap.pmtiles"
-          pmtiles show "${REGION}-basemap.pmtiles" | tee show.txt
+          F="${REGION}-basemap.pmtiles"
+          Z="$MAXZOOM"
+          while :; do
+            rm -f "$F"
+            pmtiles extract "https://build.protomaps.com/${PLANET}.pmtiles" "$F" \
+              --region=region.geojson --maxzoom="$Z" --download-threads=8 2>&1 | tee extract.log
+            [ "$(stat -c %s "$F")" -le "$MAX_ASSET_BYTES" ] && break
+            [ "$Z" -gt 12 ] || { echo "::error::$F is over 2 GiB even at z12 — the region must be split"; exit 1; }
+            echo "::warning::$REGION is $(stat -c %s "$F") bytes at z$Z (over 2 GiB); rebuilding at z$((Z-1))"
+            Z=$((Z-1))
+          done
+          { echo "SECONDS_EXTRACT=$(( $(date +%s) - START ))"; echo "BUILT_ZOOM=$Z"; } >> "$GITHUB_ENV"
+          pmtiles verify "$F"
+          pmtiles show "$F" | tee show.txt
           grep -q '^tile type: mvt' show.txt || { echo "::error::not a vector archive"; exit 1; }
+          grep -qE "^max zoom: $Z\$" show.txt || { echo "::error::archive max zoom is not $Z"; exit 1; }
       - name: Size cap + checksum + report
         env:
           REGION: ${{ matrix.region }}
           PLANET: ${{ needs.get-regions.outputs.planet }}
-          MAXZOOM: ${{ inputs.maxzoom }}
+          REUSE: ${{ steps.existing.outputs.reuse }}
         run: |
           set -euo pipefail
           F="${REGION}-basemap.pmtiles"
-          BYTES=$(stat -c %s "$F")
-          if [ "$BYTES" -gt "$MAX_ASSET_BYTES" ]; then
-            echo "::error::$F is $BYTES bytes, over the 2 GiB per-file cap — lower maxzoom or split the region"; exit 1
+          mkdir -p report
+          if [ "$REUSE" = true ]; then
+            [ "$(stat -c %s "$F")" = "$(jq -r .basemapSize staged.json)" ] || { echo "::error::published $F differs from its staging entry"; exit 1; }
+            [ "$(sha256sum "$F" | cut -d' ' -f1)" = "$(jq -r .basemapChecksum staged.json)" ] || { echo "::error::published $F sha256 differs from its staging entry"; exit 1; }
+            cp staged.json "report/basemap-report-${REGION}.json"; exit 0
           fi
+          BYTES=$(stat -c %s "$F")
           SHA=$(sha256sum "$F" | cut -d' ' -f1)
           TILES=$(grep -oE 'Region tiles [0-9]+, result tile entries [0-9]+' extract.log | grep -oE '[0-9]+$' || echo 0)
           REQS=$(grep -oE 'Extract required [0-9]+ total requests' extract.log | grep -oE '[0-9]+' || echo 0)
-          mkdir -p report
-          jq -n --arg r "$REGION" --argjson b "$BYTES" --arg s "$SHA" --argjson z "$MAXZOOM" --arg p "$PLANET" \
+          jq -n --arg r "$REGION" --argjson b "$BYTES" --arg s "$SHA" --argjson z "$BUILT_ZOOM" --arg p "$PLANET" \
             --argjson t "${TILES:-0}" --argjson q "${REQS:-0}" --argjson sec "$SECONDS_EXTRACT" \
             '{region:$r, basemapSize:$b, basemapChecksum:$s, basemapMaxZoom:$z, basemapPlanet:$p, tiles:$t, requests:$q, seconds:$sec}' \
             > "report/basemap-report-${REGION}.json"
           cat "report/basemap-report-${REGION}.json"
       - name: Upload the file (production assets are immutable)
-        if: inputs.upload
+        if: inputs.upload && steps.existing.outputs.reuse != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REGION: ${{ matrix.region }}
@@ -236,16 +305,40 @@ jobs:
           F="${REGION}-basemap.pmtiles"
           if [ "$CHANNEL" = production ]; then
             if gh release view "$TAG" --json assets -q '.assets[].name' | grep -qx "$F"; then
-              echo "::error::$F already published on $TAG — production assets are immutable; publish a new version instead"; exit 1
+              echo "::error::$F already published on $TAG but not in its staging manifest — delete the asset and re-run"; exit 1
             fi
             gh release upload "$TAG" "$F"
           else
             gh release upload "$TAG" "$F" --clobber
           fi
-          # What GitHub serves must be what we built.
+          # What GitHub serves must be what we built, byte for byte. A copy that does not
+          # verify is deleted, so it can never sit on an immutable production tag.
           URL="https://github.com/${{ github.repository }}/releases/download/$TAG/$F"
-          SERVED=$(curl -sfIL "$URL" | grep -i '^content-length' | tail -1 | tr -dc '0-9')
-          [ "$SERVED" = "$(stat -c %s "$F")" ] || { echo "::error::served $SERVED bytes, built $(stat -c %s "$F")"; exit 1; }
+          SERVED=$(curl -sfL --retry 3 "$URL" | sha256sum | cut -d' ' -f1)
+          if [ "$SERVED" != "$(sha256sum "$F" | cut -d' ' -f1)" ]; then
+            gh release delete-asset "$TAG" "$F" -y || true
+            echo "::error::GitHub serves sha256 $SERVED, built $(sha256sum "$F" | cut -d' ' -f1)"; exit 1
+          fi
+      - name: Upload the file to R2 (production, when the bucket-scoped secrets exist)
+        if: inputs.upload && needs.prepare-release.outputs.channel == 'production'
+        env:
+          REGION: ${{ matrix.region }}
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+          TAG: ${{ needs.prepare-release.outputs.tag_name }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_MAPS_ACCESS_KEY_ID: ${{ secrets.R2_MAPS_ACCESS_KEY_ID }}
+          R2_MAPS_SECRET_ACCESS_KEY: ${{ secrets.R2_MAPS_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "$R2_MAPS_ACCESS_KEY_ID" ] || { echo "R2 secrets not configured — GitHub only"; exit 0; }
+          F="${REGION}-basemap.pmtiles"
+          KEY="releases/${VERSION}/${REGION}/${F}"
+          python3 scripts/r2.py put "$F" "$KEY" | tee r2.out
+          GOT=$(tail -1 r2.out)
+          R="report/basemap-report-${REGION}.json"
+          [ "$(echo "$GOT" | jq -r .sha256)" = "$(jq -r .basemapChecksum "$R")" ] || { echo "::error::R2 copy hash differs"; exit 1; }
+          jq --arg k "$KEY" --arg g "https://github.com/${{ github.repository }}/releases/download/$TAG/$F" \
+            '. + {r2Key:$k, github:$g}' "$R" > r.tmp && mv r.tmp "$R"
       - uses: actions/upload-artifact@v4
         with:
           name: basemap-report-${{ matrix.region }}
@@ -254,37 +347,94 @@ jobs:
   finalize:
     needs: [get-regions, prepare-release, build]
     runs-on: ubuntu-latest
-    if: ${{ !cancelled() && inputs.upload }}
+    if: ${{ !cancelled() && inputs.upload && needs.prepare-release.result == 'success' }}
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: basemap-report-*
           path: reports
           merge-multiple: true
-      - name: Accumulate the release manifest + summary
+      - name: Accumulate the manifest; production publishes manifest.json only when COMPLETE
+        id: manifest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           TAG: ${{ needs.prepare-release.outputs.tag_name }}
           VERSION: ${{ needs.prepare-release.outputs.version }}
+          CHANNEL: ${{ needs.prepare-release.outputs.channel }}
+          R2_ON: ${{ secrets.R2_MAPS_ACCESS_KEY_ID != '' }}
         run: |
           set -euo pipefail
-          ls reports/*.json > /dev/null 2>&1 || { echo "::error::No region produced a report"; exit 1; }
+          mkdir -p reports prev
+          ACC=manifest.json; [ "$CHANNEL" = production ] && ACC=manifest-staging.json
           jq -s --arg v "$VERSION" --arg g "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             '{version:$v, generatedAt:$g, schema:"protomaps-basemap-v4",
-              regions:(map({(.region): (del(.region, .requests, .seconds))}) | add)}' reports/*.json > work.json
-          if gh release download "$TAG" -R "$REPO" -D prev --pattern manifest.json 2>/dev/null; then
-            PREV=$(jq -r '.version' prev/manifest.json)
+              regions:(map({(.region): (del(.region, .requests, .seconds))}) | add // {})}' reports/*.json 2>/dev/null > work.json \
+            || jq -n --arg v "$VERSION" '{version:$v, schema:"protomaps-basemap-v4", regions:{}}' > work.json
+          if gh release download "$TAG" -R "$REPO" -D prev --pattern "$ACC" 2>/dev/null; then
+            PREV=$(jq -r '.version' "prev/$ACC")
             [ "$PREV" = "$VERSION" ] || { echo "::error::$TAG carries version $PREV, this run is $VERSION"; exit 1; }
-            jq -s '(.[0].regions * .[1].regions) as $m | .[1] | .regions = $m' prev/manifest.json work.json > manifest.json
+            jq -s '(.[0].regions * .[1].regions) as $m | .[1] | .regions = $m' "prev/$ACC" work.json > "$ACC"
           else
-            cp work.json manifest.json
+            cp work.json "$ACC"
           fi
-          gh release upload "$TAG" -R "$REPO" manifest.json --clobber
+          [ "$(jq '.regions | length' "$ACC")" -gt 0 ] || { echo "::error::No region produced a report"; exit 1; }
+          gh release upload "$TAG" -R "$REPO" "$ACC" --clobber
+          [ "$CHANNEL" = production ] || exit 0
+
+          # ── completeness gate: every region, on the release, exact size, and on R2 if R2 is on
+          jq -r '.regions[].id' scripts/regions.json | sort -u > expected.txt
+          jq -r '.regions | keys[]' "$ACC" | sort -u > staged.txt
+          gh release view "$TAG" -R "$REPO" --json assets \
+            -q '.assets[] | select(.name | endswith("-basemap.pmtiles")) | "\(.name | sub("-basemap.pmtiles$"; "")) \(.size)"' | sort -u > assets.txt
+          jq -r '.regions | to_entries[] | "\(.key) \(.value.basemapSize)"' "$ACC" | sort -u > pinned.txt
+          MISSING=$(comm -23 expected.txt staged.txt | paste -sd' ')
+          EXTRA=$(comm -13 expected.txt staged.txt | paste -sd' ')
+          BADSIZE=$(comm -23 pinned.txt assets.txt | cut -d' ' -f1 | paste -sd' ')
+          NOR2=""; [ "$R2_ON" = true ] && NOR2=$(jq -r '.regions | to_entries[] | select(.value.r2Key | not) | .key' "$ACC" | paste -sd' ')
+          if [ -n "$MISSING$EXTRA$BADSIZE$NOR2" ]; then
+            echo "::error::INCOMPLETE — manifest.json NOT published. missing: [$MISSING] unknown: [$EXTRA] size mismatch: [$BADSIZE] not on R2: [$NOR2]. Re-run with regions=all."
+            exit 1
+          fi
+          # The app-facing manifest: exactly the fields the app reads, plus provenance.
+          jq '{version, generatedAt, schema, regions: (.regions | map_values({basemapSize, basemapChecksum, basemapMaxZoom, basemapPlanet}))}' \
+            "$ACC" > manifest.json
+          if gh release download "$TAG" -R "$REPO" -D live --pattern manifest.json 2>/dev/null; then
+            cmp -s <(jq -S .regions live/manifest.json) <(jq -S .regions manifest.json) \
+              || { echo "::error::$TAG already has a DIFFERENT manifest.json — production manifests are immutable"; exit 1; }
+            echo "manifest.json already published and identical"
+          else
+            gh release upload "$TAG" -R "$REPO" manifest.json
+          fi
+          echo "complete=true" >> "$GITHUB_OUTPUT"
+          echo "COMPLETE: $(wc -l < expected.txt | tr -d ' ') regions, $(jq '[.regions[].basemapSize] | add' manifest.json) bytes"
+      - name: Point R2 at this release (last, only after the GitHub manifest is complete)
+        if: steps.manifest.outputs.complete == 'true'
+        env:
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_MAPS_ACCESS_KEY_ID: ${{ secrets.R2_MAPS_ACCESS_KEY_ID }}
+          R2_MAPS_SECRET_ACCESS_KEY: ${{ secrets.R2_MAPS_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "$R2_MAPS_ACCESS_KEY_ID" ] || { echo "R2 secrets not configured — pointer untouched"; exit 0; }
+          jq '.regions | map_values({key: .r2Key, size: .basemapSize, sha256: .basemapChecksum, github, maxZoom: .basemapMaxZoom, planet: .basemapPlanet})' \
+            manifest-staging.json > entries.json
+          python3 scripts/r2.py merge-pointer "$VERSION" basemap entries.json
+      - name: Summary
+        if: always()
+        run: |
+          [ -f manifest-staging.json ] && M=manifest-staging.json || M=manifest.json
+          [ -f "$M" ] || exit 0
           {
-            echo "## Basemap PMTiles — $TAG (version $VERSION)"
+            echo "## Basemap PMTiles — ${{ needs.prepare-release.outputs.tag_name }}"
             echo ""
-            echo "| Region | Size (MB) | Max zoom | Tiles | Range requests | Extract (s) | sha256 |"
-            echo "|---|---:|---:|---:|---:|---:|---|"
-            jq -r '"| \(.region) | \((.basemapSize/1048576*10|floor)/10) | \(.basemapMaxZoom) | \(.tiles) | \(.requests) | \(.seconds) | `\(.basemapChecksum[0:16])` |"' reports/*.json
+            echo "Regions: $(jq '.regions | length' "$M"), total $(jq '[.regions[].basemapSize] | add / 1073741824 * 100 | floor / 100' "$M") GiB"
+            echo ""
+            echo "**Below the requested zoom (over 2 GiB at z${{ inputs.maxzoom }}):** $(jq -r --argjson z ${{ inputs.maxzoom }} '[.regions | to_entries[] | select(.value.basemapMaxZoom < $z) | "\(.key) z\(.value.basemapMaxZoom)"] | join(", ") | if . == "" then "none" else . end' "$M")"
+            echo ""
+            echo "| Region | Size (MB) | Max zoom | Tiles | sha256 | R2 |"
+            echo "|---|---:|---:|---:|---|---|"
+            jq -r '.regions | to_entries | sort_by(-.value.basemapSize)[] | "| \(.key) | \((.value.basemapSize/1048576*10|floor)/10) | \(.value.basemapMaxZoom) | \(.value.tiles // "") | `\(.value.basemapChecksum[0:16])` | \(if .value.r2Key then "yes" else "" end) |"' "$M"
           } >> "$GITHUB_STEP_SUMMARY"
