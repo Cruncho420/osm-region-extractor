@@ -1,0 +1,9 @@
+[
+  {"id": "europe-lithuania", "poly": "https://download.geofabrik.de/europe/lithuania.poly"},
+  {"id": "europe-latvia", "poly": "https://download.geofabrik.de/europe/latvia.poly"},
+  {"id": "europe-great-britain", "poly": "https://download.geofabrik.de/europe/great-britain.poly"},
+  {"id": "europe-germany-baden-wuerttemberg", "poly": "https://download.geofabrik.de/europe/germany/baden-wuerttemberg.poly"},
+  {"id": "europe-germany-saarland", "poly": "https://download.geofabrik.de/europe/germany/saarland.poly"},
+  {"id": "europe-france-alsace", "poly": "https://download.geofabrik.de/europe/france/alsace.poly"},
+  {"id": "europe-france-lorraine", "poly": "https://download.geofabrik.de/europe/france/lorraine.poly"}
+]
