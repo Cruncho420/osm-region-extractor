@@ -1,0 +1,61 @@
+name: Chain Basemap After Monthly Extract
+
+# Purpose: build the offline MAP files (basemap-tiles.yml) for every region right after the
+# monthly OSM extract publishes, so the map, road data and routing packs of one month share a
+# version tag (basemap-<v> / osm-<v> / valhalla-<v>) and were cut from OSM a few hours apart.
+# The app reads releases/download/basemap-<monthly manifest version>/manifest.json, so the tag
+# MUST come from the published osm-* release, never from the clock.
+#
+# Same mechanics as chain-valhalla-after-extract.yml (read its comments): workflow_run on the
+# extract's exact `name:`, dispatch through basemap-tiles.yml's front door with every input
+# explicit, GITHUB_TOKEN may dispatch. basemap-tiles.yml resumes by itself (regions=all builds
+# only what the tag's staging manifest lacks) and publishes manifest.json only when complete,
+# so a re-run of this chain is always safe.
+
+on:
+  workflow_run:
+    workflows: ["Monthly OSM Data Extraction"]   # osm-extract.yml's `name:` (tested)
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Resolve and print the dispatch, but do not send it'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: chain-basemap-after-extract
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Resolve the version from the PUBLISHED release and dispatch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          OSM_TAG=$(gh api "repos/${{ github.repository }}/releases/latest" --jq .tag_name)
+          case "$OSM_TAG" in
+            osm-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+            *) echo "::error::latest release '$OSM_TAG' is not osm-YYYY-MM-DD — refusing to guess"; exit 1 ;;
+          esac
+          TAG="basemap-${OSM_TAG#osm-}"
+          if gh release download "$TAG" -R "${{ github.repository }}" -D live --pattern manifest.json 2>/dev/null; then
+            echo "Nothing to do: $TAG already has its complete manifest.json" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0
+          fi
+          echo "gh workflow run basemap-tiles.yml -f regions=all -f tag=$TAG -f maxzoom=14 -f planet= -f upload=true" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$DRY_RUN" = true ] && { echo "DRY RUN — nothing dispatched."; exit 0; }
+          gh workflow run basemap-tiles.yml -R "${{ github.repository }}" \
+            -f regions=all -f tag="$TAG" -f maxzoom=14 -f planet= -f upload=true

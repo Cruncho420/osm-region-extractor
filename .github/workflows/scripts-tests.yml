@@ -27,6 +27,7 @@ on:
       - '.github/workflows/test-osm-notification.yml'
       - '.github/workflows/valhalla-tiles.yml'
       - '.github/workflows/chain-valhalla-after-extract.yml'
+      - '.github/workflows/chain-basemap-after-extract.yml'
       - '.github/workflows/region-slices-pilot.yml'
   pull_request:
     paths:
@@ -38,6 +39,7 @@ on:
       - '.github/workflows/test-osm-notification.yml'
       - '.github/workflows/valhalla-tiles.yml'
       - '.github/workflows/chain-valhalla-after-extract.yml'
+      - '.github/workflows/chain-basemap-after-extract.yml'
       - '.github/workflows/region-slices-pilot.yml'
   workflow_dispatch:
 

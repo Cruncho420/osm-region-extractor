@@ -93,3 +93,17 @@ test('valhalla-tiles.yml is still dispatch-only', () => {
   );
   assert.doesNotMatch(tiles, /^\s*workflow_run:/m, 'valhalla-tiles.yml must stay dispatch-only');
 });
+
+// Basemap chain (FEAT-090): same silent-no-op risk, same guards.
+const basemapChain = read('chain-basemap-after-extract.yml');
+test('the basemap chain listens for the extract by its exact name, on success only', () => {
+  const extractName = read('osm-extract.yml').match(/^name:\s*(.+)$/m)[1].trim().replace(/^["']|["']$/g, '');
+  assert.ok(basemapChain.includes(`workflows: ["${extractName}"]`), 'chain-basemap-after-extract.yml must listen for osm-extract.yml by its exact name');
+  assert.match(basemapChain, /workflow_run\.conclusion == 'success'/);
+});
+test('the basemap chain dispatches every input explicitly, to a production tag from the release', () => {
+  const dispatch = basemapChain.slice(basemapChain.lastIndexOf('gh workflow run basemap-tiles.yml'));
+  for (const input of ['regions=all', 'tag="$TAG"', 'maxzoom=14', 'planet=', 'upload=true']) assert.ok(dispatch.includes(input), input);
+  assert.match(basemapChain, /TAG="basemap-\$\{OSM_TAG#osm-\}"/);
+  assert.doesNotMatch(basemapChain, /date -u/);
+});
