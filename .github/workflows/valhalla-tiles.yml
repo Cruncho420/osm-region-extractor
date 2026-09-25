@@ -29,7 +29,7 @@ name: Valhalla Graph Tiles (Smoke)
 #    Still GRAPH-ONLY: tz_world.sqlite / admins.sqlite are build-time inputs.
 # 6. Gates before an artifact is accepted:
 #    - extract structure: index.bin present + at least one .gph tile in the tar
-#    - size band: gz must be 10%..300% of a rough 0.39 x PBF-size estimate
+#    - size band: gz must be 10%..500% of a rough 0.39 x PBF-size estimate
 #    - sanity route: one-shot valhalla_service in TILE_EXTRACT mode against the tar
 #      GUNZIPPED FROM THE SHIPPED ASSET must return "Found route" (a pack that routes
 #      in tile_dir mode but not tile_extract mode must fail the job)
@@ -74,6 +74,11 @@ on:
         required: false
         default: ''
         type: string
+      osm_date:
+        description: 'Geofabrik dated snapshot YYMMDD every region downloads (<path>-YYMMDD.osm.pbf). Empty = the 1st of the dataVersion month (YYMM01; Geofabrik keeps those for years).'
+        required: false
+        default: ''
+        type: string
       prune_old_smoke:
         description: 'Delete older valhalla-smoke-* prereleases after upload'
         required: false
@@ -98,7 +103,23 @@ permissions:
 # number of concurrent batches; the queue was not.
 
 env:
-  VALHALLA_IMAGE: ghcr.io/valhalla/valhalla:latest
+  # RT-18 (Rods FEAT-090): ONE engine for packs, phone and server. The phone embeds
+  # upstream Valhalla 3.6.3 @ e2f017b (valhalla-mobile rods-0.5.1-k21-r4 + one meili
+  # map-matching patch that no graph-build tool calls); the online server builds its
+  # continuous graph with this SAME image. This is upstream's own 3.6.3 release image
+  # (tag 3.6.3, built 2026-02-19 from e2f017b), pinned by digest.
+  #
+  # History, so nobody "restores" a float: until 2026-09-24 this was `:latest`, so every
+  # run built with whatever master was that day - 08-06 e84a20c3, 08-10 5a3d68ad,
+  # 08-20 70173a8b, 09-02 a7d0d02e (the published valhalla-2026-09-02 packs, master
+  # ~7f372987b), 09-23 c9c1f9e6 (3.9.0-0baa5c687). PR #9 then pinned 4eec7684
+  # (3.7.0-d37aa595e, a July master build that was only a stale LOCAL `:latest`).
+  # None of those is the engine that reads the packs. Change this only together with
+  # the phone engine (valhalla-mobile) and the server pin (Rods engine-pin.json).
+  VALHALLA_IMAGE: ghcr.io/valhalla/valhalla@sha256:2b19ea46551a9687b245022551183829d817fdee9b58c5e7b2adb6e422749c43
+  # What `valhalla_build_tiles --version` must print from that image; the build fails otherwise.
+  VALHALLA_EXPECTED_VERSION: '3.6.3'
+  VALHALLA_CORE_SHA: e2f017b16080f49203de245a211b09efab09cf72
   # Hardcoded in-region sanity route endpoints, "lat,lon|lat,lon" (city pairs).
   # A region WITHOUT an entry here fails fast ON PURPOSE: the sanity route is the
   # only end-to-end proof the shipped pack can actually route. Generalize this
@@ -135,6 +156,38 @@ env:
   SANITY_ROUTES: >-
     {"europe-estonia":"59.437,24.754|58.378,26.729",
     "europe-germany-bayern":"48.137,11.575|49.454,11.077",
+    "europe-germany-bremen":"53.083,8.813|53.170,8.625",
+    "asia-afghanistan":"34.529,69.172|34.431,70.447",
+    "asia-china-guizhou":"26.647,106.630|27.725,106.927",
+    "asia-kazakhstan":"43.238,76.945|51.169,71.449",
+    "asia-jordan":"31.953,35.910|29.532,35.006",
+    "asia-malaysia-singapore-brunei":"3.139,101.687|1.492,103.741",
+    "asia-saudi-arabia":"24.713,46.675|26.420,50.088",
+    "central-america-guatemala":"14.634,-90.507|14.845,-91.518",
+    "central-america-haiti-and-domrep":"18.486,-69.931|19.451,-70.697",
+    "central-america-honduras":"14.072,-87.192|15.505,-88.025",
+    "central-america-panama":"8.983,-79.520|8.427,-82.431",
+    "central-america-nicaragua":"12.114,-86.236|12.435,-86.878",
+    "europe-france-guadeloupe":"16.241,-61.533|15.998,-61.726",
+    "europe-france-guyane":"4.922,-52.313|5.160,-52.650",
+    "europe-germany-baden-wuerttemberg":"48.776,9.183|49.007,8.404",
+    "europe-germany-berlin":"52.520,13.405|52.536,13.200",
+    "europe-germany-hessen":"50.110,8.682|51.312,9.479",
+    "europe-germany-mecklenburg-vorpommern":"54.089,12.140|53.635,11.401",
+    "europe-luxembourg":"49.611,6.130|49.847,6.104",
+    "europe-moldova":"47.011,28.863|47.762,27.929",
+    "europe-switzerland":"47.377,8.540|46.948,7.447",
+    "north-america-us-district-of-columbia":"38.897,-77.037|38.935,-76.998",
+    "north-america-us-georgia":"33.749,-84.388|32.081,-81.091",
+    "north-america-us-kentucky":"38.253,-85.759|38.040,-84.504",
+    "north-america-us-maine":"43.661,-70.255|44.801,-68.777",
+    "north-america-us-puerto-rico":"18.466,-66.106|18.011,-66.614",
+    "south-america-bolivia":"-16.500,-68.150|-17.394,-66.157",
+    "south-america-brazil-norte":"-10.184,-48.333|-7.191,-48.207",
+    "south-america-colombia":"4.711,-74.072|6.244,-75.581",
+    "south-america-ecuador":"-0.180,-78.468|-2.171,-79.922",
+    "south-america-venezuela":"10.480,-66.904|10.162,-68.008",
+    "asia-india-north-eastern-zone":"26.144,91.736|25.578,91.893",
     "europe-lithuania":"54.687,25.280|54.897,23.914",
     "north-america-us-california":"34.05,-118.24|32.72,-117.16",
     "north-america-us-hawaii":"21.307,-157.858|21.593,-158.104",
@@ -254,7 +307,10 @@ jobs:
       tag_name: ${{ steps.info.outputs.tag_name }}
       version: ${{ steps.info.outputs.version }}
       channel: ${{ steps.info.outputs.channel }}
+      osm_date: ${{ steps.snapshot.outputs.osm_date }}
+      osm_snapshot: ${{ steps.snapshot.outputs.osm_snapshot }}
     steps:
+      - uses: actions/checkout@v4
       - name: Resolve tag + dataVersion
         id: info
         run: |
@@ -293,6 +349,26 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
           echo "Channel: $CHANNEL   Tag: $TAG   dataVersion: $VERSION"
+
+      # ONE OSM snapshot per release (RT-18 "one data release"). Every region job
+      # downloads Geofabrik's DATED file <path>-<osm_date>.osm.pbf instead of
+      # -latest, so a batch that runs across Geofabrik's ~20:00 UTC roll, or days
+      # later, still gets the same data - and so can the server's graph build box.
+      # The snapshot id is the PBF header's replication timestamp, read here once
+      # from the first 256 KB of a small probe file; every region must match it.
+      - name: Resolve the OSM snapshot
+        id: snapshot
+        run: |
+          set -euo pipefail
+          OSM_DATE="${{ inputs.osm_date }}"
+          VERSION="${{ steps.info.outputs.version }}"
+          [ -n "$OSM_DATE" ] || OSM_DATE="$(echo "$VERSION" | cut -c3-4)$(echo "$VERSION" | cut -c6-7)01"
+          [[ "$OSM_DATE" =~ ^[0-9]{6}$ ]] || { echo "::error::osm_date '$OSM_DATE' is not YYMMDD"; exit 1; }
+          curl -fsSL --retry 3 -r 0-262143 -o probe.pbf "https://download.geofabrik.de/europe/andorra-${OSM_DATE}.osm.pbf"
+          SNAP=$(python3 scripts/pbf_snapshot.py probe.pbf)
+          echo "osm_date=$OSM_DATE" >> "$GITHUB_OUTPUT"
+          echo "osm_snapshot=$SNAP" >> "$GITHUB_OUTPUT"
+          echo "OSM snapshot: Geofabrik $OSM_DATE = $SNAP"
 
       - name: Create the release if it does not exist
         if: inputs.upload
@@ -357,6 +433,7 @@ jobs:
 
           **Contents (per region):**
           - {region-id}-valhalla.tar.gz - gzip of the SINGLE valhalla_build_extract tar (index.bin + graph tiles) that mjolnir.tile_extract memory-maps; GRAPH-ONLY (no tz/admin sqlite)
+          - {region-id}-valhalla-coverage.json - Geofabrik's exact extract polygon + 10 km boundary-risk margin, pinned by valhallaCoverageSize/valhallaCoverageChecksum; the app refuses to route without it
           - {region-id}-corridors.json - P1.8 corridor fixtures: array of {name, request, response} with the FULL valhalla route response from CI verification
           - manifest.json / valhalla-manifest.json - per-region valhallaSize + valhallaChecksum (sha256 first 16 hex), written by the finalize job once every region has reported"
           echo "Created $TAG"
@@ -398,18 +475,53 @@ jobs:
           # never ships unverified, the endpoints are just no longer required to
           # be hand-written.
           COORDS=$(jq -rn --argjson m "$SANITY_ROUTES" --arg id "$REGION" '$m[$id] // empty')
+          # bbox bounds the driving-side repair below: countries whose real outline touches the
+          # region's extent (padded 1 degree) and have no admin row get one (scripts/repair-driving-side.sh).
+          BBOX=$(jq -c --arg id "$REGION" '.regions[] | select(.id==$id) | .bbox' scripts/regions.json)
           echo "geo_path=$GEO_PATH" >> "$GITHUB_OUTPUT"
           echo "coords=$COORDS" >> "$GITHUB_OUTPUT"
+          echo "bbox=$BBOX" >> "$GITHUB_OUTPUT"
           echo "Region: $REGION  PBF: $GEO_PATH  Sanity route: ${COORDS:-<derive from tiles>}"
+
+      # Exact pack boundary for the app's routing gate. The app REFUSES to route
+      # on a pack without it (Rods valhallaCoverage.ts), so it is built here, per
+      # region, before the hours of tile building: a region whose .poly cannot be
+      # fetched or parsed fails in seconds instead of shipping an unroutable pack.
+      # Geofabrik publishes only the CURRENT .poly (no dated copy beside the dated
+      # PBF); extract boundaries change rarely, and sourceChecksum records exactly
+      # which polygon was used.
+      - name: Build exact pack-coverage metadata
+        id: coverage
+        run: |
+          set -euo pipefail
+          GEO_PATH="${{ steps.meta.outputs.geo_path }}"
+          COVERAGE_FILE="${REGION}-valhalla-coverage.json"
+          mkdir -p work
+          curl -fL --retry 3 --retry-delay 30 --connect-timeout 30 -o work/region.poly \
+            "https://download.geofabrik.de/${GEO_PATH%-latest.osm.pbf}.poly"
+          node scripts/generate-valhalla-coverage.mjs --input work/region.poly --output "$COVERAGE_FILE"
+          COVERAGE_SHA=$(sha256sum "$COVERAGE_FILE" | cut -d' ' -f1)
+          echo "bytes=$(stat -c%s "$COVERAGE_FILE")" >> "$GITHUB_OUTPUT"
+          echo "sha16=${COVERAGE_SHA:0:16}" >> "$GITHUB_OUTPUT"
+          echo "Coverage: $(stat -c%s "$COVERAGE_FILE") B, sha16=${COVERAGE_SHA:0:16}"
 
       - name: Download PBF from Geofabrik
         id: pbf
         run: |
           set -euo pipefail
           mkdir -p work
-          URL="https://download.geofabrik.de/${{ steps.meta.outputs.geo_path }}"
+          GEO_PATH="${{ steps.meta.outputs.geo_path }}"
+          OSM_DATE="${{ needs.prepare-release.outputs.osm_date }}"
+          case "$GEO_PATH" in *-latest.osm.pbf) ;; *) echo "::error::geofabrikPath '$GEO_PATH' is not <name>-latest.osm.pbf"; exit 1;; esac
+          URL="https://download.geofabrik.de/${GEO_PATH%-latest.osm.pbf}-${OSM_DATE}.osm.pbf"
           echo "URL: $URL"
           curl -fL --retry 3 --retry-delay 30 --connect-timeout 30 -o work/region.osm.pbf "$URL"
+          SNAP=$(python3 scripts/pbf_snapshot.py work/region.osm.pbf)
+          if [ "$SNAP" != "${{ needs.prepare-release.outputs.osm_snapshot }}" ]; then
+            echo "::error::[$REGION] PBF snapshot $SNAP is not the release snapshot ${{ needs.prepare-release.outputs.osm_snapshot }}"
+            exit 1
+          fi
+          echo "osm_snapshot=$SNAP" >> "$GITHUB_OUTPUT"
           PBF_BYTES=$(stat -c%s work/region.osm.pbf)
           echo "pbf_bytes=$PBF_BYTES" >> "$GITHUB_OUTPUT"
           echo "pbf_mb=$((PBF_BYTES / 1024 / 1024))" >> "$GITHUB_OUTPUT"
@@ -417,6 +529,7 @@ jobs:
           df -h / | tail -1
 
       - name: Pull Valhalla image and pin its digest
+        id: image
         run: |
           set -euo pipefail
           # P1.6 contract: valhalla_build_tiles, valhalla_build_extract AND the
@@ -431,6 +544,18 @@ jobs:
           fi
           echo "VALHALLA_REF=$VALHALLA_REF" >> "$GITHUB_ENV"
           echo "Pinned Valhalla image: $VALHALLA_REF"
+          # Record the actual engine version string (e.g. 3.7.0-d37aa595e) into the
+          # manifest — VALHALLA_IMAGE can be a digest with no human-readable version
+          # anywhere else, and "which Valhalla built this pack" has already been the
+          # first question in one cross-region investigation (roundabout driving-side
+          # defect, 2026-09-24).
+          VALHALLA_VERSION=$(docker run --rm "$VALHALLA_REF" valhalla_build_tiles --version | tail -1)
+          echo "valhalla_version=$VALHALLA_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Valhalla engine version: $VALHALLA_VERSION"
+          if [ "$VALHALLA_VERSION" != "$VALHALLA_EXPECTED_VERSION" ]; then
+            echo "::error::image reports $VALHALLA_VERSION, the phone/server engine is $VALHALLA_EXPECTED_VERSION (RT-18: one engine) - refusing to build"
+            exit 1
+          fi
 
       - name: Compute timezone cache key (month-scoped)
         id: tzkey
@@ -484,6 +609,42 @@ jobs:
           docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" \
             valhalla_build_admins -c /data/valhalla.json /data/region.osm.pbf
           ls -la work/admins.sqlite
+
+      - name: Verify admin completeness and repair the driving-side gap
+        id: admin_check
+        run: |
+          set -euo pipefail
+          # ROOT CAUSE (2026-09-24, Bayern roundabout_exit_count): a Geofabrik SUB-COUNTRY extract (a
+          # German state, a US state, a UK county) or even a whole-country one (nigeria, ethiopia)
+          # can build ZERO country (admin_level=2) rows, and Valhalla's drive_on_right then defaults
+          # to false (LEFT-hand) for every node: wrong roundabout exits, wrong keep-left/right.
+          # Valhalla also resolves the side by country NAME and gets some wrong (Brunei).
+          #
+          # REPAIR (2026-09-25, replaces the padded-bbox row): a missing country row gets the REAL
+          # Natural Earth 1:10m outline, buffered ~2 km, and so does every NEIGHBOUR of the extract
+          # buffer that has no row - a padded rectangle gave neighbour nodes this country's side
+          # (Shenzhen inside the hong-kong extract as left-hand). Then EVERY country row is checked
+          # against scripts/country-driving-side.json: a wrong side is corrected, a country with no
+          # verified entry fails the build (never a guess). Logic + tests: scripts/driving-side-repair.py.
+          GEO_PATH="${{ steps.meta.outputs.geo_path }}"
+          NPARTS=$(echo "$GEO_PATH" | awk -F'/' '{print NF}')
+          SUB=$(echo "$GEO_PATH" | awk -F'/' '{print $NF}' | sed 's/-latest\.osm\.pbf$//')
+          if [ "$NPARTS" -eq 3 ]; then TOKEN=$(echo "$GEO_PATH" | cut -d'/' -f2); else TOKEN="$SUB"; fi
+          ENTRY=$(jq -c --arg k "$TOKEN/$SUB" --arg t "$TOKEN" '.[$k] // .[$t] // empty' scripts/country-driving-side.json)
+          if [ -z "$ENTRY" ]; then
+            echo "::error::[$REGION] country token '$TOKEN' (from $GEO_PATH) has no entry in scripts/country-driving-side.json. Add a verified {iso, name, driveOnRight} entry before this region can ship."
+            exit 1
+          fi
+          REQUIRE=$(echo "$ENTRY" | jq -r '(.members // [.iso]) | join(",")')
+          ISO=$(echo "$ENTRY" | jq -r '.iso')
+          SQL() { docker run --rm -v "$PWD/work:/data" "$VALHALLA_REF" spatialite /data/admins.sqlite "$1" | tr -d '[:space:]'; }
+          BEFORE=$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2 AND iso_code='$ISO';")
+          # The build input's extent, padded 1 degree: every neighbour an extract buffer can carry.
+          BBOX=$(echo '${{ steps.meta.outputs.bbox }}' | jq -r '"\(.[0]-1),\(.[1]-1),\(.[2]+1),\(.[3]+1)"')
+          scripts/repair-driving-side.sh "$PWD/work" "$VALHALLA_REF" "$BBOX" "$REQUIRE"
+          echo "admin_repaired=$([ "${BEFORE:-0}" -eq 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "admin_repair_country=$TOKEN/$SUB" >> "$GITHUB_OUTPUT"
+          echo "country_rows=$(SQL "SELECT COUNT(*) FROM admins WHERE admin_level=2;")" >> "$GITHUB_OUTPUT"
 
       - name: Build graph tiles (verify-and-retry)
         id: tiles
@@ -593,7 +754,7 @@ jobs:
           PBF_BYTES=${{ steps.pbf.outputs.pbf_bytes }}
           EST=$((PBF_BYTES * 39 / 100))   # rough gz estimate: 0.39 x PBF size
           MIN=$((EST / 10))               # <10% of estimate = suspiciously empty
-          MAX=$((EST * 3))                # >300% of estimate = suspiciously bloated
+          MAX=$((EST * 5))                # >500% of estimate = suspiciously bloated (3.6.3 packs run ~1.3x PBF; 300% rejected egypt/hebei/henan)
           echo "Pack: $((GZ_BYTES / 1024 / 1024)) MB (estimate $((EST / 1024 / 1024)) MB, band $((MIN / 1024 / 1024))..$((MAX / 1024 / 1024)) MB)"
           if [ "$GZ_BYTES" -lt "$MIN" ] || [ "$GZ_BYTES" -gt "$MAX" ]; then
             echo "::error::[$REGION] pack size $GZ_BYTES outside sanity band [$MIN, $MAX] — possible empty/corrupt output"
@@ -668,7 +829,10 @@ jobs:
 
           PASSED=0
           IDX=0
-          CORRIDORS='[]'
+          # Accumulated in a FILE, not a shell variable: a long corridor response
+          # passed back through --argjson hit ARG_MAX (switzerland, 2026-09-24:
+          # "jq: Argument list too long", exit 126).
+          echo '[]' > work/corridors.json
           for PAIR in $PAIRS; do
             A="${PAIR%|*}"; B="${PAIR#*|}"
             LAT1="${A%,*}"; LON1="${A#*,}"; LAT2="${B%,*}"; LON2="${B#*,}"
@@ -697,9 +861,9 @@ jobs:
               exit 1
             fi
             echo "Sanity route OK ($NAME): $(jq -c '.trip.summary | {length, time}' work/route-response.json)"
-            CORRIDORS=$(jq -n --argjson acc "$CORRIDORS" --arg name "$NAME" \
-              --argjson req "$REQ" --slurpfile resp work/route-response.json \
-              '$acc + [{name: $name, request: $req, response: $resp[0]}]')
+            jq --arg name "$NAME" --argjson req "$REQ" --slurpfile resp work/route-response.json \
+              '. + [{name: $name, request: $req, response: $resp[0]}]' \
+              work/corridors.json > work/corridors.tmp && mv work/corridors.tmp work/corridors.json
             PASSED=$((PASSED + 1))
             IDX=$((IDX + 1))
           done
@@ -711,10 +875,40 @@ jobs:
           # `>= 1`, not `== 1`: the array now carries one entry per verified pair.
           # Checked 2026-08-05 — nothing in the Rods repo parses this file with a
           # length assumption, so widening it breaks no consumer.
-          echo "$CORRIDORS" > "${REGION}-corridors.json"
+          cp work/corridors.json "${REGION}-corridors.json"
           jq -e 'type == "array" and length >= 1 and (.[0].response.trip != null)' \
             "${REGION}-corridors.json" > /dev/null
           echo "Corridor asset written: ${REGION}-corridors.json ($(stat -c%s "${REGION}-corridors.json") bytes)"
+
+          # Defense in depth alongside the admin-completeness gate above: if the
+          # sanity pairs we already queried happen to cross 5+ roundabouts, their
+          # roundabout_exit_count values must not all be identical. Free — reuses
+          # the responses already fetched for the route-correctness check, no new
+          # queries, no curated coordinates, and it catches a wrong-but-non-empty
+          # admin build (or any other cause) the admin_level=2 row-count check
+          # above wouldn't. Fewer than 5 proves nothing: long highway pairs cross roundabouts
+          # straight through (inner-mongolia 1,1; michigan and montana 2,2,2 with the
+          # driving side verified right-hand), while the real defect showed 14x 2 in
+          # hong-kong. Below 5 it is a pass, not a skip-reported-as-green.
+          EXIT_COUNTS=$(jq -r \
+            '[.[].response.trip.legs[]?.maneuvers[]? | select(.roundabout_exit_count != null) | .roundabout_exit_count] | @csv' \
+            "${REGION}-corridors.json")
+          N=$(echo "$EXIT_COUNTS" | tr -cd ',' | wc -c)
+          N=$((N + 1))
+          if [ -n "$EXIT_COUNTS" ] && [ "$EXIT_COUNTS" != '""' ]; then
+            UNIQ=$(echo "$EXIT_COUNTS" | tr ',' '\n' | sort -u | wc -l | tr -d '[:space:]')
+            echo "Roundabout exit counts seen in sanity routes: $EXIT_COUNTS (unique=$UNIQ)"
+            if [ "$N" -ge 5 ] && [ "$UNIQ" -eq 1 ]; then
+              echo "::error::[$REGION] ${N} roundabout maneuvers in the sanity routes ALL report the same roundabout_exit_count ($EXIT_COUNTS) — this is the signature of the driving-side defect (see admin-completeness gate). Pack rejected."
+              echo "roundabout_variance=FAIL-constant" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            echo "roundabout_variance=ok(${N} sampled, ${UNIQ} distinct)" >> "$GITHUB_OUTPUT"
+          else
+            echo "No roundabout maneuvers in the sanity routes for $REGION — variance check not applicable."
+            echo "roundabout_variance=not_applicable" >> "$GITHUB_OUTPUT"
+          fi
+
           rm -f work/verify_extract.tar
           sudo rm -rf work/verify_tiles
 
@@ -729,15 +923,27 @@ jobs:
             --argjson gz_mb "${{ steps.pack.outputs.gz_mb }}" \
             --arg sha256 "${{ steps.pack.outputs.sha256 }}" \
             --arg sha16 "${{ steps.pack.outputs.sha16 }}" \
+            --argjson coverage_bytes "${{ steps.coverage.outputs.bytes }}" \
+            --arg coverage_sha16 "${{ steps.coverage.outputs.sha16 }}" \
             --arg sanity "${{ steps.sanity.outputs.result }}" \
             --argjson concurrency "${{ steps.tiles.outputs.concurrency }}" \
             --argjson retried "${{ steps.tiles.outputs.retried }}" \
             --argjson gph_count "${{ steps.pack.outputs.gph_count }}" \
             --arg image "$VALHALLA_REF" \
-            '{region: $region, pbf_mb: $pbf_mb, tiles_seconds: $tiles_seconds,
+            --arg valhalla_version "${{ steps.image.outputs.valhalla_version }}" \
+            --arg admin_country_rows "${{ steps.admin_check.outputs.country_rows }}" \
+            --arg admin_repaired "${{ steps.admin_check.outputs.admin_repaired }}" \
+            --arg admin_repair_country "${{ steps.admin_check.outputs.admin_repair_country }}" \
+            --arg roundabout_variance "${{ steps.sanity.outputs.roundabout_variance }}" \
+            --arg osm_snapshot "${{ steps.pbf.outputs.osm_snapshot }}" \
+            '{region: $region, osm_snapshot: $osm_snapshot, pbf_mb: $pbf_mb, tiles_seconds: $tiles_seconds,
               gz_bytes: $gz_bytes, gz_mb: $gz_mb, sha256: $sha256, sha16: $sha16,
+              coverage_bytes: $coverage_bytes, coverage_sha16: $coverage_sha16,
               sanity: $sanity, concurrency: $concurrency, retried: $retried,
-              gph_count: $gph_count, image: $image}' \
+              gph_count: $gph_count, image: $image, valhalla_version: $valhalla_version,
+              admin_country_rows: $admin_country_rows, admin_repaired: $admin_repaired,
+              admin_repair_country: $admin_repair_country,
+              roundabout_variance: $roundabout_variance}' \
             > "valhalla-report-${REGION}.json"
           cat "valhalla-report-${REGION}.json"
           {
@@ -774,6 +980,7 @@ jobs:
           set -euo pipefail
           gh release upload "$TAG" \
             "${REGION}-valhalla.tar.gz" \
+            "${REGION}-valhalla-coverage.json" \
             "${REGION}-corridors.json" \
             --clobber
           echo "Uploaded ${REGION} to $TAG"
@@ -800,6 +1007,15 @@ jobs:
             exit 1
           fi
           echo "Upload verified: served Content-Length $SERVED B == built $EXPECTED B"
+
+          # Same proof for the coverage sidecar: a pack without it is unroutable.
+          COV_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${REGION}-valhalla-coverage.json"
+          COV_SHA=$(curl -fsSL --retry 5 --retry-delay 10 --retry-all-errors "$COV_URL" | sha256sum | cut -c1-16)
+          if [ "$COV_SHA" != "${{ steps.coverage.outputs.sha16 }}" ]; then
+            echo "::error::[$REGION] served coverage sha16 $COV_SHA != built ${{ steps.coverage.outputs.sha16 }}"
+            exit 1
+          fi
+          echo "Coverage upload verified: sha16 $COV_SHA"
 
       # Only the report JSON travels as an artifact — a few hundred bytes per
       # region. The tar deliberately does NOT: shipping 45 GB through the artifact
@@ -898,7 +1114,8 @@ jobs:
           # plus a legacy valhalla-manifest.json copy for earlier app-side tests.
           jq -s --arg version "$VERSION" --arg gen "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
             '{version: $version, generatedAt: $gen,
-              regions: (map({(.region): {valhallaSize: .gz_bytes, valhallaChecksum: .sha16}}) | add)}' \
+              regions: (map({(.region): {valhallaSize: .gz_bytes, valhallaChecksum: .sha16,
+                valhallaCoverageSize: .coverage_bytes, valhallaCoverageChecksum: .coverage_sha16}}) | add)}' \
             reports/*.json > work-manifest.json
 
           # ── ACCUMULATE, NEVER REPLACE ──────────────────────────────────────
@@ -938,6 +1155,11 @@ jobs:
           fi
           cp release-files/manifest.json release-files/valhalla-manifest.json
           jq '.regions | keys | length as $n | "\($n) regions in the release manifest"' release-files/manifest.json
+          # COVERAGE GATE: the app refuses to route on a pack whose manifest entry
+          # has no coverage pin, so a manifest listing one publishes a pack nobody
+          # can use. Regions carried over from EARLIER batches count too; fix them
+          # with valhalla-coverage-backfill.yml, never by weakening this gate.
+          bash scripts/check-valhalla-coverage.sh "$TAG" release-files/manifest.json
           {
             echo "## Valhalla smoke packs — dataVersion $VERSION"
             echo ""
@@ -992,6 +1214,7 @@ jobs:
 
           **Contents (per region):**
           - {region-id}-valhalla.tar.gz - gzip of the SINGLE valhalla_build_extract tar (index.bin + graph tiles) that mjolnir.tile_extract memory-maps; GRAPH-ONLY (no tz/admin sqlite)
+          - {region-id}-valhalla-coverage.json - Geofabrik's exact extract polygon + 10 km boundary-risk margin, pinned by valhallaCoverageSize/valhallaCoverageChecksum; the app refuses to route without it
           - (no .sha256 sidecars: the manifest's valhallaChecksum is the checksum of record, and 233 sidecars would burn a quarter of GitHub's 1000-asset cap for nothing)
           - {region-id}-corridors.json - P1.8 corridor fixtures: array of {name, request, response} with the FULL valhalla route response from CI verification
           - manifest.json - regions carry valhallaSize + valhallaChecksum (sha256 first 16 hex, same truncation as generate-manifest.ts computeChecksum)
@@ -1006,8 +1229,35 @@ jobs:
 
           # Only the manifests: every tar and corridors.json was uploaded by the
           # build job that produced it, right after its sanity gate.
+          # RT-18 release-inputs contract, read by the Rods server's graph build
+          # (server/valhalla-online/graph/build-graph.sh): the exact engine image,
+          # OSM snapshot and driving-side table these packs were built from, so the
+          # server's continuous graph is built from the same inputs and stamped
+          # with the same releaseId. Accumulates like manifest.json, and refuses a
+          # batch whose engine, snapshot or table differs from earlier batches.
+          IMAGES=$(jq -r '.image' reports/*.json | sort -u)
+          SNAPS=$(jq -r '.osm_snapshot' reports/*.json | sort -u)
+          [ "$(echo "$IMAGES" | wc -l)" -eq 1 ] || { echo "::error::regions built with different images: $IMAGES"; exit 1; }
+          [ "$(echo "$SNAPS" | wc -l)" -eq 1 ] || { echo "::error::regions built from different OSM snapshots: $SNAPS"; exit 1; }
+          jq -n --arg releaseId "${{ steps.info.outputs.version }}" --arg tag "$TAG" \
+            --arg image "$IMAGES" --arg ver "$(jq -r '.valhalla_version' reports/*.json | sort -u | head -1)" \
+            --arg core "$VALHALLA_CORE_SHA" --arg snap "$SNAPS" \
+            --arg osmDate "${{ needs.prepare-release.outputs.osm_date }}" \
+            --arg commit "$GITHUB_SHA" --arg table "$(sha256sum scripts/country-driving-side.json | cut -d' ' -f1)" \
+            '{releaseId: $releaseId, tag: $tag, valhallaBuildImage: $image, valhallaBuildVersion: $ver,
+              valhallaCoreSha: $core, osmSnapshot: $snap, osmDate: $osmDate,
+              pbfUrlTemplate: ("https://download.geofabrik.de/{path}-" + $osmDate + ".osm.pbf"),
+              extractorCommit: $commit, drivingSideTableSha256: $table}' > release-files/valhalla-release-inputs.json
+          if gh release download "$TAG" -D prev-inputs --pattern 'valhalla-release-inputs.json' 2>/dev/null; then
+            for k in releaseId valhallaBuildImage osmSnapshot drivingSideTableSha256; do
+              a=$(jq -r ".$k" prev-inputs/valhalla-release-inputs.json); b=$(jq -r ".$k" release-files/valhalla-release-inputs.json)
+              [ "$a" = "$b" ] || { echo "::error::$TAG already published $k=$a, this batch has $b - one release, one engine + snapshot"; exit 1; }
+            done
+          fi
+          cat release-files/valhalla-release-inputs.json
+
           cd release-files
-          gh release upload "$TAG" manifest.json valhalla-manifest.json --clobber
+          gh release upload "$TAG" manifest.json valhalla-manifest.json valhalla-release-inputs.json --clobber
           echo "Manifests uploaded to $TAG."
 
       - name: Delete older smoke prereleases

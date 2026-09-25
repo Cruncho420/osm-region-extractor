@@ -349,9 +349,16 @@ async function extractRegion(regionId: string): Promise<void> {
     console.log(`      URL: ${pbfUrl}`);
     // BUG-819: the old bare curl accepted HTTP error pages and exposed them as
     // completed PBFs. The helper validates transport + content, then renames atomically.
-    execFileSync(process.execPath, [join(__dirname, 'download-pbf.mjs'), pbfUrl, localPbf], {
-      stdio: 'inherit',
-    });
+    // EXTRACT_LOCAL_PBF: a region-slice piece is cut locally from a dated country extract
+    // (region-slices-pilot.yml) and has no Geofabrik URL of its own. Unset = unchanged path.
+    if (process.env.EXTRACT_LOCAL_PBF) {
+      console.log(`      Using local PBF instead: ${process.env.EXTRACT_LOCAL_PBF}`);
+      renameSync(process.env.EXTRACT_LOCAL_PBF, localPbf);
+    } else {
+      execFileSync(process.execPath, [join(__dirname, 'download-pbf.mjs'), pbfUrl, localPbf], {
+        stdio: 'inherit',
+      });
+    }
 
     const pbfSize = statSync(localPbf).size / (1024 * 1024);
     console.log(`      Downloaded: ${pbfSize.toFixed(1)} MB\n`);

@@ -1,0 +1,697 @@
+{
+  "_comment": "Country driving-side truth table for the Valhalla admin-completeness repair (ci/valhalla-roundabout-exit-probe). Keyed by the 'country token' extracted from a regions.json geofabrikPath: for a sub-country path (continent/country/subregion-latest.osm.pbf) the token is the MIDDLE segment ('germany' from europe/germany/bayern-latest.osm.pbf); for a whole-country path (continent/country-latest.osm.pbf) it is the filename with '-latest.osm.pbf' stripped ('lithuania' from europe/lithuania-latest.osm.pbf). driveOnRight is a plain fact (ISO 3166-1 country, left-vs-right-hand traffic) verified against the public list of left-hand-traffic countries, not derived from OSM or Valhalla's own (undocumented, name-string-matched, and proven fragile in this investigation) admin build. iso/name feed the synthesized admin_level=2 row's iso_code/name/name_en columns.",
+  "_leftHandIso": [
+    "AG",
+    "AI",
+    "AU",
+    "BB",
+    "BD",
+    "BM",
+    "BN",
+    "BS",
+    "BT",
+    "BW",
+    "CC",
+    "CK",
+    "CX",
+    "CY",
+    "DM",
+    "FJ",
+    "FK",
+    "GB",
+    "GD",
+    "GG",
+    "GY",
+    "HK",
+    "ID",
+    "IE",
+    "IM",
+    "IN",
+    "JE",
+    "JM",
+    "JP",
+    "KE",
+    "KI",
+    "KN",
+    "KY",
+    "LC",
+    "LK",
+    "LS",
+    "MO",
+    "MS",
+    "MT",
+    "MU",
+    "MV",
+    "MW",
+    "MY",
+    "MZ",
+    "NA",
+    "NF",
+    "NP",
+    "NR",
+    "NU",
+    "NZ",
+    "PG",
+    "PK",
+    "PN",
+    "SB",
+    "SC",
+    "SG",
+    "SH",
+    "SR",
+    "SZ",
+    "TC",
+    "TH",
+    "TK",
+    "TL",
+    "TO",
+    "TT",
+    "TV",
+    "TZ",
+    "UG",
+    "VC",
+    "VG",
+    "VI",
+    "WS",
+    "ZA",
+    "ZM",
+    "ZW"
+  ],
+  "_leftHandIsoSources": "Union of en.wikipedia.org/wiki/Left-_and_right-hand_traffic and worldstandards.eu/cars/list-of-left-driving-countries (fetched 2026-09-25); plus Cayman Islands (KY). Every ISO NOT in this list drives on the RIGHT. Used only for countries that have no per-region entry below (neighbours inside an extract buffer, enclaves such as Lesotho).",
+  "_scope": "Every country token in scripts/regions.json has an entry (2026-09-24: whole-country extracts also lose their country row, e.g. nigeria, ethiopia, tanzania, so the table can no longer cover only sub-country parents). '<country>/<subregion>' keys override the country for sub-regions that drive on the other side. Multi-country extracts (gcc-states, haiti-and-domrep, ireland-and-northern-ireland, israel-and-palestine, malaysia-singapore-brunei) are one driving side throughout; iso is the largest member. Left-hand tokens: australia, bangladesh, cyprus, great-britain, india, indonesia, ireland-and-northern-ireland, japan, kenya, malaysia-singapore-brunei, malta, nepal, new-zealand, pakistan, south-africa, sri-lanka, tanzania, thailand. 'members' lists every country of a multi-country extract; natural rows of those countries are corrected to the entry's side (Valhalla built Brunei right-hand).",
+  "afghanistan": {
+    "iso": "AF",
+    "name": "Afghanistan",
+    "driveOnRight": true
+  },
+  "albania": {
+    "iso": "AL",
+    "name": "Albania",
+    "driveOnRight": true
+  },
+  "algeria": {
+    "iso": "DZ",
+    "name": "Algeria",
+    "driveOnRight": true
+  },
+  "andorra": {
+    "iso": "AD",
+    "name": "Andorra",
+    "driveOnRight": true
+  },
+  "angola": {
+    "iso": "AO",
+    "name": "Angola",
+    "driveOnRight": true
+  },
+  "argentina": {
+    "iso": "AR",
+    "name": "Argentina",
+    "driveOnRight": true
+  },
+  "australia": {
+    "iso": "AU",
+    "name": "Australia",
+    "driveOnRight": false
+  },
+  "austria": {
+    "iso": "AT",
+    "name": "Austria",
+    "driveOnRight": true
+  },
+  "bangladesh": {
+    "iso": "BD",
+    "name": "Bangladesh",
+    "driveOnRight": false
+  },
+  "belarus": {
+    "iso": "BY",
+    "name": "Belarus",
+    "driveOnRight": true
+  },
+  "belgium": {
+    "iso": "BE",
+    "name": "Belgium",
+    "driveOnRight": true
+  },
+  "belize": {
+    "iso": "BZ",
+    "name": "Belize",
+    "driveOnRight": true
+  },
+  "bolivia": {
+    "iso": "BO",
+    "name": "Bolivia",
+    "driveOnRight": true
+  },
+  "bosnia-herzegovina": {
+    "iso": "BA",
+    "name": "Bosnia and Herzegovina",
+    "driveOnRight": true
+  },
+  "brazil": {
+    "iso": "BR",
+    "name": "Brazil",
+    "driveOnRight": true
+  },
+  "bulgaria": {
+    "iso": "BG",
+    "name": "Bulgaria",
+    "driveOnRight": true
+  },
+  "canada": {
+    "iso": "CA",
+    "name": "Canada",
+    "driveOnRight": true
+  },
+  "chile": {
+    "iso": "CL",
+    "name": "Chile",
+    "driveOnRight": true
+  },
+  "china": {
+    "iso": "CN",
+    "name": "China",
+    "driveOnRight": true
+  },
+  "colombia": {
+    "iso": "CO",
+    "name": "Colombia",
+    "driveOnRight": true
+  },
+  "costa-rica": {
+    "iso": "CR",
+    "name": "Costa Rica",
+    "driveOnRight": true
+  },
+  "croatia": {
+    "iso": "HR",
+    "name": "Croatia",
+    "driveOnRight": true
+  },
+  "cuba": {
+    "iso": "CU",
+    "name": "Cuba",
+    "driveOnRight": true
+  },
+  "cyprus": {
+    "iso": "CY",
+    "name": "Cyprus",
+    "driveOnRight": false
+  },
+  "czech-republic": {
+    "iso": "CZ",
+    "name": "Czechia",
+    "driveOnRight": true
+  },
+  "denmark": {
+    "iso": "DK",
+    "name": "Denmark",
+    "driveOnRight": true
+  },
+  "ecuador": {
+    "iso": "EC",
+    "name": "Ecuador",
+    "driveOnRight": true
+  },
+  "egypt": {
+    "iso": "EG",
+    "name": "Egypt",
+    "driveOnRight": true
+  },
+  "estonia": {
+    "iso": "EE",
+    "name": "Estonia",
+    "driveOnRight": true
+  },
+  "ethiopia": {
+    "iso": "ET",
+    "name": "Ethiopia",
+    "driveOnRight": true
+  },
+  "finland": {
+    "iso": "FI",
+    "name": "Finland",
+    "driveOnRight": true
+  },
+  "france": {
+    "iso": "FR",
+    "name": "France",
+    "driveOnRight": true
+  },
+  "gcc-states": {
+    "iso": "SA",
+    "name": "Saudi Arabia",
+    "driveOnRight": true,
+    "members": [
+      "SA",
+      "AE",
+      "KW",
+      "QA",
+      "BH",
+      "OM"
+    ]
+  },
+  "germany": {
+    "iso": "DE",
+    "name": "Germany",
+    "driveOnRight": true
+  },
+  "great-britain": {
+    "iso": "GB",
+    "name": "United Kingdom",
+    "driveOnRight": false
+  },
+  "greece": {
+    "iso": "GR",
+    "name": "Greece",
+    "driveOnRight": true
+  },
+  "guatemala": {
+    "iso": "GT",
+    "name": "Guatemala",
+    "driveOnRight": true
+  },
+  "haiti-and-domrep": {
+    "iso": "DO",
+    "name": "Dominican Republic",
+    "driveOnRight": true,
+    "members": [
+      "DO",
+      "HT"
+    ]
+  },
+  "honduras": {
+    "iso": "HN",
+    "name": "Honduras",
+    "driveOnRight": true
+  },
+  "hungary": {
+    "iso": "HU",
+    "name": "Hungary",
+    "driveOnRight": true
+  },
+  "iceland": {
+    "iso": "IS",
+    "name": "Iceland",
+    "driveOnRight": true
+  },
+  "india": {
+    "iso": "IN",
+    "name": "India",
+    "driveOnRight": false
+  },
+  "indonesia": {
+    "iso": "ID",
+    "name": "Indonesia",
+    "driveOnRight": false
+  },
+  "iran": {
+    "iso": "IR",
+    "name": "Iran",
+    "driveOnRight": true
+  },
+  "iraq": {
+    "iso": "IQ",
+    "name": "Iraq",
+    "driveOnRight": true
+  },
+  "ireland-and-northern-ireland": {
+    "iso": "IE",
+    "name": "Ireland",
+    "driveOnRight": false,
+    "members": [
+      "IE",
+      "GB"
+    ]
+  },
+  "israel-and-palestine": {
+    "iso": "IL",
+    "name": "Israel",
+    "driveOnRight": true,
+    "members": [
+      "IL",
+      "PS"
+    ]
+  },
+  "italy": {
+    "iso": "IT",
+    "name": "Italy",
+    "driveOnRight": true
+  },
+  "japan": {
+    "iso": "JP",
+    "name": "Japan",
+    "driveOnRight": false
+  },
+  "jordan": {
+    "iso": "JO",
+    "name": "Jordan",
+    "driveOnRight": true
+  },
+  "kazakhstan": {
+    "iso": "KZ",
+    "name": "Kazakhstan",
+    "driveOnRight": true
+  },
+  "kenya": {
+    "iso": "KE",
+    "name": "Kenya",
+    "driveOnRight": false
+  },
+  "kosovo": {
+    "iso": "XK",
+    "name": "Kosovo",
+    "driveOnRight": true
+  },
+  "kyrgyzstan": {
+    "iso": "KG",
+    "name": "Kyrgyzstan",
+    "driveOnRight": true
+  },
+  "latvia": {
+    "iso": "LV",
+    "name": "Latvia",
+    "driveOnRight": true
+  },
+  "lithuania": {
+    "iso": "LT",
+    "name": "Lithuania",
+    "driveOnRight": true
+  },
+  "luxembourg": {
+    "iso": "LU",
+    "name": "Luxembourg",
+    "driveOnRight": true
+  },
+  "macedonia": {
+    "iso": "MK",
+    "name": "North Macedonia",
+    "driveOnRight": true
+  },
+  "malaysia-singapore-brunei": {
+    "iso": "MY",
+    "name": "Malaysia",
+    "driveOnRight": false,
+    "members": [
+      "MY",
+      "SG",
+      "BN"
+    ]
+  },
+  "malta": {
+    "iso": "MT",
+    "name": "Malta",
+    "driveOnRight": false
+  },
+  "mexico": {
+    "iso": "MX",
+    "name": "Mexico",
+    "driveOnRight": true
+  },
+  "moldova": {
+    "iso": "MD",
+    "name": "Moldova",
+    "driveOnRight": true
+  },
+  "mongolia": {
+    "iso": "MN",
+    "name": "Mongolia",
+    "driveOnRight": true
+  },
+  "montenegro": {
+    "iso": "ME",
+    "name": "Montenegro",
+    "driveOnRight": true
+  },
+  "morocco": {
+    "iso": "MA",
+    "name": "Morocco",
+    "driveOnRight": true
+  },
+  "nepal": {
+    "iso": "NP",
+    "name": "Nepal",
+    "driveOnRight": false
+  },
+  "netherlands": {
+    "iso": "NL",
+    "name": "Netherlands",
+    "driveOnRight": true
+  },
+  "new-zealand": {
+    "iso": "NZ",
+    "name": "New Zealand",
+    "driveOnRight": false
+  },
+  "nicaragua": {
+    "iso": "NI",
+    "name": "Nicaragua",
+    "driveOnRight": true
+  },
+  "nigeria": {
+    "iso": "NG",
+    "name": "Nigeria",
+    "driveOnRight": true
+  },
+  "norway": {
+    "iso": "NO",
+    "name": "Norway",
+    "driveOnRight": true
+  },
+  "pakistan": {
+    "iso": "PK",
+    "name": "Pakistan",
+    "driveOnRight": false
+  },
+  "panama": {
+    "iso": "PA",
+    "name": "Panama",
+    "driveOnRight": true
+  },
+  "paraguay": {
+    "iso": "PY",
+    "name": "Paraguay",
+    "driveOnRight": true
+  },
+  "peru": {
+    "iso": "PE",
+    "name": "Peru",
+    "driveOnRight": true
+  },
+  "philippines": {
+    "iso": "PH",
+    "name": "Philippines",
+    "driveOnRight": true
+  },
+  "poland": {
+    "iso": "PL",
+    "name": "Poland",
+    "driveOnRight": true
+  },
+  "portugal": {
+    "iso": "PT",
+    "name": "Portugal",
+    "driveOnRight": true
+  },
+  "romania": {
+    "iso": "RO",
+    "name": "Romania",
+    "driveOnRight": true
+  },
+  "russia": {
+    "iso": "RU",
+    "name": "Russia",
+    "driveOnRight": true
+  },
+  "serbia": {
+    "iso": "RS",
+    "name": "Serbia",
+    "driveOnRight": true
+  },
+  "slovakia": {
+    "iso": "SK",
+    "name": "Slovakia",
+    "driveOnRight": true
+  },
+  "slovenia": {
+    "iso": "SI",
+    "name": "Slovenia",
+    "driveOnRight": true
+  },
+  "south-africa": {
+    "iso": "ZA",
+    "name": "South Africa",
+    "driveOnRight": false
+  },
+  "south-korea": {
+    "iso": "KR",
+    "name": "South Korea",
+    "driveOnRight": true
+  },
+  "spain": {
+    "iso": "ES",
+    "name": "Spain",
+    "driveOnRight": true
+  },
+  "sri-lanka": {
+    "iso": "LK",
+    "name": "Sri Lanka",
+    "driveOnRight": false
+  },
+  "sweden": {
+    "iso": "SE",
+    "name": "Sweden",
+    "driveOnRight": true
+  },
+  "switzerland": {
+    "iso": "CH",
+    "name": "Switzerland",
+    "driveOnRight": true
+  },
+  "taiwan": {
+    "iso": "TW",
+    "name": "Taiwan",
+    "driveOnRight": true
+  },
+  "tanzania": {
+    "iso": "TZ",
+    "name": "Tanzania",
+    "driveOnRight": false
+  },
+  "thailand": {
+    "iso": "TH",
+    "name": "Thailand",
+    "driveOnRight": false
+  },
+  "tunisia": {
+    "iso": "TN",
+    "name": "Tunisia",
+    "driveOnRight": true
+  },
+  "turkey": {
+    "iso": "TR",
+    "name": "Turkey",
+    "driveOnRight": true
+  },
+  "ukraine": {
+    "iso": "UA",
+    "name": "Ukraine",
+    "driveOnRight": true
+  },
+  "uruguay": {
+    "iso": "UY",
+    "name": "Uruguay",
+    "driveOnRight": true
+  },
+  "us": {
+    "iso": "US",
+    "name": "United States",
+    "driveOnRight": true
+  },
+  "uzbekistan": {
+    "iso": "UZ",
+    "name": "Uzbekistan",
+    "driveOnRight": true
+  },
+  "venezuela": {
+    "iso": "VE",
+    "name": "Venezuela",
+    "driveOnRight": true
+  },
+  "vietnam": {
+    "iso": "VN",
+    "name": "Vietnam",
+    "driveOnRight": true
+  },
+  "china/hong-kong": {
+    "iso": "HK",
+    "name": "Hong Kong",
+    "driveOnRight": false
+  },
+  "china/macau": {
+    "iso": "MO",
+    "name": "Macao",
+    "driveOnRight": false
+  },
+  "us/us-virgin-islands": {
+    "iso": "VI",
+    "name": "U.S. Virgin Islands",
+    "driveOnRight": false
+  },
+  "us/puerto-rico": {
+    "iso": "PR",
+    "name": "Puerto Rico",
+    "driveOnRight": true
+  },
+  "isle-of-man": {
+    "iso": "IM",
+    "name": "Isle of Man",
+    "driveOnRight": false
+  },
+  "jersey": {
+    "iso": "JE",
+    "name": "Jersey",
+    "driveOnRight": false
+  },
+  "guernsey": {
+    "iso": "GG",
+    "name": "Guernsey",
+    "driveOnRight": false
+  },
+  "monaco": {
+    "iso": "MC",
+    "name": "Monaco",
+    "driveOnRight": true
+  },
+  "san-marino": {
+    "iso": "SM",
+    "name": "San Marino",
+    "driveOnRight": true
+  },
+  "vatican-city": {
+    "iso": "VA",
+    "name": "Vatican City",
+    "driveOnRight": true
+  },
+  "liechtenstein": {
+    "iso": "LI",
+    "name": "Liechtenstein",
+    "driveOnRight": true
+  },
+  "gibraltar": {
+    "iso": "GI",
+    "name": "Gibraltar",
+    "driveOnRight": true
+  },
+  "faroe-islands": {
+    "iso": "FO",
+    "name": "Faroe Islands",
+    "driveOnRight": true
+  },
+  "aland": {
+    "iso": "AX",
+    "name": "Åland",
+    "driveOnRight": true
+  },
+  "svalbard": {
+    "iso": "SJ",
+    "name": "Svalbard",
+    "driveOnRight": true
+  },
+  "georgia": {
+    "iso": "GE",
+    "name": "Georgia",
+    "driveOnRight": true
+  },
+  "armenia": {
+    "iso": "AM",
+    "name": "Armenia",
+    "driveOnRight": true
+  },
+  "azerbaijan": {
+    "iso": "AZ",
+    "name": "Azerbaijan",
+    "driveOnRight": true
+  }
+}

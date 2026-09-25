@@ -1,0 +1,62 @@
+[
+{
+"name": "Warsaw -> Krakow (North | South)",
+"from": [
+52.2297,
+21.0122
+],
+"to": [
+50.0647,
+19.945
+],
+"pieces": [
+"europe-poland-north",
+"europe-poland-south"
+]
+},
+{
+"name": "Lodz -> Wroclaw (North | South)",
+"from": [
+51.7592,
+19.456
+],
+"to": [
+51.1079,
+17.0385
+],
+"pieces": [
+"europe-poland-north",
+"europe-poland-south"
+]
+},
+{
+"name": "Gdansk -> Poznan (North | South)",
+"from": [
+54.352,
+18.6466
+],
+"to": [
+52.4064,
+16.9252
+],
+"pieces": [
+"europe-poland-north",
+"europe-poland-south"
+]
+},
+{
+"name": "Lublin -> Warsaw (South | North)",
+"from": [
+51.2465,
+22.5684
+],
+"to": [
+52.2297,
+21.0122
+],
+"pieces": [
+"europe-poland-south",
+"europe-poland-north"
+]
+}
+]
