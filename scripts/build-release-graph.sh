@@ -10,14 +10,20 @@
 # USAGE:
 #   scripts/build-release-graph.sh --pbf-url URL [--pbf-url URL ...] --packs packs.json --release ID --work DIR \
 #       --image VALHALLA_REF --bbox minLon,minLat,maxLon,maxLat [--concurrency 1] [--drop-orphans]
+#       [--resume-from cut]
 #   Several --pbf-url inputs are merged with osmium into ONE build (a multi-country trial).
+#   --resume-from cut: --work already holds a FINISHED tile build (tiles/ + tiles-done.json, the receipt
+#     the tile step writes). Skips download, admins and tiles; redoes the cut, every pack, the
+#     descriptor and the report from those tiles. For a run that died after the tiles (2026-09-30: the
+#     planet cut overflowed the slicer after a 4 h tile build). It never rebuilds or edits a tile.
 #   packs.json: [{"id": "europe-lithuania", "poly": "https://download.geofabrik.de/europe/lithuania.poly"}]
 #   (a "poly" of the form "file:<path>" uses a stored outline, e.g. scripts/polys/<id>.poly).
 # DEPENDENCIES: docker, node 20, python3, jq, curl, gzip, tar, sha256sum.
-# CONSUMERS: .github/workflows/release-graph-trial.yml (trial); the Scaleway monthly builder (owed).
+# CONSUMERS: .github/workflows/release-graph-trial.yml (trial); Rods server/valhalla-online/graph/monthly-build.sh
+#   (the monthly release, on the routing box).
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-CONCURRENCY=1; DROP_ORPHANS=""; PBF_URLS=()
+CONCURRENCY=1; DROP_ORPHANS=""; PBF_URLS=(); RESUME=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --pbf-url) PBF_URLS+=("$2"); shift 2;;
@@ -29,15 +35,17 @@ while [ $# -gt 0 ]; do
     --bbox=*) BBOX=${1#--bbox=}; shift;;
     --concurrency) CONCURRENCY=$2; shift 2;;
     --drop-orphans) DROP_ORPHANS=--drop-orphans; shift;;
+    --resume-from) RESUME=$2; shift 2;;
     *) echo "unknown argument $1" >&2; exit 2;;
   esac
 done
+[ -z "$RESUME" ] || [ "$RESUME" = cut ] || { echo "--resume-from takes only: cut" >&2; exit 2; }
 mkdir -p "$WORK"; WORK=$(cd "$WORK" && pwd)
 D() { docker run --rm -v "$WORK:/data" "$REF" "$@"; }
 say() { echo "[$(date -u +%H:%M:%S)] $*"; }
 
 # ---- measurement: peak used disk on the work volume and peak used RAM, sampled every 10 s ----
-echo 0 > "$WORK/peak-disk"; echo 0 > "$WORK/peak-mem"
+if [ -z "$RESUME" ] || [ ! -s "$WORK/peak-disk" ] || [ ! -s "$WORK/peak-mem" ]; then echo 0 > "$WORK/peak-disk"; echo 0 > "$WORK/peak-mem"; fi
 ( while :; do
     DISK=$(df -B1 --output=used "$WORK" | tail -1 | tr -d ' ')
     MEM=$(free -b | awk '/^Mem:/ {print $3}')
@@ -50,6 +58,35 @@ DISK0=$(df -B1 --output=used "$WORK" | tail -1 | tr -d ' ')
 T_START=$(date +%s)
 
 PBF_URL=$(IFS=,; echo "${PBF_URLS[*]}")
+STATE="$WORK/tiles-done.json"
+tile_census() {  # "<tile count> <bytes>" of every .gph under tiles/
+  find "$WORK/tiles" -name '*.gph' -printf '%s\n' | awk '{n++; b+=$1} END {print n+0, b+0}'
+}
+if [ "$RESUME" = cut ]; then
+  # Trust only a tile build that finished: its receipt, the builder's own end-of-build line, no
+  # failure marker, all three levels, no empty tile, and exactly the tiles the receipt counted.
+  fail() { echo "::error::--resume-from cut: $*"; exit 1; }
+  [ -s "$STATE" ] || fail "no $STATE (the tile step's receipt) in $WORK"
+  [ "$(jq -r .pbfUrl "$STATE")" = "$PBF_URL" ] || fail "these tiles were built from $(jq -r .pbfUrl "$STATE"), not $PBF_URL"
+  grep -q "build_tile_set took" "$WORK/build.log" || fail "build.log has no end-of-build line"
+  ! grep -qE "Mismatch in end offset|terminate called" "$WORK/build.log" || fail "build.log reports a failed tile build"
+  [ -s "$WORK/valhalla.json" ] || fail "valhalla.json (the build's config) is missing"
+  for L in 0 1 2; do [ -d "$WORK/tiles/$L" ] || fail "tiles/$L is missing"; done
+  [ -z "$(find "$WORK/tiles" -name '*.gph' -size 0 -print -quit)" ] || fail "an empty tile exists"
+  read -r TILE_COUNT TILE_BYTES_NOW < <(tile_census)
+  [ "$TILE_COUNT" = "$(jq -r .tileCount "$STATE")" ] && [ "$TILE_BYTES_NOW" = "$(jq -r .tileBytes "$STATE")" ] \
+    || fail "tiles/ holds $TILE_COUNT tiles, $TILE_BYTES_NOW bytes; the receipt says $(jq -r .tileCount "$STATE"), $(jq -r .tileBytes "$STATE")"
+  # The graph builder logs how many level-2 tiles it builds; binning only ever adds more.
+  BUILT=$(sed -E 's/\x1b\[[0-9;]*m//g' "$WORK/build.log" | sed -nE 's/.*Building ([0-9]+) tiles with .*/\1/p' | tail -1)
+  L2=$(find "$WORK/tiles/2" -name '*.gph' | wc -l)
+  [ -n "$BUILT" ] && [ "$L2" -ge "$BUILT" ] || fail "tiles/2 holds $L2 tiles, the builder built ${BUILT:-?}"
+  PBF_BYTES=$(jq -r .pbfBytes "$STATE"); SNAPSHOT=$(jq -r .osmSnapshot "$STATE")
+  DOWNLOAD_S=$(jq -r .seconds.download "$STATE"); ADMINS_S=$(jq -r .seconds.admins "$STATE"); TILES_S=$(jq -r .seconds.tiles "$STATE")
+  DISK0=$(jq -r .diskUsedBeforeBytes "$STATE"); T_START=$(( $(date +%s) - DOWNLOAD_S - ADMINS_S - TILES_S ))
+  say "resume from the cut: $TILE_COUNT tiles ($L2 at level 2, builder built $BUILT), $TILE_BYTES_NOW bytes, snapshot $SNAPSHOT"
+  # Whatever the failed attempt left of the cut and the packs. pieces/ holds hard links only.
+  rm -rf "$WORK/pieces" "$WORK/out" "$WORK/assets" "$WORK/slice.json" "$WORK"/*.tar
+else
 T0=$(date +%s)
 if [ "${#PBF_URLS[@]}" -eq 1 ]; then
   say "download $PBF_URL"
@@ -87,6 +124,13 @@ fi
 TILES_S=$(( $(date +%s) - T0 ))
 sudo chown -R "$(id -u):$(id -g)" "$WORK" 2>/dev/null || true
 rm -f "$WORK/input.osm.pbf"
+# The tile step's receipt: what --resume-from cut needs once the input is gone.
+read -r TILE_COUNT TILE_BYTES_NOW < <(tile_census)
+jq -n --arg url "$PBF_URL" --arg snap "$SNAPSHOT" --argjson pbf "$PBF_BYTES" --argjson download "$DOWNLOAD_S" \
+  --argjson admins "$ADMINS_S" --argjson tiles "$TILES_S" --argjson disk0 "$DISK0" --argjson count "$TILE_COUNT" \
+  --argjson bytes "$TILE_BYTES_NOW" '{pbfUrl: $url, osmSnapshot: $snap, pbfBytes: $pbf, tileCount: $count, tileBytes: $bytes,
+    seconds: {download: $download, admins: $admins, tiles: $tiles}, diskUsedBeforeBytes: $disk0}' > "$STATE"
+fi
 TILE_BYTES=$(du -sb "$WORK/tiles" | cut -f1)
 
 say "outlines + release-wide cut"

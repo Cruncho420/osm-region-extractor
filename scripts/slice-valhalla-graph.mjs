@@ -126,13 +126,22 @@ export function assignTiles(tiles, pieces, { dropOrphans = false } = {}) {
   return { assignments, orphans };
 }
 
-function listTiles(root, prefix = '') {
+/**
+ * Every tile path under root, sorted. ONE accumulator, never out.push(...list): a planet build has
+ * ~210,000 tiles and spreading that many into one call overflows the argument stack
+ * ("RangeError: Maximum call stack size exceeded", Rods release 2026-09-29, after a 4 h tile build).
+ * `read` is readdirSync unless a test passes a fake directory.
+ */
+export function listTiles(root, read = readdirSync) {
   const out = [];
-  for (const entry of readdirSync(join(root, prefix), { withFileTypes: true })) {
-    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
-    if (entry.isDirectory()) out.push(...listTiles(root, rel));
-    else if (rel.endsWith('.gph')) out.push(rel);
-  }
+  const walk = (prefix) => {
+    for (const entry of read(join(root, prefix), { withFileTypes: true })) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(rel);
+      else if (rel.endsWith('.gph')) out.push(rel);
+    }
+  };
+  walk('');
   return out.sort();
 }
 

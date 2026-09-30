@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
-import { outlineTouchesBox, prepareOutline, slice, tileBounds } from './slice-valhalla-graph.mjs';
+import { listTiles, outlineTouchesBox, prepareOutline, slice, tileBounds } from './slice-valhalla-graph.mjs';
 
 const square = (name, x0, x1) => prepareOutline(
   `${name}\n1\n ${x0} 54\n ${x1} 54\n ${x1} 55\n ${x0} 55\nEND\nEND\n`);
@@ -68,4 +68,20 @@ test('a trial cut can drop orphans instead of loading them onto the nearest pack
   assert.deepEqual(report.orphanTiles, [far]);
   assert.equal(report.pieces.west.tiles, 1);
   rmSync(root, { recursive: true });
+});
+
+test('listTiles handles a planet-sized directory (no argument-stack overflow) and sorts once', () => {
+  // A fake directory: the real failure needed ~200,000 tiles under one level, too many to create here.
+  const count = 300_000;
+  const file = (name) => ({ name, isDirectory: () => false });
+  const dir = (name) => ({ name, isDirectory: () => true });
+  const read = (path) => {
+    if (path === 'root') return [dir('2'), dir('0'), file('tile_manifest.json')];
+    if (path === join('root', '0')) return [file('002.gph'), file('001.gph')];
+    return Array.from({ length: count }, (_, i) => file(`${String(count - i).padStart(9, '0')}.gph`));
+  };
+  const tiles = listTiles('root', read);
+  assert.equal(tiles.length, count + 2);
+  assert.deepEqual(tiles.slice(0, 3), ['0/001.gph', '0/002.gph', '2/000000001.gph']);
+  assert.equal(tiles.at(-1), `2/${String(count).padStart(9, '0')}.gph`);
 });
