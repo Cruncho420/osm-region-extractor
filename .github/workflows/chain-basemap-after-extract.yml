@@ -49,7 +49,8 @@ jobs:
           # this repo variable names EXACTLY the tag being built, e.g.
           #   gh variable set CHAIN_BASEMAP_ARMED_TAG --body basemap-2026-11-01
           # The app reads maps from basemap-<road-data version>; publishing one is a release
-          # decision, not a side effect of a road-data refresh. Per-tag, so it cannot leak.
+          # decision, not a side effect of a road-data refresh. Per-tag: a new month's tag is never live by accident;
+          # a variable left armed stays live for re-runs on the same tag - disarm after.
           ARMED_TAG: ${{ vars.CHAIN_BASEMAP_ARMED_TAG }}
         run: |
           set -euo pipefail
@@ -60,7 +61,8 @@ jobs:
           esac
           TAG="basemap-${OSM_TAG#osm-}"
           if [ "$EVENT" = workflow_dispatch ]; then
-            DRY_RUN="$MANUAL_DRY_RUN"
+            # Fail closed: only an explicit dry_run=false goes live.
+            if [ "$MANUAL_DRY_RUN" = false ]; then DRY_RUN=false; else DRY_RUN=true; fi
           elif [ -n "$ARMED_TAG" ] && [ "$ARMED_TAG" = "$TAG" ]; then
             DRY_RUN=false
           else

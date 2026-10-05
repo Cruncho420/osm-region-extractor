@@ -139,6 +139,9 @@ gh variable set CHAIN_BASEMAP_ARMED_TAG  -R Cruncho420/osm-region-extractor --bo
 gh variable set CHAIN_VALHALLA_ARMED_TAG -R Cruncho420/osm-region-extractor --body valhalla-2026-11-01  # only if GitHub-built packs are wanted on that tag
 ```
 
-The tag must match what the release date will be (`osm-<run date>`); a mismatch leaves the chain dry
-(a `::notice::` says so) and it can then be dispatched by hand with `dry_run=false`. Disarm afterwards
-with `gh variable delete <name>`. A manual dispatch is still dry by default.
+The tag is the UTC date on which the extract's release step publishes (`date +%Y-%m-%d` after all
+regions are built), not the cron date: Aug and Sep 2026 published on the 2nd. If unsure, let the chain
+run dry, check `gh release list`, then dispatch the chain by hand with `dry_run=false`; a mismatched
+variable fails safe (dry, with a `::notice::`). Disarm afterwards with `gh variable delete <name>`: a
+variable left armed stays live for re-runs while `releases/latest` still carries that tag. A manual
+dispatch is dry unless `dry_run=false` is passed explicitly.

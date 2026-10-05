@@ -225,12 +225,14 @@ jobs:
           # Why: phones read packs from valhalla-<road-data version>, and the routing server's
           # planet-built packs must own that tag (RT-18). An unattended monthly run publishing
           # GitHub-built packs there would hand phones packs that do not match the server.
-          # Per-tag, so an armed month can never leak into the next one.
+          # Per-tag: a new month's tag is never live by accident. A variable left armed stays live
+          # for re-runs while releases/latest still equals it (builds then resume/no-op) - disarm after.
           ARMED_TAG: ${{ vars.CHAIN_VALHALLA_ARMED_TAG }}
         run: |
           set -euo pipefail
           if [ "$EVENT" = workflow_dispatch ]; then
-            DRY_RUN="$MANUAL_DRY_RUN"
+            # Fail closed: only an explicit dry_run=false goes live.
+            if [ "$MANUAL_DRY_RUN" = false ]; then DRY_RUN=false; else DRY_RUN=true; fi
           elif [ -n "$ARMED_TAG" ] && [ "$ARMED_TAG" = "$TARGET_TAG" ]; then
             DRY_RUN=false
           else

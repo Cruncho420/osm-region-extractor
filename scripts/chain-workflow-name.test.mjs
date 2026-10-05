@@ -130,5 +130,11 @@ for (const [name, wf, tagVar, tag] of [
     assert.equal(gate(wf, { EVENT: 'workflow_dispatch', MANUAL_DRY_RUN: 'true', ARMED_TAG: tag, [tagVar]: tag }), 'true');
     assert.equal(gate(wf, { EVENT: 'workflow_dispatch', MANUAL_DRY_RUN: 'false', ARMED_TAG: '', [tagVar]: tag }), 'false');
     assert.doesNotMatch(wf, /DRY_RUN: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.dry_run \}\}/);
+    assert.equal(gate(wf, { EVENT: 'workflow_dispatch', MANUAL_DRY_RUN: '', ARMED_TAG: '', [tagVar]: tag }), 'true', 'manual fails closed');
+    // The sink: the dry-run exit must sit between the gate and the live dispatch.
+    const after = wf.slice(wf.search(/^ *if \[ "\$EVENT" = workflow_dispatch \]/m));
+    const exitAt = after.search(/if \[ "\$DRY_RUN" = "?true"? \]; then\n[^\n]*\n\s*exit 0|\[ "\$DRY_RUN" = true \] && \{[^}]*exit 0; \}/);
+    const liveAt = after.search(/^\s*gh workflow run /m);
+    assert.ok(exitAt > 0 && liveAt > exitAt, 'dry-run exit must precede the live gh workflow run');
   });
 }
