@@ -3,8 +3,9 @@ name: Chain Basemap After Monthly Extract
 # Purpose: build the offline MAP files (basemap-tiles.yml) for every region right after the
 # monthly OSM extract publishes, so the map, road data and routing packs of one month share a
 # version tag (basemap-<v> / osm-<v> / valhalla-<v>) and were cut from OSM a few hours apart.
-# The app reads releases/download/basemap-<monthly manifest version>/manifest.json, so the tag
-# MUST come from the published osm-* release, never from the clock.
+# The app reads releases/download/<manifest basemapTag>/manifest.json (basemap-<manifest version>
+# when the field is absent), so the tag MUST come from the published osm-* release, never from the
+# clock — and phones read it only once a monthly manifest names it (MANIFEST-INTEGRATION.md).
 #
 # Same mechanics as chain-valhalla-after-extract.yml (read its comments): workflow_run on the
 # extract's exact `name:`, dispatch through basemap-tiles.yml's front door with every input
@@ -48,7 +49,7 @@ jobs:
           # ARMING (5 Oct 2026, OPS-monthly-run-1005): the automatic path is a DRY RUN unless
           # this repo variable names EXACTLY the tag being built, e.g.
           #   gh variable set CHAIN_BASEMAP_ARMED_TAG --body basemap-2026-11-01
-          # The app reads maps from basemap-<road-data version>; publishing one is a release
+          # Phones read maps only from the release the manifest names (basemapTag); publishing one is a release
           # decision, not a side effect of a road-data refresh. Per-tag: a new month's tag is never live by accident;
           # a variable left armed stays live for re-runs on the same tag - disarm after.
           ARMED_TAG: ${{ vars.CHAIN_BASEMAP_ARMED_TAG }}

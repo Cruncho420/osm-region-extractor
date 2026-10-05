@@ -29,6 +29,7 @@ on:
       - '.github/workflows/chain-valhalla-after-extract.yml'
       - '.github/workflows/chain-basemap-after-extract.yml'
       - '.github/workflows/region-slices-pilot.yml'
+      - '.github/workflows/regenerate-manifest.yml'
   pull_request:
     paths:
       - 'scripts/**'
@@ -41,6 +42,7 @@ on:
       - '.github/workflows/chain-valhalla-after-extract.yml'
       - '.github/workflows/chain-basemap-after-extract.yml'
       - '.github/workflows/region-slices-pilot.yml'
+      - '.github/workflows/regenerate-manifest.yml'
   workflow_dispatch:
 
 permissions:

@@ -8,12 +8,18 @@
  * CONSUMERS: GitHub Actions workflow, osmDataUpdateService.ts
  *
  * Usage: npm run generate-manifest -- --input ./output --output ./output/manifest.json
+ *          [--previous <published manifest.json>] [--valhalla-pack-tag valhalla-…] [--basemap-tag basemap-…]
+ *
+ * --previous: the pointer fields (valhallaPackTag, basemapTag) are carried forward from it, so a
+ * road-data refresh leaves phones on the routing packs and maps they have (manifest-pointers.mjs).
+ * The two tag flags override that for a release that moves packs or maps.
  */
 
 import { readdirSync, statSync, readFileSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { resolvePointers } from './manifest-pointers.mjs';
 
 // =============================================================================
 // TYPES
@@ -53,7 +59,15 @@ interface ManifestRegion {
 interface Manifest {
   version: string;
   generatedAt: string;
+  valhallaPackTag?: string;
+  basemapTag?: string;
   regions: Record<string, ManifestRegion>;
+}
+
+interface PointerOptions {
+  previousFile?: string;
+  valhallaPackTag?: string;
+  basemapTag?: string;
 }
 
 // =============================================================================
@@ -72,7 +86,7 @@ function computeChecksum(filePath: string): string {
   return createHash('sha256').update(content).digest('hex').substring(0, 16);
 }
 
-function generateManifest(inputDir: string, outputFile: string, overrideVersion?: string): void {
+function generateManifest(inputDir: string, outputFile: string, overrideVersion?: string, pointerOptions: PointerOptions = {}): void {
   console.log(`\n========================================`);
   console.log(`Generating Manifest`);
   console.log(`========================================\n`);
@@ -102,9 +116,19 @@ function generateManifest(inputDir: string, outputFile: string, overrideVersion?
   // original version string, otherwise all clients would see every region as
   // stale and trigger a mass re-download.
   const version = overrideVersion ?? new Date().toISOString().split('T')[0];
+  // An unreadable --previous throws: publishing without the pointers would move every phone to
+  // valhalla-/basemap-<today>, which do not exist.
+  const previous = pointerOptions.previousFile
+    ? JSON.parse(readFileSync(pointerOptions.previousFile, 'utf-8'))
+    : null;
+  const pointers = resolvePointers(previous, {
+    valhallaPackTag: pointerOptions.valhallaPackTag,
+    basemapTag: pointerOptions.basemapTag,
+  });
   const manifest: Manifest = {
     version,
     generatedAt: new Date().toISOString(),
+    ...pointers,
     regions: {},
   };
 
@@ -214,6 +238,8 @@ function generateManifest(inputDir: string, outputFile: string, overrideVersion?
   console.log(`Total regions: ${Object.keys(manifest.regions).length}`);
   console.log(`Total size: ${(totalSize / 1024 / 1024).toFixed(2)} MB`);
   console.log(`Version: ${manifest.version}`);
+  console.log(`Routing packs: ${manifest.valhallaPackTag ?? '(none — app derives valhalla-<version>)'}`);
+  console.log(`Offline maps: ${manifest.basemapTag ?? '(none — app derives basemap-<version>)'}`);
   console.log(`\n✓ Manifest generated: ${outputFile}\n`);
 }
 
@@ -233,5 +259,13 @@ const outputFile =
     : './output/manifest.json';
 const overrideVersion =
   versionIndex !== -1 && args[versionIndex + 1] ? args[versionIndex + 1] : undefined;
+const flagValue = (name: string): string | undefined => {
+  const i = args.indexOf(name);
+  return i !== -1 && args[i + 1] ? args[i + 1] : undefined;
+};
 
-generateManifest(inputDir, outputFile, overrideVersion);
+generateManifest(inputDir, outputFile, overrideVersion, {
+  previousFile: flagValue('--previous'),
+  valhallaPackTag: flagValue('--valhalla-pack-tag'),
+  basemapTag: flagValue('--basemap-tag'),
+});

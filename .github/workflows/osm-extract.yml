@@ -217,11 +217,51 @@ jobs:
 
       - name: Generate manifest
         working-directory: scripts
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Set ONLY for a release that moves phones to new routing packs / offline maps (the aligned
+          # 1 Nov 2026 release), then delete: `gh variable set MANIFEST_VALHALLA_PACK_TAG --body valhalla-…`.
+          # Unset (the normal month), both pointers are carried forward from the previous release.
+          VALHALLA_PACK_TAG: ${{ vars.MANIFEST_VALHALLA_PACK_TAG }}
+          BASEMAP_TAG: ${{ vars.MANIFEST_BASEMAP_TAG }}
         run: |
+          set -euo pipefail
+          # Rods reads routing packs from the release manifest.json names in `valhallaPackTag` and maps
+          # from `basemapTag` (else valhalla-/basemap-<version>). A road-data refresh must not move them
+          # (Rods doc/specs/mapbox-exit/results/OPS-monthly-run-1005.md §6), so they are carried forward
+          # from the previous published manifest. `releases/latest` is the last osm-* release: pack and
+          # map releases are prereleases and never latest; this run's own release is still a draft.
+          # Not reading it fails the release rather than publishing pointers to releases that do not exist.
+          mkdir -p ../previous-release
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern manifest.json -D ../previous-release
           npm run generate-manifest -- \
             --input ../release-files \
-            --output ../release-files/manifest.json
-          cat ../release-files/manifest.json | head -50
+            --output ../release-files/manifest.json \
+            --previous ../previous-release/manifest.json \
+            ${VALHALLA_PACK_TAG:+--valhalla-pack-tag "$VALHALLA_PACK_TAG"} \
+            ${BASEMAP_TAG:+--basemap-tag "$BASEMAP_TAG"}
+          head -50 ../release-files/manifest.json
+
+          # An override must name a release that is PUBLISHED (not a draft) and carries the manifest the
+          # app reads first (basemap-tiles.yml uploads manifest.json only when complete; valhalla releases
+          # carry valhalla-manifest.json), or phones are sent to a 404. A carried-forward tag that has
+          # vanished only warns: the store app does not read the pointers, so it must not lose its
+          # road-data refresh over them.
+          check_pointer() {
+            local tag="$1" kind="$2" asset="$3"
+            [ -n "$tag" ] || return 0
+            if [ "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,assets \
+                  -q "(.isDraft | not) and any(.assets[]; .name == \"$asset\")" 2>/dev/null)" = "true" ]; then
+              echo "✓ $tag is published with $asset"
+            elif [ "$kind" = override ]; then
+              echo "::error::REFUSING TO PUBLISH — manifest pointer $tag (repo variable) is not a published release with $asset."
+              exit 1
+            else
+              echo "::warning::Carried-forward manifest pointer $tag is not a published release with $asset."
+            fi
+          }
+          check_pointer "$(jq -r '.valhallaPackTag // empty' ../release-files/manifest.json)" "${VALHALLA_PACK_TAG:+override}" valhalla-manifest.json
+          check_pointer "$(jq -r '.basemapTag // empty' ../release-files/manifest.json)" "${BASEMAP_TAG:+override}" manifest.json
 
       - name: Verify every asset decompresses BEFORE publishing
         working-directory: scripts

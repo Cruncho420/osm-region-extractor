@@ -179,3 +179,12 @@ test('covers every region when the full set is supplied', () => {
   assert.equal(report.covered, 2);
   assert.deepEqual(report.missing, []);
 });
+
+test('with a valhallaPackTag pointer the pins must come from the pointed release', () => {
+  const base = { ...baseManifest(), version: '2026-11-03', valhallaPackTag: 'valhalla-2026-08-02' };
+  const pins = valhallaManifest({ 'europe-italy': { valhallaSize: 1, valhallaChecksum: SHA_A } });
+  const { manifest } = mergeValhallaFields(base, pins);
+  assert.equal(manifest.valhallaPackTag, 'valhalla-2026-08-02');
+  assert.equal(manifest.regions['europe-italy'].valhallaSize, 1);
+  assert.throws(() => mergeValhallaFields({ ...base, valhallaPackTag: 'valhalla-2026-11-03' }, pins), /version mismatch/);
+});
