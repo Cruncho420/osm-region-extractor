@@ -123,16 +123,49 @@ cancels earlier pending ones, which would silently drop a batch.
 The all-regions rollout stays OWNER-gated: nothing here builds packs for any region
 outside the explicit `regions` input.
 
+## Manifest pointers: which packs and maps phones read (since 5 Oct 2026)
+
+The monthly `manifest.json` carries `valhallaPackTag` and `basemapTag`. Rods builds that read routing
+packs / offline maps take them from those releases; a manifest without them (all before Nov 2026) makes
+the app derive `valhalla-<version>` / `basemap-<version>`. `generate-manifest.ts --previous` carries both
+forward from the last published manifest (`scripts/manifest-pointers.mjs`; the first run after this
+change seeds them as `<prefix>-<previous version>`, i.e. what phones already read), so **an ordinary
+monthly road-data refresh does not move any phone's routing packs or maps**. Store apps that do not
+read the fields are unaffected. Why: Rods `doc/specs/mapbox-exit/results/OPS-monthly-run-1005.md` §6.
+
+To move phones to new packs/maps with a monthly run (the aligned 1 Nov release):
+
+```bash
+# 1. Publish BOTH releases first (prereleases): the box's packs + valhalla-manifest.json, and the basemap
+#    (dispatch basemap-tiles.yml by hand with that tag). Any tag name works; the date no longer has to match.
+# 2. Name them for the next run:
+gh variable set MANIFEST_VALHALLA_PACK_TAG -R Cruncho420/osm-region-extractor --body valhalla-2026-11-01
+gh variable set MANIFEST_BASEMAP_TAG       -R Cruncho420/osm-region-extractor --body basemap-2026-11-01
+# 3. The monthly run (cron or `gh workflow run osm-extract.yml`). Its release REFUSES to publish if a
+#    variable names a release that is not published. Set only one variable to move only that product.
+# 4. After it publishes, delete both (the next run then carries the new tags forward by itself):
+gh variable delete MANIFEST_VALHALLA_PACK_TAG -R Cruncho420/osm-region-extractor
+gh variable delete MANIFEST_BASEMAP_TAG       -R Cruncho420/osm-region-extractor
+```
+
+`regenerate-manifest.yml` keeps a release's own pointers and refuses to change them. There is no
+separate "move the pointers on the live manifest" workflow: moving them between monthly runs means
+another extract run with the variables set.
+
 ## Arming the monthly chains (since 5 Oct 2026)
 
 `chain-valhalla-after-extract.yml` and `chain-basemap-after-extract.yml` run after every successful
-monthly extract, but **only dry-run** unless a repo variable names the exact tag being built. The app
-reads packs from `valhalla-<road-data version>` and maps from `basemap-<road-data version>`, and the
+monthly extract, but **only dry-run** unless a repo variable names the exact tag being built. A chain
+publishes to `valhalla-<road-data version>` / `basemap-<road-data version>`; phones read those only once
+the manifest points at them (above), and the
 routing server's planet-built packs must own the valhalla tag (RT-18), so publishing either is a
 release decision, never a side effect of a road-data refresh. Why: Rods
 `doc/specs/mapbox-exit/results/OPS-monthly-run-1005.md`.
 
-To arm one month (example: the aligned 1 Nov release, if the extract publishes `osm-2026-11-01`):
+Since the manifest pointers, a chain runs AFTER the manifest is written, so what it publishes reaches
+phones only when a later run names it. For the aligned 1 Nov release, publish first and set the
+`MANIFEST_*` variables (above); keep the chains disarmed. To arm one month anyway (example: the extract
+publishes `osm-2026-11-01`):
 
 ```bash
 gh variable set CHAIN_BASEMAP_ARMED_TAG  -R Cruncho420/osm-region-extractor --body basemap-2026-11-01

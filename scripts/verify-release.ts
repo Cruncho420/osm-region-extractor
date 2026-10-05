@@ -80,6 +80,8 @@ interface ManifestRegion {
 }
 interface Manifest {
   version: string;
+  /** The routing release the app reads (manifest-pointers.mjs); absent ⇒ valhalla-<version>. */
+  valhallaPackTag?: string;
   regions: Record<string, ManifestRegion>;
 }
 
@@ -430,12 +432,14 @@ async function main(): Promise<void> {
     // baseUrl is <repo>/releases/latest/download; the packs hang off <repo> under
     // a different, version-pinned release.
     const repoBase = baseUrl!.replace(/\/releases\/.*$/, '');
+    // Same release the app resolves: the manifest's valhallaPackTag, else valhalla-<version>.
+    const packVersion = /^valhalla-(.+)$/.exec(manifest.valhallaPackTag ?? '')?.[1] ?? manifest.version;
     console.log(`regions with a valhalla pack: ${valhallaRegions.length}\n`);
     valhallaResults = await runPool(valhallaRegions, concurrency, ([regionId, region]) =>
-      checkRemoteValhalla(regionId, region, manifest.version, repoBase),
+      checkRemoteValhalla(regionId, region, packVersion, repoBase),
     );
     valhallaResults.push(...(await runPool(valhallaRegions, concurrency, ([regionId, region]) =>
-      checkRemoteCoverage(regionId, region, manifest.version, repoBase),
+      checkRemoteCoverage(regionId, region, packVersion, repoBase),
     )));
   }
 

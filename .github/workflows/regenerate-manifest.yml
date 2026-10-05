@@ -94,10 +94,15 @@ jobs:
       - name: Regenerate manifest (preserving version)
         working-directory: scripts
         run: |
+          # Keep the release's own valhallaPackTag / basemapTag (manifest-pointers.mjs): a repair must
+          # not move phones to other routing packs or maps.
+          PREVIOUS=()
+          if [ -f /tmp/manifest-before.json ]; then PREVIOUS=(--previous /tmp/manifest-before.json); fi
           npm run generate-manifest -- \
             --input ../release-assets \
             --output ../release-assets/manifest.json \
-            --version "${{ steps.ver.outputs.version }}"
+            --version "${{ steps.ver.outputs.version }}" \
+            "${PREVIOUS[@]}"
 
       - name: Show diff vs current manifest
         run: |
@@ -112,6 +117,9 @@ jobs:
           a = json.load(open('/tmp/manifest-before.json'))
           b = json.load(open('release-assets/manifest.json'))
           assert a['version'] == b['version'], f"VERSION MISMATCH — cannot proceed: {a['version']} vs {b['version']}"
+          for f in ('valhallaPackTag', 'basemapTag'):
+              if a.get(f) is not None:
+                  assert a.get(f) == b.get(f), f"POINTER CHANGED — cannot proceed: {f} {a.get(f)} vs {b.get(f)}"
           changed = []
           for rid in a.get('regions', {}):
               if rid not in b.get('regions', {}):
