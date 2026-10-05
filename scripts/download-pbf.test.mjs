@@ -8,10 +8,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 const root = mkdtempSync(join(tmpdir(), 'download-pbf-test-'));
 const opl = join(root, 'valid.opl');
@@ -20,13 +21,39 @@ writeFileSync(opl, 'n1 v1 dV c0 t i0 u T x13.0 y55.0\n');
 const fixtureBuild = spawnSync('osmium', ['cat', opl, '-f', 'pbf', '-o', validPbf], { encoding: 'utf8' });
 assert.equal(fixtureBuild.status, 0, fixtureBuild.stderr);
 const validBytes = readFileSync(validPbf);
+const validMd5 = createHash('md5').update(validBytes).digest('hex');
 
 const hits = new Map();
 const server = createServer((request, response) => {
   const path = request.url ?? '/';
   const count = (hits.get(path) ?? 0) + 1;
   hits.set(path, count);
-  if (path === '/valid') {
+  if (path.endsWith('.md5')) {
+    // Geofabrik format. /md5-mismatch serves valid bytes but a wrong sum.
+    const sum = path === '/md5-mismatch.md5' ? '0'.repeat(32) : validMd5;
+    response.writeHead(path === '/no-md5.md5' ? 404 : 200, { 'Content-Type': 'text/plain' });
+    response.end(`${sum}  ${path.slice(1, -4)}\n`);
+  } else if (path === '/challenge') {
+    // The 2026-10-01 Geofabrik cookie challenge: no cookie => 307 to the SAME url + Set-Cookie.
+    if (!(request.headers.cookie ?? '').includes('gf=ok')) {
+      response.writeHead(307, { Location: '/challenge', 'Set-Cookie': 'gf=ok; Path=/' });
+      response.end('x'.repeat(270));
+      return;
+    }
+    response.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+    response.end(validBytes);
+  } else if (path === '/cookie-retry') {
+    // Attempt 1: the challenge cookie arrives on a 500. Attempt 2 must send it back.
+    const ok = (request.headers.cookie ?? '').includes('gf=retry');
+    response.writeHead(ok ? 200 : 500, ok ? { 'Content-Type': 'application/octet-stream' } : { 'Set-Cookie': 'gf=retry; Path=/' });
+    response.end(ok ? validBytes : 'busy');
+  } else if (path === '/loop') {
+    response.writeHead(307, { Location: '/loop' });
+    response.end();
+  } else if (path === '/region-latest') {
+    response.writeHead(307, { Location: '/region-261003' });
+    response.end();
+  } else if (path === '/valid' || path === '/region-261003' || path === '/md5-mismatch' || path === '/no-md5') {
     response.writeHead(200, { 'Content-Type': 'application/octet-stream' });
     response.end(validBytes);
   } else if (path === '/eventual' && count >= 3) {
@@ -119,4 +146,41 @@ test('exhausts the bounded retry budget', async () => {
   const result = await run('/503', undefined, 2);
   assert.notEqual(result.status, 0);
   assert.equal(hits.get('/503'), 3);
+});
+
+test('answers the Geofabrik cookie challenge instead of looping (2026-10-01 curl exit 47)', async () => {
+  const result = await run('/challenge');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(hits.get('/challenge'), 2);
+});
+
+test('fails a genuine redirect loop fast (max 10 redirects, not 50)', async () => {
+  hits.set('/loop', 0);
+  const result = await run('/loop');
+  assert.notEqual(result.status, 0);
+  assert.ok(hits.get('/loop') <= 11, `followed ${hits.get('/loop')} hops`);
+});
+
+test('verifies the md5 of the dated file a -latest redirect landed on', async () => {
+  const result = await run('/region-latest');
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(hits.get('/region-261003.md5'), 1);
+});
+
+for (const path of ['/md5-mismatch', '/no-md5']) {
+  test(`rejects ${path.slice(1)} without replacing the last good file`, async () => {
+    // The server sends validBytes here, so preload DIFFERENT bytes: "preserved" must be provable.
+    const destination = join(root, `preserved-${path.slice(1)}.pbf`);
+    writeFileSync(destination, 'last good file');
+    const result = await run(path, destination);
+    assert.notEqual(result.status, 0);
+    assert.equal(readFileSync(destination, 'utf8'), 'last good file');
+    assert.ok(!existsSync(`${destination}.cookies`) && !existsSync(`${destination}.partial.md5`));
+  });
+}
+
+test('keeps the cookie jar across attempts', async () => {
+  const result = await run('/cookie-retry', undefined, 1);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(hits.get('/cookie-retry'), 2);
 });

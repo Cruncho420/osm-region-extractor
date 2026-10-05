@@ -90,12 +90,12 @@ else
 T0=$(date +%s)
 if [ "${#PBF_URLS[@]}" -eq 1 ]; then
   say "download $PBF_URL"
-  curl -fL --retry 3 --retry-delay 30 -o "$WORK/input.osm.pbf" "${PBF_URLS[0]}"
+  curl -fL -b /dev/null --max-redirs 10 --retry 3 --retry-delay 30 -o "$WORK/input.osm.pbf" "${PBF_URLS[0]}"
 else
   PARTS=()
   for i in "${!PBF_URLS[@]}"; do
     say "download ${PBF_URLS[$i]}"
-    curl -fL --retry 3 --retry-delay 30 -o "$WORK/part-$i.osm.pbf" "${PBF_URLS[$i]}"
+    curl -fL -b /dev/null --max-redirs 10 --retry 3 --retry-delay 30 -o "$WORK/part-$i.osm.pbf" "${PBF_URLS[$i]}"
     PARTS+=("$WORK/part-$i.osm.pbf")
   done
   say "merge ${#PARTS[@]} extracts"
@@ -138,7 +138,7 @@ mkdir -p "$WORK/polys"
 jq -r '.[] | "\(.id) \(.poly)"' "$PACKS" | while read -r ID SRC; do
   case "$SRC" in
     file:*) cp "${SRC#file:}" "$WORK/polys/$ID.poly";;
-    *) curl -fsSL --retry 3 -o "$WORK/polys/$ID.poly" "$SRC";;
+    *) curl -fsSL -b /dev/null --max-redirs 10 --retry 3 -o "$WORK/polys/$ID.poly" "$SRC";;
   esac
 done
 node "$HERE/slice-valhalla-graph.mjs" --packs "$PACKS" --polys "$WORK/polys" --tiles "$WORK/tiles" \
