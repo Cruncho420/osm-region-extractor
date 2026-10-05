@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -164,10 +164,12 @@ test('verifies the md5 of the dated file a -latest redirect landed on', async ()
 
 for (const path of ['/md5-mismatch', '/no-md5']) {
   test(`rejects ${path.slice(1)} without replacing the last good file`, async () => {
+    // The server sends validBytes here, so preload DIFFERENT bytes: "preserved" must be provable.
     const destination = join(root, `preserved-${path.slice(1)}.pbf`);
-    writeFileSync(destination, validBytes);
+    writeFileSync(destination, 'last good file');
     const result = await run(path, destination);
     assert.notEqual(result.status, 0);
-    assert.deepEqual(readFileSync(destination), validBytes);
+    assert.equal(readFileSync(destination, 'utf8'), 'last good file');
+    assert.ok(!existsSync(`${destination}.cookies`) && !existsSync(`${destination}.partial.md5`));
   });
 }

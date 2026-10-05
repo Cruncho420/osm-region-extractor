@@ -40,8 +40,11 @@ function run(command, args) {
 
 function curl(url, output, cookieJar) {
   // --cookie + --cookie-jar on the same file: send what earlier hops/attempts were given, save
-  // what this one is given. -w prints the final URL so the checksum is read for the SAME dated
-  // file a `-latest` redirect landed on, not for whatever `-latest` points at a minute later.
+  // what this one is given. -w prints the final URL so the checksum is read beside the file
+  // actually served. Every region in regions.json lands on a DATED download.geofabrik.de file
+  // (checked 5 Oct 2026: 234/234, all with an .md5), so pbf and md5 cannot disagree. A big
+  // extract may instead land on a mirror's undated `-latest`, whose pbf and md5 are replaced
+  // ~40 s apart; a download straddling that is an md5 mismatch => retried, never accepted.
   return run('curl', [
     '--fail-with-body', '--location', '--max-redirs', '10', '--show-error', '--silent',
     '--user-agent', USER_AGENT,
@@ -67,12 +70,14 @@ function md5Of(path) {
 /** Geofabrik publishes `<file>.md5` ("<hex>  <name>") beside every extract. Missing = rejected. */
 function verifyMd5(partial, effectiveUrl, cookieJar) {
   const md5File = `${partial}.md5`;
+  const md5Url = new URL(effectiveUrl);
+  md5Url.pathname += '.md5';
   try {
-    curl(`${effectiveUrl}.md5`, md5File, cookieJar);
+    curl(md5Url.href, md5File, cookieJar);
     const expected = readFileSync(md5File, 'utf8').trim().split(/\s+/)[0]?.toLowerCase();
-    if (!/^[0-9a-f]{32}$/.test(expected ?? '')) throw new Error(`no md5 in ${effectiveUrl}.md5`);
+    if (!/^[0-9a-f]{32}$/.test(expected ?? '')) throw new Error(`no md5 in ${md5Url.href}`);
     const actual = md5Of(partial);
-    if (actual !== expected) throw new Error(`md5 mismatch: got ${actual}, ${effectiveUrl}.md5 says ${expected}`);
+    if (actual !== expected) throw new Error(`md5 mismatch: got ${actual}, ${md5Url.href} says ${expected}`);
   } finally {
     rmSync(md5File, { force: true });
   }
@@ -97,7 +102,7 @@ export function downloadPbf(url, destination, env = process.env) {
 
         // Extended fileinfo scans the complete stream. Header-only fileinfo accepts
         // realistic tail truncation, which is the corruption this guard must catch.
-        run(osmium, ['fileinfo', '--extended', '--input-format', 'pbf', '--no-progress', partial]);
+        process.stderr.write(run(osmium, ['fileinfo', '--extended', '--input-format', 'pbf', '--no-progress', partial]));
         verifyMd5(partial, effectiveUrl, cookieJar);
         renameSync(partial, destination);
         return;
