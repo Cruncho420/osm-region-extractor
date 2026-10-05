@@ -121,12 +121,16 @@ jobs:
             echo "Target check OK: ${{ inputs.osm_tag }} is the release currently served as 'latest'."
           fi
 
+          # The release devices fetch packs from: the manifest's valhallaPackTag, else valhalla-<version>.
+          EXPECTED_VTAG=$(jq -r '.valhallaPackTag // empty' work/base.json)
+          EXPECTED_VTAG="${EXPECTED_VTAG:-valhalla-$VERSION}"
           VTAG="${{ inputs.valhalla_tag }}"
           if [ -z "$VTAG" ]; then
-            # The release the manifest points at (valhallaPackTag), else valhalla-<version>.
-            VTAG=$(jq -r '.valhallaPackTag // empty' work/base.json)
-            VTAG="${VTAG:-valhalla-$VERSION}"
+            VTAG="$EXPECTED_VTAG"
             echo "valhalla tag not given — derived $VTAG from the manifest"
+          elif [ "$VTAG" != "$EXPECTED_VTAG" ]; then
+            echo "::error::valhalla_tag $VTAG is not the release devices read packs from ($EXPECTED_VTAG)."
+            exit 1
           fi
           # The derivation is not a convenience: the app builds its pack URL from
           # that same release (manifest-pointers.mjs), so any other tag
