@@ -138,7 +138,7 @@ jobs:
           set -euo pipefail
           mkdir -p work
           PBF=$(jq -r --arg c "$COUNTRY" '.countries[] | select(.country==$c) | .pbf' scripts/region-slices.json)
-          curl -fL --retry 3 --retry-delay 30 -o work/region.osm.pbf "https://download.geofabrik.de/${PBF}-${{ inputs.osm_date }}.osm.pbf"
+          curl -fL -b /dev/null --max-redirs 10 --retry 3 --retry-delay 30 -o work/region.osm.pbf "https://download.geofabrik.de/${PBF}-${{ inputs.osm_date }}.osm.pbf"
           echo "OSM_SNAPSHOT=$(python3 scripts/pbf_snapshot.py work/region.osm.pbf)" >> "$GITHUB_ENV"
           ls -la work/region.osm.pbf
 
@@ -182,7 +182,7 @@ jobs:
           jq -r --arg c "$COUNTRY" '.countries[] | select(.country==$c) | .pieces[] | "\(.id) \(if .outline then "stored" else .sources[0] end)"' scripts/region-slices.json |
           while read -r ID SRC; do
             if [ "$SRC" = stored ]; then cp "scripts/polys/$ID.poly" "work/polys/$ID.poly"
-            else curl -fsSL --retry 3 -o "work/polys/$ID.poly" "https://download.geofabrik.de/$SRC.poly"; fi
+            else curl -fsSL -b /dev/null --max-redirs 10 --retry 3 -o "work/polys/$ID.poly" "https://download.geofabrik.de/$SRC.poly"; fi
           done
           ls -la work/polys
 
@@ -352,7 +352,7 @@ jobs:
           curl -fsSL "https://github.com/protomaps/go-pmtiles/releases/download/v${PMTILES_VERSION}/go-pmtiles_${PMTILES_VERSION}_Linux_x86_64.tar.gz" | tar xz pmtiles
           SPEC=$(jq -c --arg id "$PIECE" '.countries[].pieces[] | select(.id==$id)' scripts/region-slices.json)
           if [ "$(echo "$SPEC" | jq 'has("outline")')" = true ]; then cp "scripts/polys/$PIECE.poly" piece.poly
-          else curl -fsSL --retry 3 -o piece.poly "https://download.geofabrik.de/$(echo "$SPEC" | jq -r '.sources[0]').poly"; fi
+          else curl -fsSL -b /dev/null --max-redirs 10 --retry 3 -o piece.poly "https://download.geofabrik.de/$(echo "$SPEC" | jq -r '.sources[0]').poly"; fi
           # .poly -> GeoJSON MultiPolygon (each '!' hole goes to the outer ring that holds it).
           node --input-type=module -e "
             import { readFileSync, writeFileSync } from 'node:fs';

@@ -364,7 +364,7 @@ jobs:
           VERSION="${{ steps.info.outputs.version }}"
           [ -n "$OSM_DATE" ] || OSM_DATE="$(echo "$VERSION" | cut -c3-4)$(echo "$VERSION" | cut -c6-7)01"
           [[ "$OSM_DATE" =~ ^[0-9]{6}$ ]] || { echo "::error::osm_date '$OSM_DATE' is not YYMMDD"; exit 1; }
-          curl -fsSL --retry 3 -r 0-262143 -o probe.pbf "https://download.geofabrik.de/europe/andorra-${OSM_DATE}.osm.pbf"
+          curl -fsSL -b /dev/null --max-redirs 10 --retry 3 -r 0-262143 -o probe.pbf "https://download.geofabrik.de/europe/andorra-${OSM_DATE}.osm.pbf"
           SNAP=$(python3 scripts/pbf_snapshot.py probe.pbf)
           echo "osm_date=$OSM_DATE" >> "$GITHUB_OUTPUT"
           echo "osm_snapshot=$SNAP" >> "$GITHUB_OUTPUT"
@@ -497,7 +497,7 @@ jobs:
           GEO_PATH="${{ steps.meta.outputs.geo_path }}"
           COVERAGE_FILE="${REGION}-valhalla-coverage.json"
           mkdir -p work
-          curl -fL --retry 3 --retry-delay 30 --connect-timeout 30 -o work/region.poly \
+          curl -fL -b /dev/null --max-redirs 10 --retry 3 --retry-delay 30 --connect-timeout 30 -o work/region.poly \
             "https://download.geofabrik.de/${GEO_PATH%-latest.osm.pbf}.poly"
           node scripts/generate-valhalla-coverage.mjs --input work/region.poly --output "$COVERAGE_FILE"
           COVERAGE_SHA=$(sha256sum "$COVERAGE_FILE" | cut -d' ' -f1)
@@ -515,7 +515,7 @@ jobs:
           case "$GEO_PATH" in *-latest.osm.pbf) ;; *) echo "::error::geofabrikPath '$GEO_PATH' is not <name>-latest.osm.pbf"; exit 1;; esac
           URL="https://download.geofabrik.de/${GEO_PATH%-latest.osm.pbf}-${OSM_DATE}.osm.pbf"
           echo "URL: $URL"
-          curl -fL --retry 3 --retry-delay 30 --connect-timeout 30 -o work/region.osm.pbf "$URL"
+          curl -fL -b /dev/null --max-redirs 10 --retry 3 --retry-delay 30 --connect-timeout 30 -o work/region.osm.pbf "$URL"
           SNAP=$(python3 scripts/pbf_snapshot.py work/region.osm.pbf)
           if [ "$SNAP" != "${{ needs.prepare-release.outputs.osm_snapshot }}" ]; then
             echo "::error::[$REGION] PBF snapshot $SNAP is not the release snapshot ${{ needs.prepare-release.outputs.osm_snapshot }}"

@@ -25,7 +25,7 @@ echo "::group::$ID (${PIECE_OF:+piece of $PIECE_OF, }z$Z)"
 # ── clip polygon: a piece uses its stored outline (the one its road data + routing pack use)
 case "$POLY" in
   stored:*) cp "scripts/polys/${POLY#stored:}.poly" "$W/region.poly" ;;
-  *) curl -sfL --retry 3 "https://download.geofabrik.de/$POLY.poly" -o "$W/region.poly" ;;
+  *) curl -sfL -b /dev/null --max-redirs 10 --retry 3 "https://download.geofabrik.de/$POLY.poly" -o "$W/region.poly" ;;
 esac
 node scripts/poly-to-geojson.mjs "$W/region.poly" "$W/region.geojson"
 
@@ -93,7 +93,7 @@ else
     fi
     # What GitHub serves must be what we built, byte for byte.
     URL="https://github.com/$REPO/releases/download/$TAG/$F"
-    SERVED=$(curl -sfL --retry 3 "$URL" | sha256sum | cut -d' ' -f1)
+    SERVED=$(curl -sfL -b /dev/null --max-redirs 10 --retry 3 "$URL" | sha256sum | cut -d' ' -f1)
     if [ "$SERVED" != "$SHA" ]; then
       gh release delete-asset "$TAG" "$F" -R "$REPO" -y || true
       echo "::error::GitHub serves sha256 $SERVED, built $SHA"; exit 1

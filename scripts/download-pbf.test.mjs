@@ -42,6 +42,11 @@ const server = createServer((request, response) => {
     }
     response.writeHead(200, { 'Content-Type': 'application/octet-stream' });
     response.end(validBytes);
+  } else if (path === '/cookie-retry') {
+    // Attempt 1: the challenge cookie arrives on a 500. Attempt 2 must send it back.
+    const ok = (request.headers.cookie ?? '').includes('gf=retry');
+    response.writeHead(ok ? 200 : 500, ok ? { 'Content-Type': 'application/octet-stream' } : { 'Set-Cookie': 'gf=retry; Path=/' });
+    response.end(ok ? validBytes : 'busy');
   } else if (path === '/loop') {
     response.writeHead(307, { Location: '/loop' });
     response.end();
@@ -173,3 +178,9 @@ for (const path of ['/md5-mismatch', '/no-md5']) {
     assert.ok(!existsSync(`${destination}.cookies`) && !existsSync(`${destination}.partial.md5`));
   });
 }
+
+test('keeps the cookie jar across attempts', async () => {
+  const result = await run('/cookie-retry', undefined, 1);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(hits.get('/cookie-retry'), 2);
+});

@@ -68,7 +68,7 @@ jobs:
           while read -r REGION; do
             GEO_PATH=$(jq -r --arg id "$REGION" '.regions[] | select(.id==$id) | .geofabrikPath' scripts/regions.json)
             [ -n "$GEO_PATH" ] && [ "$GEO_PATH" != null ] || { echo "::error::$REGION not in scripts/regions.json"; exit 1; }
-            curl -fsSL --retry 3 --retry-delay 10 -o region.poly "https://download.geofabrik.de/${GEO_PATH%-latest.osm.pbf}.poly"
+            curl -fsSL -b /dev/null --max-redirs 10 --retry 3 --retry-delay 10 -o region.poly "https://download.geofabrik.de/${GEO_PATH%-latest.osm.pbf}.poly"
             F="out/${REGION}-valhalla-coverage.json"
             node scripts/generate-valhalla-coverage.mjs --input region.poly --output "$F"
             jq --arg r "$REGION" --argjson size "$(stat -c%s "$F")" --arg sha "$(sha256sum "$F" | cut -c1-16)" \
