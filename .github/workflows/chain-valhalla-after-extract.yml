@@ -43,7 +43,9 @@ on:
 
   # Manual entry point, used to TEST this dispatcher without waiting a month.
   # `dry_run` defaults to true so a stray manual click cannot start an 8-hour,
-  # 45 GB build; the automatic path above always runs live.
+  # 45 GB build. The automatic path above is ALSO a dry run unless the repo
+  # variable CHAIN_VALHALLA_ARMED_TAG names the exact target tag (see the
+  # dispatch step).
   workflow_dispatch:
     inputs:
       dry_run:
@@ -215,9 +217,26 @@ jobs:
           REGIONS: ${{ steps.regions.outputs.regions }}
           TARGET_TAG: ${{ steps.version.outputs.target_tag }}
           COUNT: ${{ steps.regions.outputs.count }}
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          EVENT: ${{ github.event_name }}
+          MANUAL_DRY_RUN: ${{ inputs.dry_run }}
+          # ARMING (5 Oct 2026, OPS-monthly-run-1005): the automatic path is a DRY RUN unless
+          # this repo variable names EXACTLY the tag being built, e.g.
+          #   gh variable set CHAIN_VALHALLA_ARMED_TAG --body valhalla-2026-11-01
+          # Why: phones read packs from valhalla-<road-data version>, and the routing server's
+          # planet-built packs must own that tag (RT-18). An unattended monthly run publishing
+          # GitHub-built packs there would hand phones packs that do not match the server.
+          # Per-tag, so an armed month can never leak into the next one.
+          ARMED_TAG: ${{ vars.CHAIN_VALHALLA_ARMED_TAG }}
         run: |
           set -euo pipefail
+          if [ "$EVENT" = workflow_dispatch ]; then
+            DRY_RUN="$MANUAL_DRY_RUN"
+          elif [ -n "$ARMED_TAG" ] && [ "$ARMED_TAG" = "$TARGET_TAG" ]; then
+            DRY_RUN=false
+          else
+            DRY_RUN=true
+            echo "::notice::Not armed for $TARGET_TAG (CHAIN_VALHALLA_ARMED_TAG='${ARMED_TAG}') - dry run, nothing dispatched."
+          fi
 
           # ⚠️ ALL FOUR INPUTS ARE PASSED EXPLICITLY, ON PURPOSE. None of them is
           # `required: true` in valhalla-tiles.yml, so a bare call silently takes

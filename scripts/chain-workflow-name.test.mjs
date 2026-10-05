@@ -107,3 +107,28 @@ test('the basemap chain dispatches every input explicitly, to a production tag f
   assert.match(basemapChain, /TAG="basemap-\$\{OSM_TAG#osm-\}"/);
   assert.doesNotMatch(basemapChain, /date -u/);
 });
+
+// OPS-monthly-run-1005 (5 Oct 2026): neither chain may publish from an unattended monthly run
+// unless a human armed it for that exact tag. Runs each workflow's real gating block in bash.
+import { spawnSync } from 'node:child_process';
+function gate(workflow, env) {
+  const block = workflow.match(/^( *)if \[ "\$EVENT" = workflow_dispatch \]; then\n[\s\S]*?^\1fi$/m);
+  assert.ok(block, 'gating block not found');
+  const r = spawnSync('bash', ['-c', `set -euo pipefail\n${block[0]}\necho "$DRY_RUN"`], { env: { ...env, PATH: process.env.PATH }, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  return r.stdout.trim().split('\n').pop();
+}
+for (const [name, wf, tagVar, tag] of [
+  ['valhalla', chain, 'TARGET_TAG', 'valhalla-2026-11-01'],
+  ['basemap', basemapChain, 'TAG', 'basemap-2026-11-01'],
+]) {
+  test(`the ${name} chain is a dry run unless armed for exactly this tag`, () => {
+    const auto = { EVENT: 'workflow_run', MANUAL_DRY_RUN: '', [tagVar]: tag };
+    assert.equal(gate(wf, { ...auto, ARMED_TAG: '' }), 'true', 'unarmed must be dry');
+    assert.equal(gate(wf, { ...auto, ARMED_TAG: tag.replace('11-01', '10-05') }), 'true', 'armed for another month must be dry');
+    assert.equal(gate(wf, { ...auto, ARMED_TAG: tag }), 'false', 'armed for this tag goes live');
+    assert.equal(gate(wf, { EVENT: 'workflow_dispatch', MANUAL_DRY_RUN: 'true', ARMED_TAG: tag, [tagVar]: tag }), 'true');
+    assert.equal(gate(wf, { EVENT: 'workflow_dispatch', MANUAL_DRY_RUN: 'false', ARMED_TAG: '', [tagVar]: tag }), 'false');
+    assert.doesNotMatch(wf, /DRY_RUN: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.dry_run \}\}/);
+  });
+}

@@ -43,7 +43,14 @@ jobs:
       - name: Resolve the version from the PUBLISHED release and dispatch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          EVENT: ${{ github.event_name }}
+          MANUAL_DRY_RUN: ${{ inputs.dry_run }}
+          # ARMING (5 Oct 2026, OPS-monthly-run-1005): the automatic path is a DRY RUN unless
+          # this repo variable names EXACTLY the tag being built, e.g.
+          #   gh variable set CHAIN_BASEMAP_ARMED_TAG --body basemap-2026-11-01
+          # The app reads maps from basemap-<road-data version>; publishing one is a release
+          # decision, not a side effect of a road-data refresh. Per-tag, so it cannot leak.
+          ARMED_TAG: ${{ vars.CHAIN_BASEMAP_ARMED_TAG }}
         run: |
           set -euo pipefail
           OSM_TAG=$(gh api "repos/${{ github.repository }}/releases/latest" --jq .tag_name)
@@ -52,6 +59,14 @@ jobs:
             *) echo "::error::latest release '$OSM_TAG' is not osm-YYYY-MM-DD — refusing to guess"; exit 1 ;;
           esac
           TAG="basemap-${OSM_TAG#osm-}"
+          if [ "$EVENT" = workflow_dispatch ]; then
+            DRY_RUN="$MANUAL_DRY_RUN"
+          elif [ -n "$ARMED_TAG" ] && [ "$ARMED_TAG" = "$TAG" ]; then
+            DRY_RUN=false
+          else
+            DRY_RUN=true
+            echo "::notice::Not armed for $TAG (CHAIN_BASEMAP_ARMED_TAG='${ARMED_TAG}') - dry run, nothing dispatched."
+          fi
           if gh release download "$TAG" -R "${{ github.repository }}" -D live --pattern manifest.json 2>/dev/null; then
             echo "Nothing to do: $TAG already has its complete manifest.json" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0
           fi
