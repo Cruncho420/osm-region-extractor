@@ -240,25 +240,28 @@ jobs:
             --previous ../previous-release/manifest.json \
             ${VALHALLA_PACK_TAG:+--valhalla-pack-tag "$VALHALLA_PACK_TAG"} \
             ${BASEMAP_TAG:+--basemap-tag "$BASEMAP_TAG"}
-          cat ../release-files/manifest.json | head -50
+          head -50 ../release-files/manifest.json
 
-          # An override must name a release that is already PUBLISHED (not a draft), or phones are sent
-          # to a 404. A carried-forward tag that has vanished only warns: the store app does not read
-          # the pointers, so it must not lose its road-data refresh over them.
+          # An override must name a release that is PUBLISHED (not a draft) and carries the manifest the
+          # app reads first (basemap-tiles.yml uploads manifest.json only when complete; valhalla releases
+          # carry valhalla-manifest.json), or phones are sent to a 404. A carried-forward tag that has
+          # vanished only warns: the store app does not read the pointers, so it must not lose its
+          # road-data refresh over them.
           check_pointer() {
-            local tag="$1" kind="$2"
+            local tag="$1" kind="$2" asset="$3"
             [ -n "$tag" ] || return 0
-            if [ "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft 2>/dev/null)" = "false" ]; then
-              echo "✓ $tag is published"
+            if [ "$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft,assets \
+                  -q "(.isDraft | not) and any(.assets[]; .name == \"$asset\")" 2>/dev/null)" = "true" ]; then
+              echo "✓ $tag is published with $asset"
             elif [ "$kind" = override ]; then
-              echo "::error::REFUSING TO PUBLISH — manifest pointer $tag (repo variable) is not a published release."
+              echo "::error::REFUSING TO PUBLISH — manifest pointer $tag (repo variable) is not a published release with $asset."
               exit 1
             else
-              echo "::warning::Carried-forward manifest pointer $tag is not a published release."
+              echo "::warning::Carried-forward manifest pointer $tag is not a published release with $asset."
             fi
           }
-          check_pointer "$(jq -r '.valhallaPackTag // empty' ../release-files/manifest.json)" "${VALHALLA_PACK_TAG:+override}"
-          check_pointer "$(jq -r '.basemapTag // empty' ../release-files/manifest.json)" "${BASEMAP_TAG:+override}"
+          check_pointer "$(jq -r '.valhallaPackTag // empty' ../release-files/manifest.json)" "${VALHALLA_PACK_TAG:+override}" valhalla-manifest.json
+          check_pointer "$(jq -r '.basemapTag // empty' ../release-files/manifest.json)" "${BASEMAP_TAG:+override}" manifest.json
 
       - name: Verify every asset decompresses BEFORE publishing
         working-directory: scripts

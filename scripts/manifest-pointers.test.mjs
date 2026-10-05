@@ -133,16 +133,23 @@ test('regenerate-manifest: a repair keeps the release\'s own pointers', () => {
 });
 
 /** Run the workflow's real check_pointer function with a fake `gh` that knows which tags are published. */
-function checkPointer(tag, kind, published) {
+function checkPointer(tag, kind, published, asset = 'manifest.json') {
   const w = workflow('osm-extract.yml');
   const start = w.indexOf('          check_pointer() {');
   const end = w.indexOf('\n          }\n', start) + '\n          }\n'.length;
   const fn = w.slice(start, end);
   const dir = mkdtempSync(join(tmpdir(), 'check-pointer-'));
   try {
-    writeFileSync(join(dir, 'gh'), `#!/bin/sh\ncase " ${published.join(' ')} " in *" $3 "*) echo false ;; *) exit 1 ;; esac\n`, { mode: 0o755 });
-    const script = `set -euo pipefail\n${fn}\ncheck_pointer "$1" "$2"\necho REACHED_END`;
-    const r = spawnSync('bash', ['-c', script, 'x', tag, kind], {
+    // A published release answers the workflow's jq query with true only when it carries `asset`;
+    // `published` lists "tag" (with every asset) or "tag:asset-it-lacks".
+    writeFileSync(join(dir, 'gh'), `#!/bin/sh
+for p in ${published.join(' ')}; do
+  case "$p" in "$3") echo true; exit 0 ;; "$3":*) echo false; exit 0 ;; esac
+done
+exit 1
+`, { mode: 0o755 });
+    const script = `set -euo pipefail\n${fn}\ncheck_pointer "$1" "$2" "$3"\necho REACHED_END`;
+    const r = spawnSync('bash', ['-c', script, 'x', tag, kind, asset], {
       encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, GITHUB_REPOSITORY: 'o/r' },
     });
     return { code: r.status, out: `${r.stdout}${r.stderr}` };
@@ -161,4 +168,24 @@ test('osm-extract check_pointer: an override naming an unpublished release refus
   assert.match(carried.out, /::warning::.*basemap-2026-09-02/);
   assert.match(carried.out, /REACHED_END/);
   assert.equal(checkPointer('', 'override', []).code, 0); // no pointer, nothing to check
+});
+
+test('osm-extract check_pointer: an override naming a release still missing its manifest refuses', () => {
+  const r = checkPointer('basemap-2026-11-01', 'override', ['basemap-2026-11-01:half-built']);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /REFUSING TO PUBLISH.*with manifest\.json/);
+  const w = workflow('osm-extract.yml');
+  assert.match(w, /\.valhallaPackTag \/\/ empty' \.\.\/release-files\/manifest\.json\)" "\$\{VALHALLA_PACK_TAG:\+override\}" valhalla-manifest\.json/);
+  assert.match(w, /\.basemapTag \/\/ empty' \.\.\/release-files\/manifest\.json\)" "\$\{BASEMAP_TAG:\+override\}" manifest\.json/);
+});
+
+test('regenerate-manifest: packs are re-read from the release the manifest points at', () => {
+  const w = workflow('regenerate-manifest.yml');
+  assert.match(w, /VALHALLA_TAG="\$\(jq -r '\.valhallaPackTag \/\/ empty' \/tmp\/manifest-pointer\.json/);
+  assert.match(w, /VALHALLA_TAG="\$\{VALHALLA_TAG:-valhalla-/);
+});
+
+test('a pointer longer than 64 characters is refused', () => {
+  assert.throws(() => resolvePointers(POINTED, { basemapTag: `basemap-${'a'.repeat(57)}` }), /basemapTag from override/);
+  assert.deepEqual(resolvePointers(POINTED, { basemapTag: `basemap-${'a'.repeat(56)}` }).basemapTag.length, 64);
 });

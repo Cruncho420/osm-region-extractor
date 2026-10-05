@@ -123,11 +123,13 @@ jobs:
 
           VTAG="${{ inputs.valhalla_tag }}"
           if [ -z "$VTAG" ]; then
-            VTAG="valhalla-$VERSION"
-            echo "valhalla tag not given — derived $VTAG from the manifest version"
+            # The release the manifest points at (valhallaPackTag), else valhalla-<version>.
+            VTAG=$(jq -r '.valhallaPackTag // empty' work/base.json)
+            VTAG="${VTAG:-valhalla-$VERSION}"
+            echo "valhalla tag not given — derived $VTAG from the manifest"
           fi
-          # The derivation is not a convenience: the app builds its pack URL as
-          # releases/download/valhalla-${manifestVersion}/..., so any other tag
+          # The derivation is not a convenience: the app builds its pack URL from
+          # that same release (manifest-pointers.mjs), so any other tag
           # publishes URLs that cannot resolve. The merge script refuses a version
           # mismatch too — this is the same rule enforced one step earlier, where
           # the error message can still name the tag.

@@ -65,10 +65,14 @@ export function mergeValhallaFields(base, valhalla, options = {}) {
   // releases/download/valhalla-${manifestVersion}/..., so a version mismatch
   // here is not a cosmetic disagreement — it is a 404 for every region, from a
   // merge that would otherwise report success.
-  if (base.version !== valhalla.version) {
+  // Since the manifest pointers (manifest-pointers.mjs) the app reads the release named by
+  // base.valhallaPackTag, so the pins must come from THAT release; without the field, valhalla-<version>.
+  const expected = typeof base.valhallaPackTag === 'string'
+    ? base.valhallaPackTag.replace(/^valhalla-/, '') : base.version;
+  if (expected !== valhalla.version) {
     refuse(
-      `version mismatch: base is ${base.version}, valhalla release is ${valhalla.version}. ` +
-        'The valhalla tag must be valhalla-<base version>.',
+      `version mismatch: the app reads valhalla-${expected}, valhalla release is ${valhalla.version}. ` +
+        'The valhalla manifest must come from the release the base manifest points at.',
     );
   }
 

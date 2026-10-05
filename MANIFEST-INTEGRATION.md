@@ -138,6 +138,9 @@ To move phones to new packs/maps with a monthly run (the aligned 1 Nov release):
 ```bash
 # 1. Publish BOTH releases first (prereleases): the box's packs + valhalla-manifest.json, and the basemap
 #    (dispatch basemap-tiles.yml by hand with that tag). Any tag name works; the date no longer has to match.
+#    Verify the packs BEFORE naming them (the monthly verify only checks that the release exists and
+#    carries valhalla-manifest.json / manifest.json, not every pack):
+#    cd scripts && npm run verify-release -- --manifest-url https://github.com/Cruncho420/osm-region-extractor/releases/download/valhalla-2026-11-01/valhalla-manifest.json
 # 2. Name them for the next run:
 gh variable set MANIFEST_VALHALLA_PACK_TAG -R Cruncho420/osm-region-extractor --body valhalla-2026-11-01
 gh variable set MANIFEST_BASEMAP_TAG       -R Cruncho420/osm-region-extractor --body basemap-2026-11-01
@@ -148,7 +151,9 @@ gh variable delete MANIFEST_VALHALLA_PACK_TAG -R Cruncho420/osm-region-extractor
 gh variable delete MANIFEST_BASEMAP_TAG       -R Cruncho420/osm-region-extractor
 ```
 
-`regenerate-manifest.yml` keeps a release's own pointers and refuses to change them. There is no
+`regenerate-manifest.yml` keeps a release's own pointers, refuses to change them, and re-reads pack
+pins from the pointed release; `merge-valhalla-fields.mjs` likewise only merges pins from the release the
+manifest points at. There is no
 separate "move the pointers on the live manifest" workflow: moving them between monthly runs means
 another extract run with the variables set.
 

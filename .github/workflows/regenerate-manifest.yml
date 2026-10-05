@@ -65,7 +65,11 @@ jobs:
           # none, emits no valhallaSize/valhallaChecksum, and REGENERATING THE
           # MANIFEST SILENTLY TURNS OFF OFFLINE ROUTING FOR EVERY DEVICE. The
           # app's pack download returns early when the field is absent.
-          VALHALLA_TAG="valhalla-${{ steps.ver.outputs.version }}"
+          # Since the manifest pointers: the release the published manifest NAMES (valhallaPackTag),
+          # else valhalla-<version> — never pins from one release under a pointer to another.
+          gh release download "${{ inputs.release_tag }}" --pattern manifest.json -O /tmp/manifest-pointer.json || true
+          VALHALLA_TAG="$(jq -r '.valhallaPackTag // empty' /tmp/manifest-pointer.json 2>/dev/null || true)"
+          VALHALLA_TAG="${VALHALLA_TAG:-valhalla-${{ steps.ver.outputs.version }}}"
           if gh release view "$VALHALLA_TAG" > /dev/null 2>&1; then
             gh release download "$VALHALLA_TAG" \
               -D release-assets \

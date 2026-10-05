@@ -17,10 +17,10 @@
 
 export const POINTERS = { valhallaPackTag: 'valhalla', basemapTag: 'basemap' };
 
-/** Same shape the app accepts: `<prefix>-<version>`, URL-safe (no `/`, no `..`). */
+/** Same shape the app accepts: `<prefix>-<version>`, URL-safe (no `/`, no `..`), at most 64 chars. */
 export function isValidPointer(field, value) {
   const prefix = POINTERS[field];
-  return typeof value === 'string' && new RegExp(`^${prefix}-[A-Za-z0-9][A-Za-z0-9_-]*(?:\\.[A-Za-z0-9_-]+)*$`).test(value);
+  return typeof value === 'string' && value.length <= 64 && new RegExp(`^${prefix}-[A-Za-z0-9][A-Za-z0-9_-]*(?:\\.[A-Za-z0-9_-]+)*$`).test(value);
 }
 
 /**
