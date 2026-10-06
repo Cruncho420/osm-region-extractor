@@ -207,6 +207,8 @@ class BuildTests(unittest.TestCase):
         self.assertIn('postcodes dropped', meta(db)['decision'])
 
     def test_poi_cells(self):
+        far = [pt(-73.98551, -40.75812, name='Southwest Fuel', amenity='fuel')]  # south of the equator, west of Greenwich
+        self.src.write_text('\n'.join(json.dumps(f) for f in FEATURES + far) + '\n')
         res, db = self.build(10 ** 9)
         meta = dict(db.execute('SELECT k, v FROM meta'))
         c = round(float(meta['poi_cell_deg']) * 1e5)
@@ -214,12 +216,14 @@ class BuildTests(unittest.TestCase):
         want = sorted(db.execute("SELECT cls, ((lat + 9000000) / ?) * 65536 + (lon + 18000000) / ?, id FROM p "
                                  "WHERE cls >= 100 AND cls != (SELECT id FROM cls WHERE tag = 'postcode=yes')", (c, c)))
         self.assertEqual(sorted(db.execute('SELECT cls, cell, id FROM pc')), want)
-        self.assertEqual(len(want), 4)  # pass, cafe, two fuel stations
+        self.assertEqual(len(want), 5)  # pass, cafe, three fuel stations
         # the Python reading of the same rule: Klaipėda's cafe at (55.71, 21.01)
         cafe = db.execute("SELECT p.id, pc.cell FROM p JOIN pc ON pc.id = p.id WHERE p.name = 'Kavinė'").fetchone()
         self.assertEqual(cafe[1], ((5571000 + 9000000) // c) * 65536 + (2101000 + 18000000) // c)
-        # west of Greenwich and south of the equator: the integers stay positive, so / is floor
-        self.assertEqual(((-3456789 + 9000000) // c, (-12345678 + 18000000) // c), (1108, 1130))
+        # south and west: the stored integers -4075812 / -7398551 -> floor((90 - 40.75812) / 0.05) = 984,
+        # floor((180 - 73.98551) / 0.05) = 2120 (independent of the SQL above)
+        sw = db.execute("SELECT p.lat, p.lon, pc.cell FROM p JOIN pc ON pc.id = p.id WHERE p.name = 'Southwest Fuel'").fetchone()
+        self.assertEqual(sw, (-4075812, -7398551, 984 * 65536 + 2120))
         # a range seek on (cls, cell) is what the app runs
         plan = ' '.join(r[3] for r in db.execute('EXPLAIN QUERY PLAN SELECT id FROM pc WHERE cls = 1 AND cell BETWEEN 2 AND 3'))
         self.assertIn('PRIMARY KEY (cls=? AND cell>? AND cell<?)', plan)
