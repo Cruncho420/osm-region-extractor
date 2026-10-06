@@ -18,9 +18,21 @@ on:
         description: 'Extract single region (leave empty for all)'
         required: false
         type: string
+      publish_search:
+        description: 'Publish the offline search files (<region>-search.sqlite.gz) on the release + manifest. OFF = build them as workflow artifacts only'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write  # Required for creating releases
+
+env:
+  # Offline search (Rods FEAT-090, owner-approved 2026-10-06) is DRY-RUN until the aligned
+  # 1 Nov 2026 release: every region builds <region>-search.sqlite.gz as a workflow artifact, and
+  # nothing reaches the release or manifest.json unless this is 'true' (dispatch input, or repo
+  # variable PUBLISH_SEARCH_INDEX=true for the scheduled run: `gh variable set PUBLISH_SEARCH_INDEX --body true`).
+  PUBLISH_SEARCH_INDEX: ${{ inputs.publish_search || vars.PUBLISH_SEARCH_INDEX == 'true' }}
 
 jobs:
   # Job 1: Get list of all regions to extract
@@ -93,6 +105,36 @@ jobs:
           # size. Tracked separately; not done here because it is a change to BUG-278's
           # design, not to tolls.
           NODE_OPTIONS: '--max-old-space-size=12288'
+          # The offline-search step below reads the same PBF and deletes it (no second download).
+          EXTRACT_KEEP_PBF: '1'
+
+      # Offline search index (scripts/search_index.py). continue-on-error: a search failure must
+      # never cost a region its road data — the region then simply has no searchSize this month.
+      # House numbers are kept only when gz(with them) <= 5 % of today's download (road data +
+      # routing + map, read from the live manifest and the releases it points at; this month's
+      # road data is not built yet, so last month's sqliteSize stands in for it).
+      - name: Build offline search index for ${{ matrix.region }}
+        id: search
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGION: ${{ matrix.region }}
+        run: |
+          set -euo pipefail
+          trap 'rm -f "/tmp/$REGION.osm.pbf"' EXIT
+          mkdir -p search-out today
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern manifest.json -O today/osm.json || true
+          VT=$(jq -r '.valhallaPackTag // ("valhalla-" + .version)' today/osm.json 2>/dev/null || true)
+          BT=$(jq -r '.basemapTag // ("basemap-" + .version)' today/osm.json 2>/dev/null || true)
+          [ -z "$VT" ] || gh release download "$VT" --repo "$GITHUB_REPOSITORY" --pattern valhalla-manifest.json -O today/valhalla.json || true
+          [ -z "$BT" ] || gh release download "$BT" --repo "$GITHUB_REPOSITORY" --pattern manifest.json -O today/basemap.json || true
+          M=(); for f in today/*.json; do if [ -s "$f" ]; then M+=(--manifest "$f"); fi; done
+          python3 scripts/search_index.py --region "$REGION" --pbf "/tmp/$REGION.osm.pbf" --out search-out \
+            "${M[@]}" --summary "search-out/$REGION-search.json"
+          { echo "| Search file | Variant | Rows | Addresses | gz bytes | Today's download | Share | Share with house numbers | sha256[0:16] |"
+            echo "|---|---|---:|---:|---:|---:|---:|---:|---|"; } >> "$GITHUB_STEP_SUMMARY"
+          jq -r '"| \(.region) | \(.variant) | \(.rows) | \(.addr_rows) | \(.gz_bytes) | \(.today_download_bytes) | \(.share_pct) % | \(.share_with_housenumbers_pct // "-") % | \(.checksum) |"' \
+            "search-out/$REGION-search.json" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build SQLite for ${{ matrix.region }}
         working-directory: scripts
@@ -115,6 +157,18 @@ jobs:
           # only these two cuts the release-job download to ~38GB so large files no
           # longer truncate. build-sqlite still reads -ways/-surfaces LOCALLY here.
           retention-days: 1  # Clean up quickly to save storage
+
+      # Its own artifact (search-<region>) so the release job can leave it out entirely in a
+      # dry-run month: no disk on the release runner (BUG-242), no asset on the release.
+      - name: Upload offline search artifact
+        if: steps.search.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: search-${{ matrix.region }}
+          path: |
+            search-out/${{ matrix.region }}-search.sqlite.gz
+            search-out/${{ matrix.region }}-search.json
+          retention-days: 1
 
   # Job 3: Combine all artifacts, generate manifest, create release
   # SAFETY: Skip release creation for single-region test runs — publishing a
@@ -153,6 +207,16 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: all-regions
+          # Region artifacts only. The offline search files (search-<region>) come in the next
+          # step, and only when they are to be published (minimatch '!' = everything else).
+          pattern: '!search-*'
+
+      - name: Download offline search files (only when PUBLISH_SEARCH_INDEX)
+        if: env.PUBLISH_SEARCH_INDEX == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          path: all-regions
+          pattern: 'search-*'
 
       - name: Flatten artifacts
         run: |

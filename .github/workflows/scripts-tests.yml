@@ -82,6 +82,11 @@ jobs:
       - name: Driving-side repair tests
         run: python3 -m unittest discover -s scripts -p 'test_driving_side*.py'
 
+      # Offline search file builder (Rods FEAT-090): row order, schema, house-number rule, and a
+      # tiny PBF through the runner's own osmium + python sqlite (proves FTS5 is there).
+      - name: Offline search index tests
+        run: python3 -m unittest discover -s scripts -p 'test_search_index.py'
+
       # The merge script is what edits production manifest.json, so a syntax
       # error in it must fail here rather than mid-rollout. `--check` parses
       # without executing; the file guards its CLI behind an import.meta check,

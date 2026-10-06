@@ -77,3 +77,19 @@ test('verify-release passes a whole search file and refuses a truncated one', ()
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('workflows keep the search file dry-run unless PUBLISH_SEARCH_INDEX is on', () => {
+  const wf = (name) => readFileSync(join(SCRIPTS, '..', '.github', 'workflows', name), 'utf8');
+  const monthly = wf('osm-extract.yml');
+  // default OFF, and the scheduled run only turns on through the repo variable
+  assert.match(monthly, /publish_search:[\s\S]{0,200}default: false/);
+  assert.match(monthly, /PUBLISH_SEARCH_INDEX: \$\{\{ inputs\.publish_search \|\| vars\.PUBLISH_SEARCH_INDEX == 'true' \}\}/);
+  // the release job never downloads search artifacts unless publishing (disk: BUG-242; assets: dry-run)
+  assert.match(monthly, /path: all-regions\n\s+# [^\n]*\n\s+# [^\n]*\n\s+pattern: '!search-\*'/);
+  assert.match(monthly, /if: env\.PUBLISH_SEARCH_INDEX == 'true'\n\s+uses: actions\/download-artifact@v4\n\s+with:\n\s+path: all-regions\n\s+pattern: 'search-\*'/);
+  // a search failure never costs a region its road data
+  assert.match(monthly, /id: search\n\s+continue-on-error: true/);
+  const pilot = wf('region-slices-pilot.yml');
+  assert.match(pilot, /publish_search:[\s\S]{0,200}default: false/);
+  assert.match(pilot, /merge-multiple: true\n\s+pattern: '!search-\*'/);
+});
