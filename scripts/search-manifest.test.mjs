@@ -89,6 +89,9 @@ test('workflows keep the search file dry-run unless PUBLISH_SEARCH_INDEX is on',
   assert.match(monthly, /if: env\.PUBLISH_SEARCH_INDEX == 'true'\n\s+uses: actions\/download-artifact@v4\n\s+with:\n\s+path: all-regions\n\s+pattern: 'search-\*'/);
   // a search failure never costs a region its road data
   assert.match(monthly, /id: search\n\s+continue-on-error: true/);
+  // the house-number rule measures THIS run's road data, so search runs after build-sqlite
+  assert.ok(monthly.indexOf('npm run build-sqlite') < monthly.indexOf('id: search'), 'search step after build-sqlite');
+  assert.match(monthly, /--road-gz "scripts\/output\/\$REGION\.sqlite\.gz"/);
   const pilot = wf('region-slices-pilot.yml');
   assert.match(pilot, /publish_search:[\s\S]{0,200}default: false/);
   assert.match(pilot, /merge-multiple: true\n\s+pattern: '!search-\*'/);

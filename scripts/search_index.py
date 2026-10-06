@@ -119,7 +119,8 @@ def coord(g):
 
 
 class Grid:
-    """Nearest item by equirectangular distance; rings 1, 3, 8 cells (approximate, cheap)."""
+    """Nearest item by equirectangular distance, searching rings of up to 8 cells. A hit in ring r is
+    only final once nothing outside the ring can be closer (r cells, east-west shrunk by cos(lat))."""
 
     def __init__(self, cell):
         self.c, self.g = cell, {}
@@ -130,17 +131,17 @@ class Grid:
     def nearest(self, lon, lat):
         cx, cy = int(lon // self.c), int(lat // self.c)
         k = math.cos(math.radians(lat)) ** 2
-        for r in (1, 3, 8):
-            best, bd = None, 1e18
+        best, bd = None, 1e18
+        for r in (1, 2, 3, 5, 8):
             for x in range(cx - r, cx + r + 1):
                 for y in range(cy - r, cy + r + 1):
                     for a, b, it in self.g.get((x, y), ()):
                         d = (a - lon) ** 2 * k + (b - lat) ** 2
                         if d < bd:
                             bd, best = d, it
-            if best is not None:
+            if best is not None and bd <= (r * self.c) ** 2 * k:
                 return best
-        return None
+        return best
 
 
 def clean(s):
@@ -197,7 +198,7 @@ def parse(lines, addr_out):
                     pop = 0
                 cl = PLACE[pl]
                 rank = max(0, min(99, 40 - 4 * cl + int(math.log10(pop + 1) * 6) + fame))
-                places.append((rank, pop, nm, alts(p, nm), cl, c[0], c[1]))
+                places.append((rank, pop, nm, alts(p, nm), cl, c[0], c[1], g.get('type') != 'Point'))
                 continue
         hw = p.get('highway')
         if hw and hw not in ROADS_SKIP and g.get('type') in ('LineString', 'MultiLineString', 'Polygon'):
@@ -215,21 +216,22 @@ def parse(lines, addr_out):
                     if tag not in classes:
                         classes[tag] = 100 + len(classes)
                     rank = min(99, POI_RANK + POI_BONUS.get(tag, 0) + fame)
-                    pois.append((rank, nm, alts(p, nm), classes[tag], c[0], c[1]))
+                    pois.append((rank, nm, alts(p, nm), classes[tag], c[0], c[1], g.get('type') != 'Point'))
                 break
     return places, pois, streets, n_addr, classes
 
 
-def dup(seen, key, x, y, deg):
-    """True if an object with the same name and class was already kept within deg (OSM often maps
-    one town or fuel station twice: a node and an area). Bucketed by deg-sized cells, so a chain
-    with thousands of same-named branches stays O(1) per object."""
+def dup(seen, key, x, y, deg, area):
+    """True if this is the other half of a node + area pair already kept: same name and class, the
+    other geometry kind, within deg (OSM often maps one town or fuel station as both). Two nodes or
+    two areas are never merged — same-named villages or chain cafés nearby are real, separate rows.
+    Bucketed by deg-sized cells, so a chain with thousands of same-named branches stays O(1)."""
     cx, cy, k = int(x // deg), int(y // deg), math.cos(math.radians(y)) ** 2
     for i in (cx - 1, cx, cx + 1):
         for j in (cy - 1, cy, cy + 1):
-            if any((a - x) ** 2 * k + (b - y) ** 2 < deg * deg for a, b in seen.get((key, deg, i, j), ())):
+            if any((a - x) ** 2 * k + (b - y) ** 2 < deg * deg for a, b in seen.get((key, deg, not area, i, j), ())):
                 return True
-    seen.setdefault((key, deg, cx, cy), []).append((x, y))
+    seen.setdefault((key, deg, area, cx, cy), []).append((x, y))
     return False
 
 
@@ -241,8 +243,8 @@ class Index:
         town, self.settle = Grid(0.25), Grid(0.05)
         # Ties: bigger population, then name — deterministic output for the same OSM input.
         seen = {}
-        for rank, pop, nm, al, cl, x, y in sorted(places, key=lambda t: (-t[0], -t[1], t[2], t[5], t[6])):
-            if dup(seen, (norm(nm), cl), x, y, PLACE_DEDUP_DEG):
+        for rank, pop, nm, al, cl, x, y, area in sorted(places, key=lambda t: (-t[0], -t[1], t[2], t[5], t[6], t[7])):
+            if dup(seen, (norm(nm), cl), x, y, PLACE_DEDUP_DEG, area):
                 continue
             rid = self._add(nm, al, cl, x, y, None, rank)
             if cl <= 2:
@@ -252,8 +254,8 @@ class Index:
         for r in self.rows:
             if r[3] > 2:
                 r[6] = town.nearest(r[5] / 1e5, r[4] / 1e5)
-        for rank, nm, al, cl, x, y in sorted(pois, key=lambda t: (-t[0], t[1], t[4], t[5])):
-            if dup(seen, (norm(nm), cl), x, y, POI_DEDUP_DEG):
+        for rank, nm, al, cl, x, y, area in sorted(pois, key=lambda t: (-t[0], t[1], t[4], t[5], t[6])):
+            if dup(seen, (norm(nm), cl), x, y, POI_DEDUP_DEG, area):
                 continue
             self._add(nm, al, cl, x, y, self.settle.nearest(x, y), rank)
         # One street row per (normalised name, nearest settlement): segments of a street merge,
@@ -335,13 +337,6 @@ def write_db(path, rows, classes, addrs, meta):
     return n_addr
 
 
-def set_meta(path, **kv):
-    db = sqlite3.connect(path)
-    db.executemany('INSERT OR REPLACE INTO meta VALUES (?,?)', [(k, str(v)) for k, v in kv.items()])
-    db.commit()
-    db.close()
-
-
 def gzip_file(src, dst):
     """Reproducible gzip (no name, mtime 0); returns compressed bytes."""
     with open(src, 'rb') as fi, open(dst, 'wb') as raw:
@@ -409,12 +404,13 @@ def build(region, lines, out_dir, today, osm_timestamp='', keep_sqlite=False):
         if n_addr:
             with open(addr_tsv, encoding='utf-8') as fa:
                 addrs = idx.link(fa)
-            addr_rows = write_db(db_path, idx.rows, classes, addrs, dict(base, has_housenumbers=1, variant='B'))
+            # meta is final before gzip, so gz_b is exactly the file that ships if B is kept
+            addr_rows = write_db(db_path, idx.rows, classes, addrs, dict(
+                base, has_housenumbers=1, variant='B', decision=f'B: gz <= {HOUSENUMBER_MAX_SHARE} x {today}'))
             del addrs
             gz_b = gzip_file(db_path, gz_path)
             if keep_housenumbers(gz_b, today):
                 variant = 'B'
-                set_meta(db_path, housenumbers_gz_bytes=gz_b, decision=f'B: {gz_b} <= {HOUSENUMBER_MAX_SHARE} x {today}')
             else:
                 addr_rows = 0
         if variant == 'A':
@@ -422,7 +418,7 @@ def build(region, lines, out_dir, today, osm_timestamp='', keep_sqlite=False):
                    else 'A: no house numbers in OSM' if gz_b is None else 'A: today\'s download unknown')
             write_db(db_path, idx.rows[:idx.n_a], classes, None,
                      dict(base, has_housenumbers=0, variant='A', housenumbers_gz_bytes=gz_b or '', decision=why))
-        gz = gzip_file(db_path, gz_path)
+        gz = gz_b if variant == 'B' else gzip_file(db_path, gz_path)
         sqlite_bytes = os.path.getsize(db_path)
         if keep_sqlite:
             shutil.move(db_path, out_dir / f'{region}-search.sqlite')

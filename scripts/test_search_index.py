@@ -27,11 +27,13 @@ FEATURES = [
     pt(21.30, 55.50, name='Šilutė', place='village', population='100'),
     pt(21.00, 55.70, name='Klaipėda', place='city', population='150000', wikidata='Q1'),
     pt(21.31, 55.51, name='Rusnė', place='hamlet'),
+    pt(21.34, 55.51, name='Rusnė', place='hamlet'),  # a second, real hamlet 2 km away: not a twin
     {'type': 'Feature', 'properties': {'name': 'Klaipėda', 'place': 'city'},  # its boundary area: same city
      'geometry': {'type': 'Polygon', 'coordinates': [[[20.9, 55.6], [21.2, 55.6], [21.2, 55.8], [20.9, 55.6]]]}},
     pt(21.50, 55.40, name='Kalnų perėja', mountain_pass='yes', wikidata='Q2'),
     pt(21.01, 55.71, name='Kavinė', amenity='cafe'),
     pt(21.30, 55.52, name='Lietuvininkų degalinė', amenity='fuel'),
+    pt(21.301, 55.52, name='Lietuvininkų degalinė', amenity='fuel'),  # same brand 60 m away: two stations
     line([[21.00, 55.70], [21.01, 55.70]], name='Taikos prospektas', highway='primary'),
     line([[21.01, 55.70], [21.02, 55.70]], name='Taikos prospektas', highway='residential'),
     line([[21.30, 55.50], [21.31, 55.50]], name='Lietuvininkų gatvė', highway='residential'),
@@ -77,7 +79,7 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(meta['osm_timestamp'], '2026-10-04T20:20:21Z')
         self.assertEqual(meta['rows'], str(db.execute('SELECT count(*) FROM p').fetchone()[0]))
         self.assertEqual(meta['addr_rows'], '4')
-        self.assertEqual(meta['housenumbers_gz_bytes'], str(res['gz_with_housenumbers']))
+        self.assertEqual(res['gz_bytes'], res['gz_with_housenumbers'], 'B ships exactly the bytes the rule measured')
         self.assertIn('built_at', meta)
         self.assertEqual(db.execute('PRAGMA journal_mode').fetchone()[0], 'delete')
         db.execute("INSERT INTO f(f) VALUES('integrity-check')")  # raises if the index disagrees with p
@@ -95,6 +97,8 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(keys, sorted(keys), 'ids ascending must be importance descending within each group')
         self.assertEqual(rows[0][1], 1, 'the city comes first')
         self.assertEqual(db.execute("SELECT count(*) FROM p WHERE name='Klaipėda'").fetchone()[0], 1, 'node + area = one row')
+        self.assertEqual(db.execute("SELECT count(*) FROM p WHERE name='Rusnė'").fetchone()[0], 2, 'two nodes never merge')
+        self.assertEqual(db.execute("SELECT count(*) FROM p WHERE name='Lietuvininkų degalinė'").fetchone()[0], 2)
         # the address-only street is the very last row, and both segments of Taikos merged into one row
         self.assertEqual(db.execute('SELECT name FROM p ORDER BY id DESC LIMIT 1').fetchone()[0], 'Naujoji gatvė')
         self.assertEqual(db.execute("SELECT count(*), max(rank) FROM p WHERE name='Taikos prospektas'").fetchone(), (1, 17))
@@ -121,6 +125,12 @@ class BuildTests(unittest.TestCase):
         # boundary is test_keep_housenumbers_boundaries)
         res, _ = self.build(res_b['gz_with_housenumbers'] * 20 + 400)
         self.assertEqual(res['variant'], 'B')
+
+    def test_grid_nearest_looks_past_a_far_hit_in_the_first_ring(self):
+        g = si.Grid(1.0)
+        g.add(1.99, 0.5, 'ring1-far')   # neighbouring cell, 1.98 away
+        g.add(-1.5, 0.5, 'ring2-near')  # two cells away, 1.51 away
+        self.assertEqual(g.nearest(0.01, 0.5), 'ring2-near')
 
     def test_keep_housenumbers_boundaries(self):
         self.assertTrue(si.keep_housenumbers(50, 1000))

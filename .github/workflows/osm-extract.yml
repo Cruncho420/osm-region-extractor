@@ -105,14 +105,20 @@ jobs:
           # size. Tracked separately; not done here because it is a change to BUG-278's
           # design, not to tolls.
           NODE_OPTIONS: '--max-old-space-size=12288'
-          # The offline-search step below reads the same PBF and deletes it (no second download).
+          # The offline-search step (after build-sqlite) reads the same PBF and deletes it (no second download).
           EXTRACT_KEEP_PBF: '1'
+
+      - name: Build SQLite for ${{ matrix.region }}
+        working-directory: scripts
+        run: npm run build-sqlite -- --region ${{ matrix.region }}
 
       # Offline search index (scripts/search_index.py). continue-on-error: a search failure must
       # never cost a region its road data — the region then simply has no searchSize this month.
       # House numbers are kept only when gz(with them) <= 5 % of today's download (road data +
-      # routing + map, read from the live manifest and the releases it points at; this month's
-      # road data is not built yet, so last month's sqliteSize stands in for it).
+      # routing + map). Road data = this run's <region>.sqlite.gz, built in the step above; routing
+      # and map = the live manifests (their monthly chains rebuild after this job). Runs after
+      # build-sqlite so the measured road size is this month's (the kept PBF sits beside
+      # build-sqlite's files; extract-single held it plus its filtered copies before that).
       - name: Build offline search index for ${{ matrix.region }}
         id: search
         continue-on-error: true
@@ -130,15 +136,11 @@ jobs:
           [ -z "$BT" ] || gh release download "$BT" --repo "$GITHUB_REPOSITORY" --pattern manifest.json -O today/basemap.json || true
           M=(); for f in today/*.json; do if [ -s "$f" ]; then M+=(--manifest "$f"); fi; done
           python3 scripts/search_index.py --region "$REGION" --pbf "/tmp/$REGION.osm.pbf" --out search-out \
-            "${M[@]}" --summary "search-out/$REGION-search.json"
+            --road-gz "scripts/output/$REGION.sqlite.gz" "${M[@]}" --summary "search-out/$REGION-search.json"
           { echo "| Search file | Variant | Rows | Addresses | gz bytes | Today's download | Share | Share with house numbers | sha256[0:16] |"
             echo "|---|---|---:|---:|---:|---:|---:|---:|---|"; } >> "$GITHUB_STEP_SUMMARY"
           jq -r '"| \(.region) | \(.variant) | \(.rows) | \(.addr_rows) | \(.gz_bytes) | \(.today_download_bytes) | \(.share_pct) % | \(.share_with_housenumbers_pct // "-") % | \(.checksum) |"' \
             "search-out/$REGION-search.json" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Build SQLite for ${{ matrix.region }}
-        working-directory: scripts
-        run: npm run build-sqlite -- --region ${{ matrix.region }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
