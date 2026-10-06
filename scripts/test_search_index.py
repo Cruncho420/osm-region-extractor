@@ -72,7 +72,7 @@ class BuildTests(unittest.TestCase):
     def test_schema_and_meta(self):
         res, db = self.build(10 ** 9)
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'f_%'")}
-        self.assertEqual(tables, {'p', 'cls', 'f', 'meta', 'a'})
+        self.assertEqual(tables, {'p', 'cls', 'f', 'meta', 'a', 'pc'})
         cols = [r[1] for r in db.execute('PRAGMA table_info(p)')]
         self.assertEqual(cols, ['id', 'name', 'alt', 'cls', 'lat', 'lon', 'parent', 'rank'])
         fts = db.execute("SELECT sql FROM sqlite_master WHERE name='f'").fetchone()[0]
@@ -205,6 +205,24 @@ class BuildTests(unittest.TestCase):
         res, db = self.build(at((False, True), (False, False)))  # not even postcodes fit
         self.assertEqual((res['variant'], res['postcode_rows']), ('A', 0))
         self.assertIn('postcodes dropped', meta(db)['decision'])
+
+    def test_poi_cells(self):
+        res, db = self.build(10 ** 9)
+        meta = dict(db.execute('SELECT k, v FROM meta'))
+        c = round(float(meta['poi_cell_deg']) * 1e5)
+        # every POI row once, no place / street / postcode row; cell from the stored integers
+        want = sorted(db.execute("SELECT cls, ((lat + 9000000) / ?) * 65536 + (lon + 18000000) / ?, id FROM p "
+                                 "WHERE cls >= 100 AND cls != (SELECT id FROM cls WHERE tag = 'postcode=yes')", (c, c)))
+        self.assertEqual(sorted(db.execute('SELECT cls, cell, id FROM pc')), want)
+        self.assertEqual(len(want), 4)  # pass, cafe, two fuel stations
+        # the Python reading of the same rule: Klaipėda's cafe at (55.71, 21.01)
+        cafe = db.execute("SELECT p.id, pc.cell FROM p JOIN pc ON pc.id = p.id WHERE p.name = 'Kavinė'").fetchone()
+        self.assertEqual(cafe[1], ((5571000 + 9000000) // c) * 65536 + (2101000 + 18000000) // c)
+        # west of Greenwich and south of the equator: the integers stay positive, so / is floor
+        self.assertEqual(((-3456789 + 9000000) // c, (-12345678 + 18000000) // c), (1108, 1130))
+        # a range seek on (cls, cell) is what the app runs
+        plan = ' '.join(r[3] for r in db.execute('EXPLAIN QUERY PLAN SELECT id FROM pc WHERE cls = 1 AND cell BETWEEN 2 AND 3'))
+        self.assertIn('PRIMARY KEY (cls=? AND cell>? AND cell<?)', plan)
 
     def test_grid_nearest_looks_past_a_far_hit_in_the_first_ring(self):
         g = si.Grid(1.0)

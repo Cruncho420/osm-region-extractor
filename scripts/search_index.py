@@ -23,6 +23,11 @@ FILE CONTRACT (schema_version 1 — the Rods app is written against it; change =
   a(street INTEGER, hn TEXT, lat INTEGER, lon INTEGER, PRIMARY KEY(street, hn)) WITHOUT ROWID
     — only when has_housenumbers = 1
   meta(k TEXT PRIMARY KEY, v TEXT)
+  pc(cls INTEGER, cell INTEGER, id INTEGER, PRIMARY KEY(cls, cell, id)) WITHOUT ROWID — every POI row
+    (cls >= 100, postcode rows excluded) by grid cell, for "fuel near me": cell = ((lat + 9000000) // C) * 65536
+    + (lon + 18000000) // C on the p integers, C = meta.poi_cell_deg * 1e5. Additive (schema_version stays 1):
+    an app that does not know it ignores it; a file without it (meta has no poi_cell_deg) is scanned as before.
+    Counted inside the 5 % rule like every other byte of the file.
   POSTCODES: one row per distinct OSM postcode (addr:postcode on any object, boundary=postal_code /
     place=postcode postal_code), cls tag 'postcode=yes' (a POI-style id >= 100), name = the code as
     most often written, alt = the same without spaces ('SW1A 1AA' -> 'SW1A1AA'), lat/lon = per-axis
@@ -81,6 +86,7 @@ POSTCODE_CLS = 'postcode=yes'
 LINK_RADIUS_DEG = 0.03
 PLACE_DEDUP_DEG = 0.1    # ~10 km: a city's node vs the centre of its boundary area
 POI_DEDUP_DEG = 0.005    # ~500 m: a fuel station's node vs its forecourt area
+POI_CELL_DEG = 0.05  # ~5.5 x 3.5 km at 50 N; Mac timing 2026-10-06: 0.05 beat 0.02 and 0.1 for near-me
 LINK_MAX_CANDIDATES = 64  # name fallback only for rare names; "Hauptstraße" would make it O(n^2)
 
 # The objects variant A/B can contain (port of the 2026-10-06 measurement filter).
@@ -369,12 +375,16 @@ def write_db(path, rows, classes, addrs, meta):
     db.executemany('INSERT INTO p VALUES (?,?,?,?,?,?,?,?)', rows)
     db.executemany('INSERT INTO cls VALUES (?,?)', sorted((v, k) for k, v in classes.items()))
     db.execute('INSERT INTO f(rowid, name, alt) SELECT id, name, alt FROM p')
+    c = round(POI_CELL_DEG * 1e5)
+    db.execute('CREATE TABLE pc(cls INTEGER, cell INTEGER, id INTEGER, PRIMARY KEY(cls, cell, id)) WITHOUT ROWID')
+    db.execute(f"INSERT INTO pc SELECT cls, ((lat + 9000000) / {c}) * 65536 + (lon + 18000000) / {c}, id FROM p "
+               f"WHERE cls >= 100 AND cls NOT IN (SELECT id FROM cls WHERE tag = '{POSTCODE_CLS}') ORDER BY 1, 2, 3")
     n_addr = 0
     if addrs is not None:
         db.execute('CREATE TABLE a(street INTEGER, hn TEXT, lat INTEGER, lon INTEGER, PRIMARY KEY(street, hn)) WITHOUT ROWID')
         db.executemany('INSERT OR IGNORE INTO a VALUES (?,?,?,?)', addrs)
         n_addr = db.execute('SELECT count(*) FROM a').fetchone()[0]
-    meta = dict(meta, rows=len(rows), addr_rows=n_addr)
+    meta = dict(meta, rows=len(rows), addr_rows=n_addr, poi_cell_deg=POI_CELL_DEG)
     db.executemany('INSERT INTO meta VALUES (?,?)', sorted((k, str(v)) for k, v in meta.items()))
     db.execute("INSERT INTO f(f) VALUES('optimize')")
     db.commit()
