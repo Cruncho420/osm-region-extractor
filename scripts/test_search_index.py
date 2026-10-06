@@ -27,6 +27,8 @@ FEATURES = [
     pt(21.30, 55.50, name='Šilutė', place='village', population='100'),
     pt(21.00, 55.70, name='Klaipėda', place='city', population='150000', wikidata='Q1'),
     pt(21.31, 55.51, name='Rusnė', place='hamlet'),
+    {'type': 'Feature', 'properties': {'name': 'Klaipėda', 'place': 'city'},  # its boundary area: same city
+     'geometry': {'type': 'Polygon', 'coordinates': [[[20.9, 55.6], [21.2, 55.6], [21.2, 55.8], [20.9, 55.6]]]}},
     pt(21.50, 55.40, name='Kalnų perėja', mountain_pass='yes', wikidata='Q2'),
     pt(21.01, 55.71, name='Kavinė', amenity='cafe'),
     pt(21.30, 55.52, name='Lietuvininkų degalinė', amenity='fuel'),
@@ -92,6 +94,7 @@ class BuildTests(unittest.TestCase):
         keys = [(GROUP(c, i, n_a), -rank) for i, c, rank in rows]
         self.assertEqual(keys, sorted(keys), 'ids ascending must be importance descending within each group')
         self.assertEqual(rows[0][1], 1, 'the city comes first')
+        self.assertEqual(db.execute("SELECT count(*) FROM p WHERE name='Klaipėda'").fetchone()[0], 1, 'node + area = one row')
         # the address-only street is the very last row, and both segments of Taikos merged into one row
         self.assertEqual(db.execute('SELECT name FROM p ORDER BY id DESC LIMIT 1').fetchone()[0], 'Naujoji gatvė')
         self.assertEqual(db.execute("SELECT count(*), max(rank) FROM p WHERE name='Taikos prospektas'").fetchone(), (1, 17))
@@ -150,15 +153,22 @@ class BuildTests(unittest.TestCase):
             'n2 v1 dV c0 t i0 u T x21.001 y55.0',
             'n3 v1 dV c0 t i0 u T x21.002 y55.0',
             'n4 v1 dV c0 t i0 u Taddr:street=Miško%20%gatvė,addr:housenumber=5 x21.0015 y55.0',
+            'n5 v1 dV c0 t i0 u T x21.003 y55.001',
+            'n6 v1 dV c0 t i0 u T x21.004 y55.001',
+            'n7 v1 dV c0 t i0 u T x21.004 y55.002',
             'w10 v1 dV c0 t i0 u Thighway=residential,name=Miško%20%gatvė Nn2,n3',
+            # a closed building way: osmium exports it as a LineString AND an area; one row, one address
+            'w11 v1 dV c0 t i0 u Tbuilding=yes,amenity=cafe,name=Kavinė,addr:street=Miško%20%gatvė,'
+            'addr:housenumber=7 Nn5,n6,n7,n5',
         ]) + '\n')
         pbf = self.dir / 'in.osm.pbf'
         subprocess.run(['osmium', 'cat', str(opl), '-o', str(pbf)], check=True)
         out = self.dir / 'pbfout'
         si.main(['--region', 'tiny', '--pbf', str(pbf), '--out', str(out), '--today-bytes', str(10 ** 9), '--keep-sqlite'])
         db = sqlite3.connect(out / 'tiny-search.sqlite')
-        self.assertEqual(db.execute('SELECT name, cls FROM p ORDER BY id').fetchall(), [('Ąžuolynė', 2), ('Miško gatvė', 50)])
-        self.assertEqual(db.execute('SELECT street, hn FROM a').fetchall(), [(2, '5')])
+        self.assertEqual(db.execute('SELECT name, cls FROM p ORDER BY id').fetchall(),
+                         [('Ąžuolynė', 2), ('Kavinė', 100), ('Miško gatvė', 50)])
+        self.assertEqual(db.execute('SELECT street, hn FROM a').fetchall(), [(3, '5'), (3, '7')])
         self.assertEqual(sorted(p.name for p in out.iterdir()), ['tiny-search.sqlite', 'tiny-search.sqlite.gz'])
 
 

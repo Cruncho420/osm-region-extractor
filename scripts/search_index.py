@@ -70,6 +70,8 @@ POI_RANK, POI_BONUS = 20, {'mountain_pass=yes': 10}  # a driving app: passes out
 FAME_BONUS = 5  # wikidata / wikipedia tag
 ADDR_STREET_RANK = 10
 LINK_RADIUS_DEG = 0.03
+PLACE_DEDUP_DEG = 0.1    # ~10 km: a city's node vs the centre of its boundary area
+POI_DEDUP_DEG = 0.005    # ~500 m: a fuel station's node vs its forecourt area
 LINK_MAX_CANDIDATES = 64  # name fallback only for rare names; "Hauptstraße" would make it O(n^2)
 
 # The objects variant A/B can contain (port of the 2026-10-06 measurement filter).
@@ -167,6 +169,11 @@ def parse(lines, addr_out):
             continue
         f = json.loads(line)
         p, g = f.get('properties') or {}, f.get('geometry') or {}
+        # osmium export (no config) emits every closed way twice, as LineString AND as area: keep
+        # only the area, except for roads (a closed residential loop is a street, not a place).
+        if g.get('type') == 'LineString' and 'highway' not in p and len(g['coordinates']) > 3 \
+                and g['coordinates'][0] == g['coordinates'][-1]:
+            continue
         c = None
         hn, st = p.get('addr:housenumber'), p.get('addr:street') or p.get('addr:place')
         if hn and st:
@@ -213,6 +220,19 @@ def parse(lines, addr_out):
     return places, pois, streets, n_addr, classes
 
 
+def dup(seen, key, x, y, deg):
+    """True if an object with the same name and class was already kept within deg (OSM often maps
+    one town or fuel station twice: a node and an area). Bucketed by deg-sized cells, so a chain
+    with thousands of same-named branches stays O(1) per object."""
+    cx, cy, k = int(x // deg), int(y // deg), math.cos(math.radians(y)) ** 2
+    for i in (cx - 1, cx, cx + 1):
+        for j in (cy - 1, cy, cy + 1):
+            if any((a - x) ** 2 * k + (b - y) ** 2 < deg * deg for a, b in seen.get((key, deg, i, j), ())):
+                return True
+    seen.setdefault((key, deg, cx, cy), []).append((x, y))
+    return False
+
+
 class Index:
     """Rows in contract order. row = [id, name, alt, cls, lat_e5, lon_e5, parent, rank]."""
 
@@ -220,7 +240,10 @@ class Index:
         self.rows = []
         town, self.settle = Grid(0.25), Grid(0.05)
         # Ties: bigger population, then name — deterministic output for the same OSM input.
+        seen = {}
         for rank, pop, nm, al, cl, x, y in sorted(places, key=lambda t: (-t[0], -t[1], t[2], t[5], t[6])):
+            if dup(seen, (norm(nm), cl), x, y, PLACE_DEDUP_DEG):
+                continue
             rid = self._add(nm, al, cl, x, y, None, rank)
             if cl <= 2:
                 town.add(x, y, rid)
@@ -230,6 +253,8 @@ class Index:
             if r[3] > 2:
                 r[6] = town.nearest(r[5] / 1e5, r[4] / 1e5)
         for rank, nm, al, cl, x, y in sorted(pois, key=lambda t: (-t[0], t[1], t[4], t[5])):
+            if dup(seen, (norm(nm), cl), x, y, POI_DEDUP_DEG):
+                continue
             self._add(nm, al, cl, x, y, self.settle.nearest(x, y), rank)
         # One street row per (normalised name, nearest settlement): segments of a street merge,
         # same-named streets of different villages stay apart. Highest-ranked segment wins.
