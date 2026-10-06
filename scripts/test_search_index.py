@@ -132,6 +132,12 @@ class BuildTests(unittest.TestCase):
         g.add(-1.5, 0.5, 'ring2-near')  # two cells away, 1.51 away
         self.assertEqual(g.nearest(0.01, 0.5), 'ring2-near')
 
+    def test_dedup_twin_found_across_longitude_buckets_far_north(self):
+        seen = {}
+        self.assertFalse(si.dup(seen, ('x', 1), 0.99, 60.0, 1.0, False))
+        # 1.02 deg of longitude at 60 N is 0.51 deg "metric": inside the radius, two buckets east
+        self.assertTrue(si.dup(seen, ('x', 1), 2.01, 60.0, 1.0, True))
+
     def test_keep_housenumbers_boundaries(self):
         self.assertTrue(si.keep_housenumbers(50, 1000))
         self.assertFalse(si.keep_housenumbers(51, 1000))

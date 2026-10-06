@@ -141,6 +141,8 @@ class Grid:
                             bd, best = d, it
             if best is not None and bd <= (r * self.c) ** 2 * k:
                 return best
+        # ponytail: past 8 cells (~40 km settlements, ~200 km towns) the best seen is good enough as
+        # a "near X" label, or None; an unbounded search only matters for empty wilderness.
         return best
 
 
@@ -226,8 +228,10 @@ def dup(seen, key, x, y, deg, area):
     other geometry kind, within deg (OSM often maps one town or fuel station as both). Two nodes or
     two areas are never merged — same-named villages or chain cafés nearby are real, separate rows.
     Bucketed by deg-sized cells, so a chain with thousands of same-named branches stays O(1)."""
-    cx, cy, k = int(x // deg), int(y // deg), math.cos(math.radians(y)) ** 2
-    for i in (cx - 1, cx, cx + 1):
+    cos = max(math.cos(math.radians(y)), 0.1)  # polar cap: |lat| > ~84 is not in any region
+    cx, cy, k = int(x // deg), int(y // deg), cos * cos
+    nx = math.ceil(1 / cos)  # the radius spans 1/cos(lat) longitude buckets
+    for i in range(cx - nx, cx + nx + 1):
         for j in (cy - 1, cy, cy + 1):
             if any((a - x) ** 2 * k + (b - y) ** 2 < deg * deg for a, b in seen.get((key, deg, not area, i, j), ())):
                 return True
