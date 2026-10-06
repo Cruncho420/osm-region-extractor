@@ -54,6 +54,8 @@ interface ManifestRegion {
   valhallaChecksum?: string;
   valhallaCoverageSize?: number;
   valhallaCoverageChecksum?: string;
+  searchSize?: number;
+  searchChecksum?: string;
 }
 
 interface Manifest {
@@ -219,6 +221,17 @@ function generateManifest(inputDir: string, outputFile: string, overrideVersion?
       // Legacy/no Valhalla pack — exact coverage is additive and optional.
     }
 
+    // Offline search index (Rods FEAT-090, search_index.py). Only listed when the file is in the
+    // input dir: osm-extract.yml copies it there only with PUBLISH_SEARCH_INDEX on, so a dry-run
+    // month never points a phone at an asset that is not on the release. Old apps ignore the field.
+    const searchPath = join(inputDir, `${regionId}-search.sqlite.gz`);
+    try {
+      region.searchSize = statSync(searchPath).size;
+      region.searchChecksum = computeChecksum(searchPath);
+    } catch {
+      // No search file — the region simply has no offline search yet
+    }
+
     manifest.regions[regionId] = region;
 
     const extras = [
@@ -226,6 +239,7 @@ function generateManifest(inputDir: string, outputFile: string, overrideVersion?
       region.waySize ? `ways: ${(region.waySize / 1024).toFixed(1)} KB` : null,
       region.sqliteSize ? `sqlite: ${(region.sqliteSize / 1024 / 1024).toFixed(1)} MB` : null,
       region.valhallaSize ? `valhalla: ${(region.valhallaSize / 1024 / 1024).toFixed(1)} MB` : null,
+      region.searchSize ? `search: ${(region.searchSize / 1024 / 1024).toFixed(1)} MB` : null,
     ].filter(Boolean).join(', ');
     console.log(
       `  ${regionId}: ${(stats.size / 1024).toFixed(1)} KB${extras ? ` (${extras})` : ''} - ${regionNames[regionId] || 'Unknown'}`
