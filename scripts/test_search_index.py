@@ -176,6 +176,8 @@ class BuildTests(unittest.TestCase):
             # a closed building way: osmium exports it as a LineString AND an area; one row, one address
             'w11 v1 dV c0 t i0 u Tbuilding=yes,amenity=cafe,name=Kavinė,addr:street=Miško%20%gatvė,'
             'addr:housenumber=7 Nn5,n6,n7,n5',
+            # a closed area=no way (race track): osmium exports only the line, which must survive
+            'w12 v1 dV c0 t i0 u Tleisure=track,area=no,name=Trasa Nn5,n6,n7,n5',
         ]) + '\n')
         pbf = self.dir / 'in.osm.pbf'
         subprocess.run(['osmium', 'cat', str(opl), '-o', str(pbf)], check=True)
@@ -183,8 +185,8 @@ class BuildTests(unittest.TestCase):
         si.main(['--region', 'tiny', '--pbf', str(pbf), '--out', str(out), '--today-bytes', str(10 ** 9), '--keep-sqlite'])
         db = sqlite3.connect(out / 'tiny-search.sqlite')
         self.assertEqual(db.execute('SELECT name, cls FROM p ORDER BY id').fetchall(),
-                         [('Ąžuolynė', 2), ('Kavinė', 100), ('Miško gatvė', 50)])
-        self.assertEqual(db.execute('SELECT street, hn FROM a').fetchall(), [(3, '5'), (3, '7')])
+                         [('Ąžuolynė', 2), ('Kavinė', 101), ('Trasa', 100), ('Miško gatvė', 50)])
+        self.assertEqual(db.execute('SELECT street, hn FROM a').fetchall(), [(4, '5'), (4, '7')])
         self.assertEqual(sorted(p.name for p in out.iterdir()), ['tiny-search.sqlite', 'tiny-search.sqlite.gz'])
 
 

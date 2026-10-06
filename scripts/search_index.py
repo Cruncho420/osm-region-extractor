@@ -173,9 +173,10 @@ def parse(lines, addr_out):
         f = json.loads(line)
         p, g = f.get('properties') or {}, f.get('geometry') or {}
         # osmium export (no config) emits every closed way twice, as LineString AND as area: keep
-        # only the area, except for roads (a closed residential loop is a street, not a place).
-        if g.get('type') == 'LineString' and 'highway' not in p and len(g['coordinates']) > 3 \
-                and g['coordinates'][0] == g['coordinates'][-1]:
+        # only the area, except for roads (a closed residential loop is a street, not a place) and
+        # area=no ways (a closed race track: osmium builds no area for it, the line is all there is).
+        if g.get('type') == 'LineString' and 'highway' not in p and p.get('area') != 'no' \
+                and len(g['coordinates']) > 3 and g['coordinates'][0] == g['coordinates'][-1]:
             continue
         c = None
         hn, st = p.get('addr:housenumber'), p.get('addr:street') or p.get('addr:place')
