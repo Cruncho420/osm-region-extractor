@@ -38,12 +38,18 @@ FEATURES = [
     line([[21.01, 55.70], [21.02, 55.70]], name='Taikos prospektas', highway='residential'),
     line([[21.30, 55.50], [21.31, 55.50]], name='Lietuvininkų gatvė', highway='residential'),
     line([[21.30, 55.50], [21.31, 55.51]], name='Unnamed path', highway='footway'),
-    pt(21.005, 55.70, **{'addr:street': 'Taikos prospektas', 'addr:housenumber': '10'}),
-    pt(21.006, 55.70, **{'addr:street': 'Taikos prospektas', 'addr:housenumber': '12'}),
+    pt(21.005, 55.70, **{'addr:street': 'Taikos prospektas', 'addr:housenumber': '10', 'addr:postcode': 'AB1 2CD'}),
+    pt(21.006, 55.70, **{'addr:street': 'Taikos prospektas', 'addr:housenumber': '12', 'addr:postcode': 'ab1 2cd'}),
+    pt(21.007, 55.70, **{'addr:postcode': 'AB1 2CD'}),  # no street, no number: still counts toward the code
+    pt(21.30, 55.50, **{'addr:postcode': 'LT-99001', 'building': 'yes'}),
+    pt(21.31, 55.52, **{'addr:postcode': 'LT-99001;LT-99002;not a code at all, really'}),
+    {'type': 'Feature', 'properties': {'boundary': 'postal_code', 'postal_code': 'LT-99003', 'name': 'LT-99003'},
+     'geometry': {'type': 'Polygon', 'coordinates': [[[21.4, 55.4], [21.6, 55.4], [21.6, 55.6], [21.4, 55.4]]]}},
+    pt(21.52, 55.52, place='postcode', postal_code='LT-99004'),
     pt(21.305, 55.50, **{'addr:street': 'Naujoji gatvė', 'addr:housenumber': '1'}),
     pt(21.306, 55.50, **{'addr:street': 'Naujoji gatvė', 'addr:housenumber': '3'}),
 ]
-GROUP = lambda cls, rid, n_a: 0 if cls < 50 else 2 if cls == 50 and rid <= n_a else 3 if cls == 50 else 1
+GROUP = lambda cls, rid, n_a, pc: 0 if cls < 50 else 2 if cls == pc else 3 if cls == 50 and rid <= n_a else 4 if cls == 50 else 1
 
 
 class BuildTests(unittest.TestCase):
@@ -93,7 +99,9 @@ class BuildTests(unittest.TestCase):
         rows = db.execute('SELECT id, cls, rank FROM p ORDER BY id').fetchall()
         self.assertEqual([r[0] for r in rows], list(range(1, len(rows) + 1)))
         n_a = res['rows_a']
-        keys = [(GROUP(c, i, n_a), -rank) for i, c, rank in rows]
+        pc = db.execute("SELECT id FROM cls WHERE tag='postcode=yes'").fetchone()[0]
+        self.assertGreaterEqual(pc, 100)
+        keys = [(GROUP(c, i, n_a, pc), -rank) for i, c, rank in rows]
         self.assertEqual(keys, sorted(keys), 'ids ascending must be importance descending within each group')
         self.assertEqual(rows[0][1], 1, 'the city comes first')
         self.assertEqual(db.execute("SELECT count(*) FROM p WHERE name='Klaipėda'").fetchone()[0], 1, 'node + area = one row')
@@ -110,7 +118,8 @@ class BuildTests(unittest.TestCase):
 
     def test_housenumber_rule_drops_b_when_too_big(self):
         res_b, _ = self.build(10 ** 9)
-        too_small_today = res_b['gz_with_housenumbers'] * 19  # gz(B) = 5.26 % of today
+        smallest_b = min(t[2] for t in self.build(1)[0]['tried'] if t[0])  # house numbers, postcodes dropped
+        too_small_today = smallest_b * 19  # gz(B) = 5.26 % of today
         res, db = self.build(too_small_today)
         self.assertEqual(res['variant'], 'A')
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -120,11 +129,64 @@ class BuildTests(unittest.TestCase):
         self.assertTrue(meta['decision'].startswith('A: '))
         self.assertEqual(db.execute("SELECT count(*) FROM p WHERE name='Naujoji gatvė'").fetchone()[0], 0,
                          'address-only streets go with the house numbers')
-        self.assertEqual(int(meta['rows']), res_b['rows_a'])
+        self.assertEqual(int(meta['rows']), res['rows'])
         # just under 5 % (meta timestamps move gz(B) by a few bytes between builds; the exact
         # boundary is test_keep_housenumbers_boundaries)
-        res, _ = self.build(res_b['gz_with_housenumbers'] * 20 + 400)
+        res, _ = self.build(smallest_b * 20 + 400)
         self.assertEqual(res['variant'], 'B')
+
+    def test_postcode_rows(self):
+        res, db = self.build(10 ** 9)
+        pc = db.execute("SELECT id FROM cls WHERE tag='postcode=yes'").fetchone()[0]
+        rows = db.execute('SELECT name, alt, lat, lon, parent, rank FROM p WHERE cls=? ORDER BY name', (pc,)).fetchall()
+        # AB1 2CD written two ways = one row (most common form wins, the tie goes to the later name);
+        # LT-99001 from two objects = one row; the ';' list splits; junk text is no code; boundary and
+        # place=postcode objects count; the boundary is NOT also a POI.
+        self.assertEqual([r[0] for r in rows], ['AB1 2CD', 'LT-99001', 'LT-99002', 'LT-99003', 'LT-99004'])
+        self.assertEqual(rows[0][1], 'AB12CD')
+        self.assertIsNone(rows[1][1], 'no space, no alt')
+        self.assertEqual((rows[0][2], rows[0][3]), (5570000, 2100600), 'median of 3 points')
+        self.assertTrue(all(r[4] is not None and r[5] == si.POSTCODE_RANK for r in rows))
+        self.assertEqual(db.execute("SELECT count(*) FROM p WHERE name='LT-99003' AND cls<>?", (pc,)).fetchone()[0], 0)
+        self.assertEqual(dict(db.execute('SELECT k, v FROM meta'))['postcode_rows'], '5')
+        self.assertEqual(res['postcode_rows'], 5)
+        q = 'SELECT p.name FROM f JOIN p ON p.id=f.rowid WHERE f MATCH ?'
+        self.assertEqual(db.execute(q, ('"AB12CD"',)).fetchall(), [('AB1 2CD',)], 'found without the space')
+        self.assertEqual(db.execute(q, ('"ab1" "2cd"',)).fetchall(), [('AB1 2CD',)])
+
+    def test_postcodes_count_inside_the_budget(self):
+        extra = [pt(21.3 + i / 1e4, 55.5, **{'addr:street': 'Naujoji gatvė', 'addr:housenumber': str(100 + i)})
+                 for i in range(60)]  # make house numbers clearly the bigger part than 5 postcodes
+        self.src.write_text('\n'.join(json.dumps(f) for f in FEATURES + extra) + '\n')
+        # today = 1 B: nothing fits, every candidate is measured, the last one ships
+        res, _ = self.build(1)
+        sz = {t[:2]: t[2] for t in res['tried']}
+        self.assertEqual(list(sz), [(True, True), (True, False), (False, True), (False, False)])
+        self.assertTrue(sz[(True, True)] > sz[(True, False)] > sz[(False, True)] > sz[(False, False)], sz)
+        self.assertEqual((res['variant'], res['postcode_rows']), ('A', 0))
+
+        def at(lo, hi):  # a "today" whose 5 % lies between two measured sizes
+            return int((sz[lo] + sz[hi]) / 2 / si.HOUSENUMBER_MAX_SHARE)
+
+        def meta(db):
+            return dict(db.execute('SELECT k, v FROM meta'))
+
+        res, db = self.build(10 ** 9)  # everything fits: house numbers + postcodes
+        self.assertEqual((res['variant'], res['postcode_rows'], res['addr_rows']), ('B', 5, 64))
+        res, db = self.build(at((True, True), (True, False)))  # postcodes alone tip it: they go, house numbers stay
+        self.assertEqual((res['variant'], res['postcode_rows'], res['addr_rows']), ('B', 0, 64))
+        self.assertIn('postcodes dropped', meta(db)['decision'])
+        self.assertEqual(meta(db)['postcode_rows'], '0')
+        self.assertEqual(db.execute("SELECT count(*) FROM cls WHERE tag='postcode=yes'").fetchone()[0], 0)
+        # ids stay consistent without the postcode rows: every a.street and parent resolves
+        self.assertEqual(db.execute('SELECT count(*) FROM a LEFT JOIN p ON p.id=a.street WHERE p.id IS NULL').fetchone()[0], 0)
+        self.assertEqual(db.execute('SELECT count(*) FROM p c JOIN p q ON q.id=c.parent WHERE q.cls>5').fetchone()[0], 0)
+        res, db = self.build(at((True, False), (False, True)))  # house numbers do not fit; postcodes do
+        self.assertEqual((res['variant'], res['postcode_rows'], res['addr_rows']), ('A', 5, 0))
+        self.assertEqual(db.execute("SELECT count(*) FROM p WHERE name='Naujoji gatvė'").fetchone()[0], 0)
+        res, db = self.build(at((False, True), (False, False)))  # not even postcodes fit
+        self.assertEqual((res['variant'], res['postcode_rows']), ('A', 0))
+        self.assertIn('postcodes dropped', meta(db)['decision'])
 
     def test_grid_nearest_looks_past_a_far_hit_in_the_first_ring(self):
         g = si.Grid(1.0)
@@ -168,7 +230,7 @@ class BuildTests(unittest.TestCase):
             'n1 v1 dV c0 t i0 u Tplace=town,name=Ąžuolynė,population=5000 x21.0 y55.0',
             'n2 v1 dV c0 t i0 u T x21.001 y55.0',
             'n3 v1 dV c0 t i0 u T x21.002 y55.0',
-            'n4 v1 dV c0 t i0 u Taddr:street=Miško%20%gatvė,addr:housenumber=5 x21.0015 y55.0',
+            'n4 v1 dV c0 t i0 u Taddr:street=Miško%20%gatvė,addr:housenumber=5,addr:postcode=12345 x21.0015 y55.0',
             'n5 v1 dV c0 t i0 u T x21.003 y55.001',
             'n6 v1 dV c0 t i0 u T x21.004 y55.001',
             'n7 v1 dV c0 t i0 u T x21.004 y55.002',
@@ -178,6 +240,8 @@ class BuildTests(unittest.TestCase):
             'addr:housenumber=7 Nn5,n6,n7,n5',
             # a closed area=no way (race track): osmium exports only the line, which must survive
             'w12 v1 dV c0 t i0 u Tleisure=track,area=no,name=Trasa Nn5,n6,n7,n5',
+            # a postal boundary: a postcode row, never a POI
+            'w13 v1 dV c0 t i0 u Tboundary=postal_code,postal_code=54321,name=54321 Nn5,n6,n7,n5',
         ]) + '\n')
         pbf = self.dir / 'in.osm.pbf'
         subprocess.run(['osmium', 'cat', str(opl), '-o', str(pbf)], check=True)
@@ -185,8 +249,8 @@ class BuildTests(unittest.TestCase):
         si.main(['--region', 'tiny', '--pbf', str(pbf), '--out', str(out), '--today-bytes', str(10 ** 9), '--keep-sqlite'])
         db = sqlite3.connect(out / 'tiny-search.sqlite')
         self.assertEqual(db.execute('SELECT name, cls FROM p ORDER BY id').fetchall(),
-                         [('Ąžuolynė', 2), ('Kavinė', 101), ('Trasa', 100), ('Miško gatvė', 50)])
-        self.assertEqual(db.execute('SELECT street, hn FROM a').fetchall(), [(4, '5'), (4, '7')])
+                         [('Ąžuolynė', 2), ('Kavinė', 101), ('Trasa', 100), ('12345', 102), ('54321', 102), ('Miško gatvė', 50)])
+        self.assertEqual(db.execute('SELECT street, hn FROM a').fetchall(), [(6, '5'), (6, '7')])
         self.assertEqual(sorted(p.name for p in out.iterdir()), ['tiny-search.sqlite', 'tiny-search.sqlite.gz'])
 
 

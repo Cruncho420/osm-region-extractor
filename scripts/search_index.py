@@ -3,8 +3,9 @@
 
 PURPOSE: lets the phone find towns, passes, streets, everyday places and (where they are cheap)
   OpenStreetMap house numbers inside a downloaded region with no signal. Owner decision
-  2026-10-06: places + streets everywhere; house numbers only where the search file stays at or
-  under HOUSENUMBER_MAX_SHARE of the region's download (road data + routing + map).
+  2026-10-06: places + streets everywhere; house numbers and postcodes only where the search file
+  stays at or under HOUSENUMBER_MAX_SHARE of the region's download (road data + routing + map).
+  Preference when the full file is too big: drop postcodes first, then house numbers, then both.
 RESPONSIBILITY: osmium filter + export of one PBF, parse, rank, write the pinned SQLite contract
   (below), gzip it, decide A (no house numbers) vs B (with) from MEASURED sizes.
 DEPENDENCIES: python3 stdlib (sqlite3 with FTS5), osmium-tool (only with --pbf), pbf_snapshot.py.
@@ -22,8 +23,13 @@ FILE CONTRACT (schema_version 1 — the Rods app is written against it; change =
   a(street INTEGER, hn TEXT, lat INTEGER, lon INTEGER, PRIMARY KEY(street, hn)) WITHOUT ROWID
     — only when has_housenumbers = 1
   meta(k TEXT PRIMARY KEY, v TEXT)
+  POSTCODES: one row per distinct OSM postcode (addr:postcode on any object, boundary=postal_code /
+    place=postcode postal_code), cls tag 'postcode=yes' (a POI-style id >= 100), name = the code as
+    most often written, alt = the same without spaces ('SW1A 1AA' -> 'SW1A1AA'), lat/lon = per-axis
+    median of all its points, parent = nearest settlement, rank POSTCODE_RANK. Counted INSIDE the 5 %
+    rule below: shipped only if the whole file fits; meta.postcode_rows says how many (0 = dropped).
   ROW ORDER IS LOAD-BEARING: ids ascending = importance descending (places by rank, then POIs by
-  rank, then streets by rank, then streets that exist only because an address names them). The
+  rank, then postcodes, then streets by rank, then streets that exist only because an address names them). The
   phone ranks only the first 400 FTS hits in rowid order; this order is what makes that fast.
 
 USAGE:
@@ -47,6 +53,7 @@ import sys
 import tempfile
 import time
 import unicodedata
+from collections import Counter
 from pathlib import Path
 
 SCHEMA_VERSION = 1
@@ -69,6 +76,8 @@ STREET_RANK = {'motorway': 9, 'trunk': 8, 'primary': 7, 'secondary': 6, 'tertiar
 POI_RANK, POI_BONUS = 20, {'mountain_pass=yes': 10}  # a driving app: passes outrank cafés
 FAME_BONUS = 5  # wikidata / wikipedia tag
 ADDR_STREET_RANK = 10
+POSTCODE_RANK = 15  # below every POI (20+): a code is a fallback hit, never outranks a named place
+POSTCODE_CLS = 'postcode=yes'
 LINK_RADIUS_DEG = 0.03
 PLACE_DEDUP_DEG = 0.1    # ~10 km: a city's node vs the centre of its boundary area
 POI_DEDUP_DEG = 0.005    # ~500 m: a fuel station's node vs its forecourt area
@@ -83,7 +92,7 @@ OSMIUM_FILTER = [
     'townhall,place_of_worship,university,college,cinema,theatre,arts_centre,police,ferry_terminal,marketplace,'
     'library,ice_cream,car_wash,toilets',
     'nwr/leisure=park,stadium,marina,sports_centre,golf_course,nature_reserve,water_park,track',
-    'nwr/aeroway=aerodrome', 'nwr/railway=station,halt', 'nwr/boundary=national_park',
+    'nwr/aeroway=aerodrome', 'nwr/railway=station,halt', 'nwr/boundary=national_park,postal_code', 'nwr/addr:postcode',
     'w/highway', 'nwr/addr:housenumber',
 ]
 
@@ -164,8 +173,9 @@ def famous(p):
 
 
 def parse(lines, addr_out):
-    """geojsonseq lines -> (places, pois, streets, n_addr, classes). Addresses stream to addr_out (TSV)."""
-    places, pois, streets, classes, n_addr = [], [], {}, {}, 0
+    """geojsonseq lines -> (places, pois, streets, n_addr, classes, postcodes). Addresses stream to
+    addr_out (TSV). postcodes = {code key: (Counter of written forms, [lon], [lat])}."""
+    places, pois, streets, classes, n_addr, postcodes = [], [], {}, {}, 0, {}
     for line in lines:
         line = line.strip().lstrip('\x1e')
         if not line:
@@ -185,8 +195,19 @@ def parse(lines, addr_out):
             if c:
                 addr_out.write(f'{clean(st)}\t{clean(hn)}\t{c[0]:.5f}\t{c[1]:.5f}\n')
                 n_addr += 1
+        is_pc_area = p.get('boundary') == 'postal_code' or p.get('place') == 'postcode'
+        pc = p.get('addr:postcode') or (p.get('postal_code') if is_pc_area else None)
+        if pc:
+            c = c or coord(g)
+            for code in (pc.split(';') if c else ()):
+                code = clean(code)
+                if 2 <= len(code) <= 10:  # longer is free text, not a code
+                    e = postcodes.setdefault(code.replace(' ', '').upper(), (Counter(), [], []))
+                    e[0][code] += 1
+                    e[1].append(c[0])
+                    e[2].append(c[1])
         nm = p.get('name')
-        if not nm:
+        if not nm or is_pc_area:  # a postal boundary is not a POI
             continue
         nm = clean(nm)
         fame = FAME_BONUS if famous(p) else 0
@@ -221,7 +242,7 @@ def parse(lines, addr_out):
                     rank = min(99, POI_RANK + POI_BONUS.get(tag, 0) + fame)
                     pois.append((rank, nm, alts(p, nm), classes[tag], c[0], c[1], g.get('type') != 'Point'))
                 break
-    return places, pois, streets, n_addr, classes
+    return places, pois, streets, n_addr, classes, postcodes
 
 
 def dup(seen, key, x, y, deg, area):
@@ -240,10 +261,23 @@ def dup(seen, key, x, y, deg, area):
     return False
 
 
+def postcode_rows(postcodes):
+    """{key: (forms, xs, ys)} -> sorted [(name, alt, lon, lat)]. Median per axis, so a code reused in two
+    far-apart towns lands in one of them, not between. ponytail: one row per code; split by cluster
+    if far-apart reuse ever matters."""
+    out = []
+    for forms, xs, ys in postcodes.values():
+        name = max(forms.items(), key=lambda kv: (kv[1], kv[0]))[0]
+        xs.sort()
+        ys.sort()
+        out.append((name, name.replace(' ', '') if ' ' in name else None, xs[len(xs) // 2], ys[len(ys) // 2]))
+    return sorted(out)
+
+
 class Index:
     """Rows in contract order. row = [id, name, alt, cls, lat_e5, lon_e5, parent, rank]."""
 
-    def __init__(self, places, pois, streets):
+    def __init__(self, places, pois, streets, postcodes=(), pc_cls=None):
         self.rows = []
         town, self.settle = Grid(0.25), Grid(0.05)
         # Ties: bigger population, then name — deterministic output for the same OSM input.
@@ -263,6 +297,9 @@ class Index:
             if dup(seen, (norm(nm), cl), x, y, POI_DEDUP_DEG, area):
                 continue
             self._add(nm, al, cl, x, y, self.settle.nearest(x, y), rank)
+        for nm, al, x, y in postcodes:
+            self._add(nm, al, pc_cls, x, y, self.settle.nearest(x, y), POSTCODE_RANK)
+        self.n_pc = len(postcodes)
         # One street row per (normalised name, nearest settlement): segments of a street merge,
         # same-named streets of different villages stay apart. Highest-ranked segment wins.
         merged = {}
@@ -398,45 +435,58 @@ def build(region, lines, out_dir, today, osm_timestamp='', keep_sqlite=False):
     try:
         addr_tsv = work / 'addr.tsv'
         with open(addr_tsv, 'w', encoding='utf-8') as af:
-            places, pois, streets, n_addr, classes = parse(lines, af)
-        idx = Index(places, pois, streets)
-        del places, pois, streets
+            places, pois, streets, n_addr, classes, pcs = parse(lines, af)
+        pc_list = postcode_rows(pcs)
+        del pcs
+        pc_classes = dict(classes, **{POSTCODE_CLS: 100 + len(classes)})
         base = {'schema_version': SCHEMA_VERSION, 'region': region, 'osm_timestamp': osm_timestamp,
                 'built_at': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
                 'today_download_bytes': today, 'housenumber_max_share': HOUSENUMBER_MAX_SHARE}
         db_path, gz_path = work / 'search.sqlite', out_dir / f'{region}-search.sqlite.gz'
-        gz_b, addr_rows, variant = None, 0, 'A'
-        if n_addr:
-            with open(addr_tsv, encoding='utf-8') as fa:
-                addrs = idx.link(fa)
-            # meta is final before gzip, so gz_b is exactly the file that ships if B is kept
-            addr_rows = write_db(db_path, idx.rows, classes, addrs, dict(
-                base, has_housenumbers=1, variant='B', decision=f'B: gz <= {HOUSENUMBER_MAX_SHARE} x {today}'))
-            del addrs
-            gz_b = gzip_file(db_path, gz_path)
-            if keep_housenumbers(gz_b, today):
-                variant = 'B'
-            else:
-                addr_rows = 0
-        if variant == 'A':
-            why = (f'A: {gz_b} > {HOUSENUMBER_MAX_SHARE} x {today}' if gz_b is not None and today
-                   else 'A: no house numbers in OSM' if gz_b is None else 'A: today\'s download unknown')
-            write_db(db_path, idx.rows[:idx.n_a], classes, None,
-                     dict(base, has_housenumbers=0, variant='A', housenumbers_gz_bytes=gz_b or '', decision=why))
-        gz = gz_b if variant == 'B' else gzip_file(db_path, gz_path)
+        # Preference when the whole file is over the rule: drop postcodes, then house numbers, then
+        # both. The last candidate (no house numbers, no postcodes) ships unconditionally.
+        cands = [(hn, pc) for hn in (True, False) for pc in (True, False)
+                 if (pc_list or not pc) and (n_addr or not hn)]
+        cache, tried = {}, []  # cache: with-postcodes? -> (Index, addrs); tried: [(hn, pc, gz)]
+        for hn, pc in cands:
+            if pc not in cache:
+                idx = Index(places, pois, streets, pc_list if pc else (), pc_classes[POSTCODE_CLS])
+                with open(addr_tsv, encoding='utf-8') as fa:
+                    cache[pc] = (idx, idx.link(fa) if n_addr else None)
+            idx, addrs = cache[pc]
+            # meta is final before gzip, so gz is exactly the file that ships if this one is kept
+            note = lambda k, x: [t for t in tried if t[k] == x]
+            hn_why = ('house numbers kept' if hn else 'no house numbers in OSM' if not n_addr
+                      else "today's download unknown" if not today
+                      else f'house numbers over {HOUSENUMBER_MAX_SHARE} x {today} ({note(0, True)[-1][2]} B)')
+            pc_why = ('no postcodes in OSM' if not pc_list else 'postcodes kept' if pc
+                      else f'postcodes dropped (file with them {note(1, True)[-1][2]} B)')
+            last = (hn, pc) == cands[-1]
+            meta = dict(base, has_housenumbers=int(hn), variant='B' if hn else 'A', postcode_rows=idx.n_pc,
+                        housenumbers_gz_bytes='' if hn or not note(0, True) else note(0, True)[-1][2],
+                        decision=f"{'B' if hn else 'A'}: {hn_why}; {pc_why}; limit {HOUSENUMBER_MAX_SHARE} x {today}")
+            addr_rows = write_db(db_path, idx.rows if hn else idx.rows[:idx.n_a], pc_classes if pc else classes,
+                                 addrs if hn else None, meta)
+            gz = gzip_file(db_path, gz_path)
+            tried.append((hn, pc, gz))
+            if last or keep_housenumbers(gz, today):
+                break
+        variant = 'B' if hn else 'A'
+        gz_b = next((t[2] for t in reversed(tried) if t[0]), None)  # smallest house-number file measured
+        gz_full = tried[0][2]
         sqlite_bytes = os.path.getsize(db_path)
         if keep_sqlite:
             shutil.move(db_path, out_dir / f'{region}-search.sqlite')
-        db_rows = idx.n_a if variant == 'A' else len(idx.rows)
+        db_rows = len(idx.rows) if hn else idx.n_a
         with open(gz_path, 'rb') as fh:
             sha = hashlib.file_digest(fh, 'sha256').hexdigest() if hasattr(hashlib, 'file_digest') else hashlib.sha256(fh.read()).hexdigest()
         res = {'region': region, 'variant': variant, 'rows': db_rows, 'rows_a': idx.n_a, 'addr_rows': addr_rows,
-               'osm_addresses': n_addr, 'sqlite_bytes': sqlite_bytes, 'gz_bytes': gz, 'gz_with_housenumbers': gz_b,
+               'osm_addresses': n_addr, 'postcode_rows': idx.n_pc, 'postcodes_in_osm': len(pc_list), 'tried': tried, 'sqlite_bytes': sqlite_bytes, 'gz_bytes': gz, 'gz_with_housenumbers': gz_b, 'gz_full': gz_full,
                'today_download_bytes': today, 'share_pct': round(100 * gz / today, 2) if today else None,
                'share_with_housenumbers_pct': round(100 * gz_b / today, 2) if today and gz_b else None,
                'checksum': sha[:16], 'sha256': sha, 'osm_timestamp': osm_timestamp, 'seconds': round(time.time() - t0, 1)}
         log(f"{region}: variant {variant} ({res['share_pct']} % of today {today} B; with house numbers "
-            f"{gz_b} B = {res['share_with_housenumbers_pct']} %), {db_rows} rows, {addr_rows} addresses, "
+            f"{gz_b} B = {res['share_with_housenumbers_pct']} %), {db_rows} rows ({idx.n_pc} postcodes), {addr_rows} addresses, "
             f"{gz} B gz, sha256 {sha[:16]}, {res['seconds']} s")
         return res
     finally:
