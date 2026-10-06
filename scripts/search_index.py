@@ -92,9 +92,13 @@ OSMIUM_FILTER = [
     'townhall,place_of_worship,university,college,cinema,theatre,arts_centre,police,ferry_terminal,marketplace,'
     'library,ice_cream,car_wash,toilets',
     'nwr/leisure=park,stadium,marina,sports_centre,golf_course,nature_reserve,water_park,track',
-    'nwr/aeroway=aerodrome', 'nwr/railway=station,halt', 'nwr/boundary=national_park,postal_code', 'nwr/addr:postcode',
+    'nwr/aeroway=aerodrome', 'nwr/railway=station,halt', 'nwr/boundary=national_park',
     'w/highway', 'nwr/addr:housenumber',
 ]
+# Objects that feed ONLY the postcode rows (osmium_lines streams them marked NO_POI): they are in a second
+# extract, so an object carrying an addr:postcode is never a place/POI/street just because of it.
+POSTCODE_FILTER = ['nwr/boundary=postal_code', 'nwr/place=postcode', 'nwr/addr:postcode']
+ONLY_POI, ONLY_POSTCODE = '\x01', '\x02'  # line markers: skip the postcode step / skip all but it (not \x1c-\x1f: str.strip eats those)
 
 
 def log(msg):
@@ -180,7 +184,8 @@ def parse(lines, addr_out):
         line = line.strip().lstrip('\x1e')
         if not line:
             continue
-        f = json.loads(line)
+        mark = line[0] if line[0] in (ONLY_POI, ONLY_POSTCODE) else ''
+        f = json.loads(line[len(mark):])
         p, g = f.get('properties') or {}, f.get('geometry') or {}
         # osmium export (no config) emits every closed way twice, as LineString AND as area: keep
         # only the area, except for roads (a closed residential loop is a street, not a place) and
@@ -190,14 +195,14 @@ def parse(lines, addr_out):
             continue
         c = None
         hn, st = p.get('addr:housenumber'), p.get('addr:street') or p.get('addr:place')
-        if hn and st:
+        if hn and st and mark != ONLY_POSTCODE:
             c = coord(g)
             if c:
                 addr_out.write(f'{clean(st)}\t{clean(hn)}\t{c[0]:.5f}\t{c[1]:.5f}\n')
                 n_addr += 1
         is_pc_area = p.get('boundary') == 'postal_code' or p.get('place') == 'postcode'
         pc = p.get('addr:postcode') or (p.get('postal_code') if is_pc_area else None)
-        if pc:
+        if pc and mark != ONLY_POI:
             c = c or coord(g)
             for code in (pc.split(';') if c else ()):
                 code = clean(code)
@@ -207,8 +212,8 @@ def parse(lines, addr_out):
                     e[1].append(c[0])
                     e[2].append(c[1])
         nm = p.get('name')
-        if not nm or is_pc_area:  # a postal boundary is not a POI
-            continue
+        if not nm or is_pc_area or mark == ONLY_POSTCODE:
+            continue  # a postal boundary is not a POI; nor is an object that is only here for its postcode
         nm = clean(nm)
         fame = FAME_BONUS if famous(p) else 0
         pl = p.get('place')
@@ -494,20 +499,22 @@ def build(region, lines, out_dir, today, osm_timestamp='', keep_sqlite=False):
 
 
 def osmium_lines(pbf, work):
-    """Filter the PBF to what the index can hold, then stream it out as GeoJSON lines."""
-    filtered = Path(work) / 'search-filtered.osm.pbf'
-    subprocess.run(['osmium', 'tags-filter', str(pbf), *OSMIUM_FILTER, '-o', str(filtered), '-O', '--no-progress'],
-                   check=True)
-    proc = subprocess.Popen(['osmium', 'export', str(filtered), '-f', 'geojsonseq', '-x', 'print_record_separator=false',
-                             '-o', '-', '--no-progress'], stdout=subprocess.PIPE, text=True, encoding='utf-8')
-    try:
-        yield from proc.stdout
-    finally:
-        proc.stdout.close()
-        rc = proc.wait()
-        filtered.unlink(missing_ok=True)
-        if rc:
-            raise RuntimeError(f'osmium export exited {rc}')
+    """Filter the PBF to what the index can hold, then stream it out as GeoJSON lines: first the
+    places/POIs/streets/addresses extract (ONLY_POI), then the postcode extract (ONLY_POSTCODE)."""
+    for mark, filt in ((ONLY_POI, OSMIUM_FILTER), (ONLY_POSTCODE, POSTCODE_FILTER)):
+        filtered = Path(work) / 'search-filtered.osm.pbf'
+        subprocess.run(['osmium', 'tags-filter', str(pbf), *filt, '-o', str(filtered), '-O', '--no-progress'], check=True)
+        proc = subprocess.Popen(['osmium', 'export', str(filtered), '-f', 'geojsonseq', '-x', 'print_record_separator=false',
+                                 '-o', '-', '--no-progress'], stdout=subprocess.PIPE, text=True, encoding='utf-8')
+        try:
+            for ln in proc.stdout:
+                yield mark + ln
+        finally:
+            proc.stdout.close()
+            rc = proc.wait()
+            filtered.unlink(missing_ok=True)
+            if rc:
+                raise RuntimeError(f'osmium export exited {rc}')
 
 
 def main(argv=None):

@@ -135,6 +135,24 @@ class BuildTests(unittest.TestCase):
         res, _ = self.build(smallest_b * 20 + 400)
         self.assertEqual(res['variant'], 'B')
 
+    def test_postcode_only_objects_are_not_pois(self):
+        # osmium_lines streams two extracts. The POI one is exactly the pre-22fdec6 filter result (its
+        # objects keep their POI rows, even tags the filter never asks for, e.g. a tagged node of a kept
+        # way); the postcode one feeds ONLY the postcode rows: a school there is not a POI.
+        school = pt(21.0, 55.0, name='Gymnasium', amenity='school', **{'addr:postcode': 'ZZ9 9ZZ'})
+        cafe = pt(21.0, 55.0, name='Kavinė', amenity='cafe', **{'addr:postcode': 'ZZ9 9ZZ'})
+        slip = pt(21.0, 55.0, name='Slip', leisure='slipway')  # referenced node of a kept way: stays a POI
+        both = [si.ONLY_POI + json.dumps(cafe), si.ONLY_POI + json.dumps(slip),
+                si.ONLY_POSTCODE + json.dumps(school), si.ONLY_POSTCODE + json.dumps(cafe)]
+        with tempfile.TemporaryFile('w+') as af:
+            _, pois, _, _, classes, pcs = si.parse(both, af)
+        self.assertEqual({nm for _, nm, *_ in pois}, {'Kavinė', 'Slip'})
+        self.assertEqual(len(pcs['ZZ99ZZ'][1]), 2, 'school + cafe each counted once; the POI copy of the cafe adds none')
+        # no marker (--geojsonseq of one export): one object does both jobs
+        with tempfile.TemporaryFile('w+') as af:
+            _, pois, _, _, _, pcs = si.parse([json.dumps(cafe)], af)
+        self.assertEqual(([nm for _, nm, *_ in pois], len(pcs['ZZ99ZZ'][1])), (['Kavinė'], 1))
+
     def test_postcode_rows(self):
         res, db = self.build(10 ** 9)
         pc = db.execute("SELECT id FROM cls WHERE tag='postcode=yes'").fetchone()[0]
