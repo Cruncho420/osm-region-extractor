@@ -47,6 +47,11 @@ on:
         required: false
         default: '20260923'
         type: string
+      publish_search:
+        description: 'Upload each piece''s offline search file to the pilot prerelease. OFF = workflow artifact only'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write  # the pilot prerelease
@@ -311,12 +316,42 @@ jobs:
         working-directory: scripts
         env:
           EXTRACT_LOCAL_PBF: /tmp/piece.osm.pbf
+          EXTRACT_KEEP_PBF: '1'  # the offline-search step reads it next, then deletes it
           NODE_OPTIONS: '--max-old-space-size=12288'
         run: |
           set -euo pipefail
           npm run extract-single -- --region "$PIECE"
           npm run build-sqlite -- --region "$PIECE"
           cp "output/$PIECE.sqlite.gz" "../$PIECE.sqlite.gz"
+      # Offline search file per piece (scripts/search_index.py; same rule as osm-extract.yml).
+      # Today's download = this piece's road data + routing (pilot sizes) + map (pilot sizes, or the
+      # live basemap manifest's piece row). Never fails the piece's road data.
+      - name: Build offline search index
+        id: search
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          trap 'rm -f "/tmp/$PIECE.osm.pbf"' EXIT
+          mkdir -p search-out today
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" --pattern slices-pilot-sizes.json -O today/pilot.json || true
+          gh release download -R "$GITHUB_REPOSITORY" --pattern manifest.json -O today/osm.json || true
+          BT=$(jq -r '.basemapTag // ("basemap-" + .version)' today/osm.json 2>/dev/null || true)
+          [ -z "$BT" ] || gh release download "$BT" -R "$GITHUB_REPOSITORY" --pattern manifest.json -O today/basemap.json || true
+          rm -f today/osm.json  # its sqliteSize rows are whole countries; this piece's road data is local
+          M=(); for f in today/*.json; do if [ -s "$f" ]; then M+=(--manifest "$f"); fi; done
+          python3 scripts/search_index.py --region "$PIECE" --pbf "/tmp/$PIECE.osm.pbf" --out search-out \
+            --road-gz "$PIECE.sqlite.gz" "${M[@]}" --summary "search-out/$PIECE-search.json"
+          if [ "${{ inputs.publish_search }}" = true ]; then
+            gh release upload "$TAG" "search-out/$PIECE-search.sqlite.gz" --clobber
+          fi
+      - uses: actions/upload-artifact@v4
+        if: steps.search.outcome == 'success'
+        with:
+          name: search-${{ matrix.piece }}
+          path: |
+            search-out/${{ matrix.piece }}-search.sqlite.gz
+            search-out/${{ matrix.piece }}-search.json
+          retention-days: 3
       - name: Upload
         run: |
           set -euo pipefail
@@ -395,6 +430,7 @@ jobs:
         with:
           path: parts
           merge-multiple: true
+          pattern: '!search-*'  # road-*/map-* size rows only; search files are not sizes to merge
       - name: Piece size table (MB = 1,048,576 B; owner cap 2,000 MB)
         run: |
           set -euo pipefail

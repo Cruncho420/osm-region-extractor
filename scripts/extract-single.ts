@@ -631,8 +631,9 @@ async function extractRegion(regionId: string): Promise<void> {
       });
     }
 
-    // Clean up all remaining intermediate files
-    unlinkSync(localPbf);
+    // Clean up all remaining intermediate files. EXTRACT_KEEP_PBF: the workflow's offline-search
+    // step (search_index.py) reads the same PBF next and deletes it itself — no second download.
+    if (!process.env.EXTRACT_KEEP_PBF) unlinkSync(localPbf);
     unlinkSync(wayFilteredPbf);
     unlinkSync(wayOutputJson);
     unlinkSync(surfaceFilteredPbf);

@@ -77,6 +77,9 @@ interface ManifestRegion {
   /** Exact pack boundary sidecar. The app refuses to route on a pack without it. */
   valhallaCoverageSize?: number;
   valhallaCoverageChecksum?: string;
+  /** Offline search index (<region>-search.sqlite.gz, same release as the .sqlite.gz). */
+  searchSize?: number;
+  searchChecksum?: string;
 }
 interface Manifest {
   version: string;
@@ -355,6 +358,41 @@ async function checkRemoteValhalla(
   return { regionId: label, status: 'ok', detail: 'streamed + decompressed clean (NO checksum pinned)' };
 }
 
+/**
+ * The offline search file rides the same release as the road data. Local (pre-publish): size +
+ * gzip -t, the BUG-242 truncation test. Remote: sha256 prefix against the manifest — the bytes
+ * proven whole before upload, so identity is the stronger check, as for the routing packs.
+ */
+async function checkSearch(regionId: string, region: ManifestRegion, baseUrl: string | null): Promise<Result> {
+  const label = `${regionId} [search]`;
+  const file = `${regionId}-search.sqlite.gz`;
+  if (localDir) {
+    const path = join(localDir, file);
+    let size: number;
+    try {
+      size = statSync(path).size;
+    } catch {
+      return { regionId: label, status: 'MISSING', detail: `${file} not found in ${localDir}` };
+    }
+    if (size !== region.searchSize) {
+      return { regionId: label, status: 'SIZE_MISMATCH', detail: `on-disk ${size} B != manifest ${region.searchSize} B` };
+    }
+    const { code, stderr } = await runShell(`gzip -t "${path}"`);
+    if (code !== 0) return { regionId: label, status: 'CORRUPT', detail: stderr || `gzip -t exited ${code}` };
+    return { regionId: label, status: 'ok', detail: `${(size / 1024 / 1024).toFixed(1)} MB` };
+  }
+  const cmd =
+    `set -o pipefail; SHA=$(command -v sha256sum || echo "shasum -a 256"); ` +
+    `curl -sSL --fail --retry 3 --retry-delay 2 --max-time ${CURL_MAX_TIME_SECONDS} ` +
+    `"${baseUrl}/${file}" | $SHA | cut -c1-16`;
+  const { code, stdout, stderr } = await runShell(cmd);
+  if (code !== 0) return { regionId: label, status: 'CORRUPT', detail: (stderr || `exit ${code}`).slice(0, 300) };
+  if (stdout.trim() !== region.searchChecksum) {
+    return { regionId: label, status: 'CHECKSUM_MISMATCH', detail: `served ${stdout.trim()} != manifest ${region.searchChecksum}` };
+  }
+  return { regionId: label, status: 'ok', detail: `streamed, sha256 matches (${stdout.trim()})` };
+}
+
 // -----------------------------------------------------------------------------
 // Concurrency pool
 // -----------------------------------------------------------------------------
@@ -443,7 +481,12 @@ async function main(): Promise<void> {
     )));
   }
 
-  const results = [...sqliteResults, ...valhallaResults];
+  const searchRegions = Object.entries(manifest.regions).filter(([, r]) => r.searchSize != null);
+  const searchResults = searchRegions.length === 0 ? [] : await runPool(searchRegions, concurrency, ([regionId, region]) =>
+    checkSearch(regionId, region, baseUrl),
+  );
+
+  const results = [...sqliteResults, ...valhallaResults, ...searchResults];
 
   // ── VACUITY GUARD ─────────────────────────────────────────────────────────
   //
@@ -486,7 +529,9 @@ async function main(): Promise<void> {
         ? `${f.regionId.replace(' [valhalla]', '')}-valhalla.tar.gz`
         : f.regionId.endsWith(' [coverage]')
           ? `${f.regionId.replace(' [coverage]', '')}-valhalla-coverage.json`
-          : `${f.regionId}.sqlite.gz`;
+          : f.regionId.endsWith(' [search]')
+            ? `${f.regionId.replace(' [search]', '')}-search.sqlite.gz`
+            : `${f.regionId}.sqlite.gz`;
       console.error(`::error title=Region ${f.regionId} ${f.status}::${asset} failed integrity (${f.status}): ${f.detail}`);
     }
     console.error(

@@ -1,0 +1,225 @@
+# Offline search files onto the CURRENT road-data release (Rods FEAT-090).
+#
+# Tadas 2026-10-10: "Publish the offline results now" — before the 1 Nov monthly release, which
+# would carry them anyway (PUBLISH_SEARCH_INDEX). This adds <region>-search.sqlite.gz assets to an
+# existing osm-* release and searchSize/searchChecksum to its manifest.json, and NOTHING else:
+# same version, same generatedAt, same pack tags, no road-data/routing/map asset touched
+# (scripts/search_manifest_patch.py refuses any other difference). Phones with a region installed
+# then fetch only the search file (the road data stays current: version + sqliteChecksum unchanged).
+#
+# Dry run by default: `publish` off builds the files as artifacts only. Re-run with `regions` to
+# fill gaps; the manifest patch merges, keeping every other region's entry.
+name: Offline search files into the current release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'The LATEST osm-* release to add search files to (e.g. osm-2026-09-02)'
+        required: true
+        type: string
+      regions:
+        description: 'Space/comma separated region ids; empty = every region in that release manifest'
+        required: false
+        type: string
+      publish:
+        description: 'Upload the files + patch manifest.json. OFF = workflow artifacts only'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  actions: read  # gh run list (the manifest-writers guard)
+
+concurrency:
+  group: search-index-publish
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.release_tag }}
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  # Every other workflow that rewrites a release manifest.json. Releases have no compare-and-swap,
+  # so this one refuses to start or to patch while any of them is queued or running.
+  MANIFEST_WRITERS: osm-extract.yml merge-valhalla-manifest.yml regenerate-manifest.yml valhalla-coverage-backfill.yml routing-pieces-release.yml valhalla-tiles.yml basemap-tiles.yml
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: plan
+        env:
+          REGIONS: ${{ inputs.regions }}
+        run: |
+          set -euo pipefail
+          LATEST=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName -q .tagName)
+          if [ "$LATEST" != "$TAG" ] || [[ "$TAG" != osm-* ]]; then
+            echo "::error::$TAG is not the latest osm-* release ($LATEST); refusing"; exit 1
+          fi
+          for w in $MANIFEST_WRITERS; do
+            for st in queued in_progress waiting pending requested; do
+              n=$(gh run list -R "$GITHUB_REPOSITORY" -w "$w" -s "$st" --json databaseId -q length)
+              [ "$n" = 0 ] || { echo "::error::$w has a $st run; manifest writers must be idle"; exit 1; }
+            done
+          done
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" --pattern manifest.json -O manifest.json
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, re, sys
+          live = json.load(open('manifest.json'))['regions']
+          known = {r['id'] for r in json.load(open('scripts/regions.json'))['regions']}
+          want = [x for x in re.split(r'[\s,]+', os.environ.get('REGIONS', '')) if x] or sorted(live)
+          bad = sorted(set(want) - (set(live) & known))
+          if bad:
+              sys.exit(f'not in both the release manifest and regions.json: {bad}')
+          print('matrix=' + json.dumps(sorted(set(want))))
+          PY
+
+  build:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 340  # under the 6 h job cap; asia-russia (~4 GB PBF) is the long pole
+    strategy:
+      matrix:
+        region: ${{ fromJson(needs.plan.outputs.matrix) }}
+      max-parallel: 6  # Geofabrik is shared (BUG-819); the monthly extract uses 4 with heavier jobs
+      fail-fast: false
+    env:
+      REGION: ${{ matrix.region }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk for large regions (PBF + filtered copy + TSV + SQLite + VACUUM + gzip)
+        run: |
+          EST=$(jq -r --arg r "$REGION" '.regions[] | select(.id == $r) | .estimatedSize' scripts/regions.json)
+          if [ "${EST:-0}" -ge 700000 ]; then
+            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/microsoft /usr/local/share/powershell /usr/share/swift 2>/dev/null || true
+          fi
+          df -h / "$RUNNER_TEMP" | tail -n +1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install osmium-tool
+        run: sudo apt-get update && sudo apt-get install -y osmium-tool
+      - name: Today's download sizes (the release's own manifests)
+        run: |
+          set -euo pipefail
+          mkdir -p today
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" --pattern manifest.json -O today/osm.json
+          VT=$(jq -r '.valhallaPackTag // ("valhalla-" + .version)' today/osm.json)
+          BT=$(jq -r '.basemapTag // ("basemap-" + .version)' today/osm.json)
+          gh release download "$VT" -R "$GITHUB_REPOSITORY" --pattern valhalla-manifest.json -O today/valhalla.json || true
+          gh release download "$BT" -R "$GITHUB_REPOSITORY" --pattern manifest.json -O today/basemap.json || true
+      - name: Download PBF
+        run: |
+          set -euo pipefail
+          P=$(jq -r --arg r "$REGION" '.regions[] | select(.id == $r) | .geofabrikPath' scripts/regions.json)
+          node scripts/download-pbf.mjs "https://download.geofabrik.de/$P" "$RUNNER_TEMP/region.osm.pbf"
+      - name: Build search file
+        run: |
+          set -euo pipefail
+          M=(); for f in today/*.json; do if [ -s "$f" ]; then M+=(--manifest "$f"); fi; done
+          python3 scripts/search_index.py --region "$REGION" --pbf "$RUNNER_TEMP/region.osm.pbf" --out search-out \
+            "${M[@]}" --summary "search-out/$REGION-search.json"
+          rm -f "$RUNNER_TEMP/region.osm.pbf"
+      - name: Check the file opens (schema 1, pc table)
+        run: |
+          set -euo pipefail
+          gzip -t "search-out/$REGION-search.sqlite.gz"
+          gunzip -c "search-out/$REGION-search.sqlite.gz" > "$RUNNER_TEMP/check.sqlite"
+          python3 - "$RUNNER_TEMP/check.sqlite" <<'PY'
+          import sqlite3, sys
+          db = sqlite3.connect(sys.argv[1])
+          v = db.execute("select v from meta where k='schema_version'").fetchone()
+          tables = {r[0] for r in db.execute("select name from sqlite_master")}
+          assert v and v[0] == '1', f'schema_version {v}'
+          assert {'p', 'f', 'meta', 'pc', 'cls'} <= tables, sorted(tables)
+          assert db.execute('select count(*) from p').fetchone()[0] > 0, 'no rows'
+          PY
+          rm -f "$RUNNER_TEMP/check.sqlite"
+          jq -r '"| \(.region) | \(.variant) | \(.rows) | \(.addr_rows) | \(.gz_bytes) | \(.today_download_bytes) | \(.share_pct) % | \(.checksum) |"' \
+            "search-out/$REGION-search.json" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: search-${{ matrix.region }}
+          path: |
+            search-out/${{ matrix.region }}-search.sqlite.gz
+            search-out/${{ matrix.region }}-search.json
+          retention-days: 7
+
+  publish:
+    needs: [plan, build]
+    # Also after some regions failed: publish what was built, re-run the rest with `regions`.
+    if: ${{ always() && inputs.publish && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: search
+          pattern: search-*
+          merge-multiple: true
+      - name: Upload search files, then patch manifest.json (last)
+        run: |
+          set -euo pipefail
+          LATEST=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName -q .tagName)
+          [ "$LATEST" = "$TAG" ] || { echo "::error::latest release moved to $LATEST; refusing"; exit 1; }
+          for w in $MANIFEST_WRITERS; do
+            for st in queued in_progress waiting pending requested; do
+              n=$(gh run list -R "$GITHUB_REPOSITORY" -w "$w" -s "$st" --json databaseId -q length)
+              [ "$n" = 0 ] || { echo "::error::$w has a $st run; manifest writers must be idle"; exit 1; }
+            done
+          done
+          shopt -s nullglob
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" --pattern manifest.json -O live.json
+          # A file the live manifest already names is never replaced: phones pin its checksum, and new
+          # bytes under the old pin would fail verification. Only regions without an entry go up
+          # (an asset left by a failed earlier run is not named yet, so replacing it is safe).
+          for f in search/*-search.sqlite.gz; do
+            r=$(basename "$f" -search.sqlite.gz)
+            if jq -e --arg r "$r" '.regions[$r] | (.searchChecksum // .searchSize)' live.json > /dev/null; then
+              echo "keep $r: already published"; rm -f "$f"
+            fi
+          done
+          FILES=(search/*-search.sqlite.gz)
+          [ ${#FILES[@]} -gt 0 ] || { echo "::notice::nothing new to publish"; exit 0; }
+          for f in "${FILES[@]}"; do gzip -t "$f"; done
+          # 50 per call: one gh call per file would be 234 API sessions.
+          printf '%s\n' "${FILES[@]}" | xargs -n 50 gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber
+          # Every file must be on the release with these exact bytes (GitHub's own sha256 digest)
+          # before the manifest names it.
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets > assets.json
+          for f in "${FILES[@]}"; do
+            n=$(basename "$f"); want="$(stat -c %s "$f") sha256:$(sha256sum "$f" | cut -c1-64)"
+            got=$(jq -r --arg n "$n" '.assets[] | select(.name == $n) | "\(.size) \(.digest)"' assets.json)
+            [ "$got" = "$want" ] || { echo "::error::$n on release '$got' != '$want'"; exit 1; }
+          done
+          python3 scripts/search_manifest_patch.py --manifest live.json --dir search --out manifest.json
+          cp live.json "manifest.before-search.json"
+          # Compare-and-swap as far as releases allow: still the latest, and nobody changed the
+          # manifest while the files uploaded. (The window left is the seconds between here and the
+          # upload; the only other writers are the monthly release and manual manifest repairs.)
+          LATEST=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName -q .tagName)
+          [ "$LATEST" = "$TAG" ] || { echo "::error::latest release moved to $LATEST; manifest NOT patched"; exit 1; }
+          for w in $MANIFEST_WRITERS; do
+            for st in queued in_progress waiting pending requested; do
+              n=$(gh run list -R "$GITHUB_REPOSITORY" -w "$w" -s "$st" --json databaseId -q length)
+              [ "$n" = 0 ] || { echo "::error::$w has a $st run; manifest writers must be idle"; exit 1; }
+            done
+          done
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" --pattern manifest.json -O recheck.json
+          cmp recheck.json live.json || { echo "::error::manifest.json changed during the run; NOT patched"; exit 1; }
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" manifest.json --clobber
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" --pattern manifest.json -O served.json
+          cmp served.json manifest.json
+          { echo "## Search files on $TAG"
+            echo "Uploaded ${#FILES[@]}; manifest now lists $(jq '[.regions[] | select(.searchSize)] | length' manifest.json)/$(jq '.regions | length' manifest.json); version $(jq -r .version manifest.json) unchanged"; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: manifest-before-and-after
+          path: |
+            manifest.before-search.json
+            manifest.json
+          retention-days: 90

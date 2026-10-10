@@ -22,6 +22,34 @@ Each region produces a SQLite database (`{region-id}.sqlite.gz`) containing:
 - Road surfaces (asphalt, gravel, cobblestone, dirt, etc.)
 - Road ways (dense road geometry)
 
+## Offline search file (`{region-id}-search.sqlite.gz`, Rods FEAT-090)
+
+`scripts/search_index.py` builds one per region (and per split-country piece) from the same PBF:
+places, passes, peaks, sights, fuel/charging, named shops/cafés/parking and streets in an FTS5
+index, plus OpenStreetMap house numbers when the file with them stays at or under 5 % of the
+region's download (road data + routing + map; `HOUSENUMBER_MAX_SHARE`). The schema contract,
+including the most-important-first row order the app relies on, is in the script's docstring.
+It is **dry-run until the 1 Nov 2026 aligned release**: the monthly job uploads it as a
+`search-<region>` workflow artifact only. `gh variable set PUBLISH_SEARCH_INDEX --body true`
+(or the `publish_search` dispatch input) puts it on the release and adds `searchSize` /
+`searchChecksum` to each region in `manifest.json` (+234 assets, ~700 of the 1000 cap).
+
+**Moved forward (Tadas 2026-10-10):** `search-index-publish.yml` (manual) adds the files to the
+CURRENT `osm-*` release and patches its `manifest.json` with only `searchSize` / `searchChecksum`
+(`scripts/search_manifest_patch.py` refuses any other change: same version, date and pack tags,
+so installed regions fetch only the search file). `PUBLISH_SEARCH_INDEX` is set to `true`, so the
+monthly release keeps carrying them; deleting the variable would publish a month WITHOUT search.
+
+Local build of any region (needs `osmium` and python3 with FTS5):
+
+```bash
+node scripts/download-pbf.mjs https://download.geofabrik.de/europe/estonia-latest.osm.pbf /tmp/ee.osm.pbf
+gh release download -R Cruncho420/osm-region-extractor --pattern manifest.json -O /tmp/osm.json   # + the
+#   valhalla-manifest.json / basemap manifest.json of the releases it points at, for today's download
+python3 scripts/search_index.py --region europe-estonia --pbf /tmp/ee.osm.pbf --out /tmp/search \
+  --manifest /tmp/osm.json --manifest /tmp/valhalla.json --manifest /tmp/basemap.json --keep-sqlite
+```
+
 ## Offline map files (basemap) and split countries
 
 `basemap-tiles.yml` cuts one Protomaps PMTiles map file per unit onto a `basemap-<YYYY-MM-DD>`
