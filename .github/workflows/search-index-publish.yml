@@ -70,7 +70,7 @@ jobs:
   build:
     needs: plan
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 340  # under the 6 h job cap; asia-russia (~4 GB PBF) is the long pole
     strategy:
       matrix:
         region: ${{ fromJson(needs.plan.outputs.matrix) }}
@@ -80,6 +80,13 @@ jobs:
       REGION: ${{ matrix.region }}
     steps:
       - uses: actions/checkout@v4
+      - name: Free disk for large regions (PBF + filtered copy + TSV + SQLite + VACUUM + gzip)
+        run: |
+          EST=$(jq -r --arg r "$REGION" '.regions[] | select(.id == $r) | .estimatedSize' scripts/regions.json)
+          if [ "${EST:-0}" -ge 700000 ]; then
+            sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/microsoft /usr/local/share/powershell /usr/share/swift 2>/dev/null || true
+          fi
+          df -h / "$RUNNER_TEMP" | tail -n +1
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -148,8 +155,19 @@ jobs:
           set -euo pipefail
           LATEST=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName -q .tagName)
           [ "$LATEST" = "$TAG" ] || { echo "::error::latest release moved to $LATEST; refusing"; exit 1; }
-          shopt -s nullglob; FILES=(search/*-search.sqlite.gz)
-          [ ${#FILES[@]} -gt 0 ] || { echo "::error::no search files built"; exit 1; }
+          shopt -s nullglob
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" --pattern manifest.json -O live.json
+          # A file the live manifest already names is never replaced: phones pin its checksum, and new
+          # bytes under the old pin would fail verification. Only regions without an entry go up
+          # (an asset left by a failed earlier run is not named yet, so replacing it is safe).
+          for f in search/*-search.sqlite.gz; do
+            r=$(basename "$f" -search.sqlite.gz)
+            if jq -e --arg r "$r" '.regions[$r].searchChecksum' live.json > /dev/null; then
+              echo "keep $r: already published"; rm -f "$f"
+            fi
+          done
+          FILES=(search/*-search.sqlite.gz)
+          [ ${#FILES[@]} -gt 0 ] || { echo "::notice::nothing new to publish"; exit 0; }
           for f in "${FILES[@]}"; do gzip -t "$f"; done
           # 50 per call: one gh call per file would be 234 API sessions.
           printf '%s\n' "${FILES[@]}" | xargs -n 50 gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber
@@ -160,9 +178,15 @@ jobs:
             got=$(jq -r --arg n "$n" '.assets[] | select(.name == $n) | .size' assets.json)
             [ "$got" = "$want" ] || { echo "::error::$n on release $got != $want"; exit 1; }
           done
-          gh release download "$TAG" -R "$GITHUB_REPOSITORY" --pattern manifest.json -O live.json
           python3 scripts/search_manifest_patch.py --manifest live.json --dir search --out manifest.json
           cp live.json "manifest.before-search.json"
+          # Compare-and-swap as far as releases allow: still the latest, and nobody changed the
+          # manifest while the files uploaded. (The window left is the seconds between here and the
+          # upload; the only other writers are the monthly release and manual manifest repairs.)
+          LATEST=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName -q .tagName)
+          [ "$LATEST" = "$TAG" ] || { echo "::error::latest release moved to $LATEST; manifest NOT patched"; exit 1; }
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" --pattern manifest.json -O recheck.json
+          cmp recheck.json live.json || { echo "::error::manifest.json changed during the run; NOT patched"; exit 1; }
           gh release upload "$TAG" -R "$GITHUB_REPOSITORY" manifest.json --clobber
           gh release download "$TAG" -R "$GITHUB_REPOSITORY" --pattern manifest.json -O served.json
           cmp served.json manifest.json
