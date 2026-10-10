@@ -38,6 +38,9 @@ concurrency:
 env:
   TAG: ${{ inputs.release_tag }}
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  # Every other workflow that rewrites a release manifest.json. Releases have no compare-and-swap,
+  # so this one refuses to start or to patch while any of them is queued or running.
+  MANIFEST_WRITERS: osm-extract.yml merge-valhalla-manifest.yml regenerate-manifest.yml valhalla-coverage-backfill.yml routing-pieces-release.yml valhalla-tiles.yml basemap-tiles.yml
 
 jobs:
   plan:
@@ -55,6 +58,12 @@ jobs:
           if [ "$LATEST" != "$TAG" ] || [[ "$TAG" != osm-* ]]; then
             echo "::error::$TAG is not the latest osm-* release ($LATEST); refusing"; exit 1
           fi
+          for w in $MANIFEST_WRITERS; do
+            for st in queued in_progress waiting pending requested; do
+              n=$(gh run list -R "$GITHUB_REPOSITORY" -w "$w" -s "$st" --json databaseId -q length)
+              [ "$n" = 0 ] || { echo "::error::$w has a $st run; manifest writers must be idle"; exit 1; }
+            done
+          done
           gh release download "$TAG" -R "$GITHUB_REPOSITORY" --pattern manifest.json -O manifest.json
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json, os, re, sys
@@ -155,6 +164,12 @@ jobs:
           set -euo pipefail
           LATEST=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName -q .tagName)
           [ "$LATEST" = "$TAG" ] || { echo "::error::latest release moved to $LATEST; refusing"; exit 1; }
+          for w in $MANIFEST_WRITERS; do
+            for st in queued in_progress waiting pending requested; do
+              n=$(gh run list -R "$GITHUB_REPOSITORY" -w "$w" -s "$st" --json databaseId -q length)
+              [ "$n" = 0 ] || { echo "::error::$w has a $st run; manifest writers must be idle"; exit 1; }
+            done
+          done
           shopt -s nullglob
           gh release download "$TAG" -R "$GITHUB_REPOSITORY" --pattern manifest.json -O live.json
           # A file the live manifest already names is never replaced: phones pin its checksum, and new
@@ -162,7 +177,7 @@ jobs:
           # (an asset left by a failed earlier run is not named yet, so replacing it is safe).
           for f in search/*-search.sqlite.gz; do
             r=$(basename "$f" -search.sqlite.gz)
-            if jq -e --arg r "$r" '.regions[$r].searchChecksum' live.json > /dev/null; then
+            if jq -e --arg r "$r" '.regions[$r] | (.searchChecksum // .searchSize)' live.json > /dev/null; then
               echo "keep $r: already published"; rm -f "$f"
             fi
           done
@@ -171,12 +186,13 @@ jobs:
           for f in "${FILES[@]}"; do gzip -t "$f"; done
           # 50 per call: one gh call per file would be 234 API sessions.
           printf '%s\n' "${FILES[@]}" | xargs -n 50 gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber
-          # Every file must be on the release at its exact size before the manifest names it.
+          # Every file must be on the release with these exact bytes (GitHub's own sha256 digest)
+          # before the manifest names it.
           gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets > assets.json
           for f in "${FILES[@]}"; do
-            n=$(basename "$f"); want=$(stat -c %s "$f")
-            got=$(jq -r --arg n "$n" '.assets[] | select(.name == $n) | .size' assets.json)
-            [ "$got" = "$want" ] || { echo "::error::$n on release $got != $want"; exit 1; }
+            n=$(basename "$f"); want="$(stat -c %s "$f") sha256:$(sha256sum "$f" | cut -c1-64)"
+            got=$(jq -r --arg n "$n" '.assets[] | select(.name == $n) | "\(.size) \(.digest)"' assets.json)
+            [ "$got" = "$want" ] || { echo "::error::$n on release '$got' != '$want'"; exit 1; }
           done
           python3 scripts/search_manifest_patch.py --manifest live.json --dir search --out manifest.json
           cp live.json "manifest.before-search.json"
@@ -185,6 +201,12 @@ jobs:
           # upload; the only other writers are the monthly release and manual manifest repairs.)
           LATEST=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName -q .tagName)
           [ "$LATEST" = "$TAG" ] || { echo "::error::latest release moved to $LATEST; manifest NOT patched"; exit 1; }
+          for w in $MANIFEST_WRITERS; do
+            for st in queued in_progress waiting pending requested; do
+              n=$(gh run list -R "$GITHUB_REPOSITORY" -w "$w" -s "$st" --json databaseId -q length)
+              [ "$n" = 0 ] || { echo "::error::$w has a $st run; manifest writers must be idle"; exit 1; }
+            done
+          done
           gh release download "$TAG" -R "$GITHUB_REPOSITORY" --pattern manifest.json -O recheck.json
           cmp recheck.json live.json || { echo "::error::manifest.json changed during the run; NOT patched"; exit 1; }
           gh release upload "$TAG" -R "$GITHUB_REPOSITORY" manifest.json --clobber
