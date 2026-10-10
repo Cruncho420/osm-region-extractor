@@ -30,6 +30,7 @@ on:
 
 permissions:
   contents: write
+  actions: read  # gh run list (the manifest-writers guard)
 
 concurrency:
   group: search-index-publish
