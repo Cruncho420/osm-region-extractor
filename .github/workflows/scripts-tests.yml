@@ -87,6 +87,9 @@ jobs:
       - name: Offline search index tests
         run: python3 -m unittest discover -s scripts -p 'test_search_index.py'
 
+      - name: Search manifest patch tests (search files onto a published release)
+        run: python3 -m unittest discover -s scripts -p 'test_search_manifest_patch.py'
+
       # The merge script is what edits production manifest.json, so a syntax
       # error in it must fail here rather than mid-rollout. `--check` parses
       # without executing; the file guards its CLI behind an import.meta check,

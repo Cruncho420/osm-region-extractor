@@ -34,6 +34,12 @@ It is **dry-run until the 1 Nov 2026 aligned release**: the monthly job uploads 
 (or the `publish_search` dispatch input) puts it on the release and adds `searchSize` /
 `searchChecksum` to each region in `manifest.json` (+234 assets, ~700 of the 1000 cap).
 
+**Moved forward (Tadas 2026-10-10):** `search-index-publish.yml` (manual) adds the files to the
+CURRENT `osm-*` release and patches its `manifest.json` with only `searchSize` / `searchChecksum`
+(`scripts/search_manifest_patch.py` refuses any other change: same version, date and pack tags,
+so installed regions fetch only the search file). `PUBLISH_SEARCH_INDEX` is set to `true`, so the
+monthly release keeps carrying them; deleting the variable would publish a month WITHOUT search.
+
 Local build of any region (needs `osmium` and python3 with FTS5):
 
 ```bash
