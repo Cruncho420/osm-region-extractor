@@ -833,19 +833,6 @@
       "estimatedSize": 500000
     },
     {
-      "id": "asia-russia",
-      "name": "Russia",
-      "continent": "asia",
-      "bbox": [
-        19.64,
-        41.19,
-        180,
-        81.86
-      ],
-      "geofabrikPath": "russia-latest.osm.pbf",
-      "estimatedSize": 4000000
-    },
-    {
       "id": "asia-saudi-arabia",
       "name": "Saudi Arabia",
       "continent": "asia",
@@ -1130,19 +1117,6 @@
       ],
       "geofabrikPath": "europe/austria-latest.osm.pbf",
       "estimatedSize": 800000
-    },
-    {
-      "id": "europe-belarus",
-      "name": "Belarus",
-      "continent": "europe",
-      "bbox": [
-        23.18,
-        51.26,
-        32.78,
-        56.17
-      ],
-      "geofabrikPath": "europe/belarus-latest.osm.pbf",
-      "estimatedSize": 400000
     },
     {
       "id": "europe-belgium",

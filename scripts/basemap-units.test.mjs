@@ -30,11 +30,11 @@ test('refuses a split country that regions.json does not know', () => {
   assert.throws(() => basemapUnits({ regions: [] }, slices), /missing from regions.json/);
 });
 
-test('the real config: 12 split countries become 36 pieces, every stored outline exists', () => {
+test('the real config: 11 split countries become 28 pieces (Russia dropped 11 Oct 2026), every stored outline exists', () => {
   const real = basemapUnits(JSON.parse(readFileSync('regions.json', 'utf8')), JSON.parse(readFileSync('region-slices.json', 'utf8')));
   const pieces = real.filter((u) => u.country);
-  assert.equal(new Set(pieces.map((u) => u.country)).size, 12);
-  assert.equal(pieces.length, 36);
+  assert.equal(new Set(pieces.map((u) => u.country)).size, 11);
+  assert.equal(pieces.length, 28);
   for (const u of pieces.filter((p) => p.poly.startsWith('stored:'))) {
     assert.ok(existsSync(`polys/${u.id}.poly`), `polys/${u.id}.poly`);
   }

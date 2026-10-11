@@ -54,9 +54,10 @@ python3 scripts/search_index.py --region europe-estonia --pbf /tmp/ee.osm.pbf --
 
 `basemap-tiles.yml` cuts one Protomaps PMTiles map file per unit onto a `basemap-<YYYY-MM-DD>`
 prerelease, with its own `manifest.json` written only when every unit is there. A unit is a region
-from `scripts/regions.json`, except that a country listed in `scripts/region-slices.json` (the 12
-countries whose download is over 2 GB: GB, Canada, Russia, Japan, Italy, Spain, Poland, Indonesia,
-Norway, Australia, Mexico, Brazil-Sudeste) ships as its pieces instead — 36
+from `scripts/regions.json`, except that a country listed in `scripts/region-slices.json` (the 11
+countries whose download is over 2 GB: GB, Canada, Japan, Italy, Spain, Poland, Indonesia,
+Norway, Australia, Mexico, Brazil-Sudeste; Russia and Belarus are no longer extracted since
+11 Oct 2026) ships as its pieces instead — 28
 `<piece-id>-basemap.pmtiles` files clipped to `scripts/polys/<piece-id>.poly` (or the piece's
 single Geofabrik outline), at zoom 14 unless the piece says otherwise (Nunavut: 12). A piece
 never drops a zoom to fit under 2 GiB; it fails the run instead. `scripts/basemap-units.mjs`
