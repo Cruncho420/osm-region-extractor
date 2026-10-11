@@ -39,7 +39,7 @@ on:
       publish:
         description: 'Countries to PUBLISH to the manifest after the gate (comma list, or empty)'
         required: false
-        default: 'europe-great-britain,north-america-canada,europe-italy,europe-spain,europe-poland'
+        default: 'europe-great-britain,north-america-canada,europe-italy,europe-spain,europe-poland,asia-russia'
         type: string
       tag:
         description: 'Production routing release the pieces join (valhalla-YYYY-MM-DD, must already exist)'
