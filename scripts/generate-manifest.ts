@@ -63,6 +63,8 @@ interface Manifest {
   generatedAt: string;
   valhallaPackTag?: string;
   basemapTag?: string;
+  /** ODbL notice for the OSM data in every pack. Old apps ignore unknown keys. */
+  license: { name: string; attribution: string; copyrightUrl: string; licenseUrl: string };
   regions: Record<string, ManifestRegion>;
 }
 
@@ -78,6 +80,7 @@ interface PointerOptions {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const OSM_LICENSE = JSON.parse(readFileSync(join(__dirname, 'osm-license.json'), 'utf-8'));
 
 // =============================================================================
 // FUNCTIONS
@@ -131,6 +134,12 @@ function generateManifest(inputDir: string, outputFile: string, overrideVersion?
     version,
     generatedAt: new Date().toISOString(),
     ...pointers,
+    license: {
+      name: OSM_LICENSE.license,
+      attribution: OSM_LICENSE.attribution,
+      copyrightUrl: OSM_LICENSE.copyrightUrl,
+      licenseUrl: OSM_LICENSE.licenseUrl,
+    },
     regions: {},
   };
 
