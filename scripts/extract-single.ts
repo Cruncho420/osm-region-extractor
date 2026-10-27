@@ -1232,10 +1232,16 @@ async function streamConvertWays(inputPath: string, outputPath: string, regionId
     // FEAT-175 source rounding: each node at the 6 decimals our Valhalla router writes for the same OSM node, so a road
     // walked from the pack (Free Roam) and the same road routed reach the corner model as identical points (valhallaCoord.mjs).
     // Only the shipped road_ways rows: the under-bridge test above already read the full-precision geojsonseq.
+    // Two nodes under 11 cm apart can land on the same point (5 of 2.9 M segments in Lithuania): drop the repeat, because
+    // the app's walker reads a zero-length segment's bearing as 0 deg and refuses the way (Astra r1, reproduced).
     const flatCoords: number[] = [];
     for (const [lon, lat] of coords) {
-      flatCoords.push(valhallaLon(lon), valhallaLat(lat));
+      const x = valhallaLon(lon), y = valhallaLat(lat);
+      const n = flatCoords.length;
+      if (n && flatCoords[n - 2] === x && flatCoords[n - 1] === y) continue;
+      flatCoords.push(x, y);
     }
+    if (flatCoords.length < 4) continue;
 
     if (count > 0) ws.write(',');
     // Include surface tag when present — enables primary-tier surface matching
