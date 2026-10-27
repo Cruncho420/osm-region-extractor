@@ -95,6 +95,8 @@ interface BundledRoadWay {
   lanes?: string;
   width?: string;
   laneMarkings?: string;
+  /** Raw OSM `oneway` when not absent / yes / -1 (extract-single.ts), for the single-track derivation. */
+  onewayTag?: string;
 }
 
 interface BundledBuiltUpArea {
@@ -476,7 +478,7 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
       const { minLat, maxLat, minLon, maxLon } = computeBboxFromFlatCoords(rw.coords);
       const lanes = parseLanes(rw.lanes);
       const widthM = parseWidthM(rw.width);
-      const singleTrack = deriveSingleTrack({ lanes, widthM, oneway: rw.oneway ?? null, junction: rw.junction ?? null, highway: rw.highway });
+      const singleTrack = deriveSingleTrack({ lanes, widthM, oneway: rw.oneway ?? rw.onewayTag ?? null, junction: rw.junction ?? null, highway: rw.highway });
       insertWay.run(
         rw.highway,
         rw.surface ?? null,

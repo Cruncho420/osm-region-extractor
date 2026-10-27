@@ -9,9 +9,11 @@
  *   - width: metres by default (OSM wiki Key:width); "3.5", "3.5 m", "3,5" (decimal comma), "12'", "12'6\"", "10 ft".
  *     Outside 0.5..50 m is a tagging error and null.
  *   - lane_markings: "yes" / "no" only.
- *   - single_track: only on a two-way way (not oneway=yes/-1, not a ring junction, not a motorway, whose oneway is
- *     implied): 1 when lanes = 1 or width < 4 m; 0 when lanes >= 2 or width >= 4 m (and neither says 1); else null.
- *     Any single-track evidence wins over two-lane evidence: the cap is the cautious side.
+ *   - single_track: only on a two-way way (no oneway tag or oneway=no; not a ring junction; not a motorway, whose oneway
+ *     is implied): 1 when lanes = 1 or width < 4 m; 0 when lanes >= 2 (and neither says 1); else null. A width of 4 m or
+ *     more is no proof of two lanes (OSM width includes parking and cycle lanes, Key:width), so it alone stays null.
+ *     Any oneway value but `no` (yes, -1, 1, true, alternating, reversible) is not two-way: null.
+ *     Any single-track evidence wins over two-lane evidence: the cap is the cautious side (Astra r1 E 2026-10-29).
  * DEPENDENCIES: none. CONSUMERS: build-sqlite.ts. Test: roadFacts.test.mjs.
  */
 
@@ -45,12 +47,12 @@ export function parseLaneMarkings(raw) {
   return raw === 'yes' || raw === 'no' ? raw : null;
 }
 
-/** 1 / 0 / null — see the header. `oneway` and `junction` are the stored road_ways values. */
+/** 1 / 0 / null — see the header. `oneway` is the RAW OSM tag (the stored road_ways.oneway keeps only yes / -1). */
 export function deriveSingleTrack({ lanes, widthM, oneway, junction, highway }) {
-  const oneWay = oneway === 'yes' || oneway === '-1' || junction === 'roundabout' || junction === 'circular'
-    || highway === 'motorway' || highway === 'motorway_link';
-  if (oneWay) return null;
+  const twoWay = (oneway == null || oneway === 'no') && junction !== 'roundabout' && junction !== 'circular'
+    && highway !== 'motorway' && highway !== 'motorway_link';
+  if (!twoWay) return null;
   if (lanes === 1 || (widthM !== null && widthM < SINGLE_TRACK_MAX_WIDTH_M)) return 1;
-  if ((lanes !== null && lanes >= 2) || (widthM !== null && widthM >= SINGLE_TRACK_MAX_WIDTH_M)) return 0;
+  if (lanes !== null && lanes >= 2) return 0;
   return null;
 }

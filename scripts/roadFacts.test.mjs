@@ -32,7 +32,9 @@ test('single_track: two-way roads only, single-track evidence wins', () => {
   assert.equal(deriveSingleTrack({ ...two, lanes: null, widthM: 3.2 }), 1);
   assert.equal(deriveSingleTrack({ ...two, lanes: 2, widthM: 3.5 }), 1);
   assert.equal(deriveSingleTrack({ ...two, lanes: 2, widthM: null }), 0);
-  assert.equal(deriveSingleTrack({ ...two, lanes: null, widthM: 4 }), 0);
+  assert.equal(deriveSingleTrack({ ...two, lanes: null, widthM: 5 }), null); // width may include parking: no proof
+  assert.equal(deriveSingleTrack({ ...two, oneway: 'no', lanes: 1, widthM: null }), 1);
+  for (const o of ['1', 'true', 'alternating', 'reversible']) assert.equal(deriveSingleTrack({ ...two, oneway: o, lanes: 1, widthM: null }), null, o);
   assert.equal(deriveSingleTrack({ ...two, lanes: null, widthM: null }), null);
   assert.equal(deriveSingleTrack({ ...two, oneway: 'yes', lanes: 1, widthM: null }), null);
   assert.equal(deriveSingleTrack({ ...two, oneway: '-1', lanes: 1, widthM: null }), null);

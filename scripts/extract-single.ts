@@ -131,6 +131,9 @@ interface BundledRoadWay {
   lanes?: string;
   width?: string;
   laneMarkings?: string;
+  /** Raw OSM `oneway` when it is neither absent nor yes / -1 (e.g. `no`, `1`, `alternating`), for the single-track
+   *  derivation only; `oneway` above stays narrow for the walker. */
+  onewayTag?: string;
 }
 
 /** Built-up area reduced to its bounding box — all the app's occupancy-grid
@@ -1304,6 +1307,7 @@ async function streamConvertWays(inputPath: string, outputPath: string, regionId
     if (props.lanes) way.lanes = props.lanes;
     if (props.width) way.width = props.width;
     if (props.lane_markings) way.laneMarkings = props.lane_markings;
+    if (props.oneway && props.oneway !== 'yes' && props.oneway !== '-1') way.onewayTag = props.oneway;
 
     // OSM way ID. osmium-export with --add-unique-id=type_id emits the typed
     // string "w12345" at feature.id (top-level, NOT inside properties). We
