@@ -126,6 +126,11 @@ interface BundledRoadWay {
    *  `road_ways.id`, which is a per-build AUTOINCREMENT rowid and means a
    *  different road in every extract. Additive: nothing reads it yet. */
   osmId?: number;
+  /** FEAT-175 road facts, raw OSM `lanes` / `width` / `lane_markings` strings. build-sqlite.ts parses them
+   *  (roadFacts.mjs) into road_ways.lanes / width_m / lane_markings and derives single_track. */
+  lanes?: string;
+  width?: string;
+  laneMarkings?: string;
 }
 
 /** Built-up area reduced to its bounding box — all the app's occupancy-grid
@@ -1294,6 +1299,11 @@ async function streamConvertWays(inputPath: string, outputPath: string, regionId
     // strongest "same road" discriminator on numbered routes. Nothing consumes
     // it yet; it exists so the app can stop inferring identity from geometry.
     if (props.ref) way.ref = props.ref;
+    // FEAT-175 road facts: the raw tags the car's narrow-road cap reads (never maxspeed). Parsing lives in
+    // roadFacts.mjs, called by build-sqlite.ts, as the maxspeed parse does.
+    if (props.lanes) way.lanes = props.lanes;
+    if (props.width) way.width = props.width;
+    if (props.lane_markings) way.laneMarkings = props.lane_markings;
 
     // OSM way ID. osmium-export with --add-unique-id=type_id emits the typed
     // string "w12345" at feature.id (top-level, NOT inside properties). We

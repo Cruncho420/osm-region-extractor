@@ -19,6 +19,7 @@ import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import { createRequire } from 'module';
+import { deriveSingleTrack, parseLaneMarkings, parseLanes, parseWidthM } from './roadFacts.mjs';
 const require = createRequire(import.meta.url);
 
 const Database = require('better-sqlite3');
@@ -90,6 +91,10 @@ interface BundledRoadWay {
   /** Country-coded legal-context tag (`"LT:rural"`, `"DE:zone30"`) — inferred-limits
    *  tier 2. Stored raw in road_ways.maxspeed_type; the app resolves it. */
   maxspeedType?: string;
+  /** FEAT-175 road facts: raw OSM `lanes` / `width` / `lane_markings` (roadFacts.mjs parses them). */
+  lanes?: string;
+  width?: string;
+  laneMarkings?: string;
 }
 
 interface BundledBuiltUpArea {
@@ -179,6 +184,10 @@ CREATE TABLE IF NOT EXISTS road_ways (
   maxspeed INTEGER,
   maxspeed_type TEXT,
   osm_id INTEGER,
+  lanes INTEGER,
+  width_m REAL,
+  lane_markings TEXT,
+  single_track INTEGER,
   coords TEXT NOT NULL,
   min_lat REAL NOT NULL,
   max_lat REAL NOT NULL,
@@ -384,7 +393,7 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
     'INSERT INTO road_surfaces (surface, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?)',
   );
   const insertWay = db.prepare(
-    'INSERT INTO road_ways (highway, surface, name, ref, oneway, access, junction, maxspeed, maxspeed_type, osm_id, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO road_ways (highway, surface, name, ref, oneway, access, junction, maxspeed, maxspeed_type, osm_id, lanes, width_m, lane_markings, single_track, coords, min_lat, max_lat, min_lon, max_lon) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   );
   const insertToll = db.prepare(
     'INSERT INTO toll_points (lat, lon, tags) VALUES (?, ?, ?)',
@@ -465,6 +474,9 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
     console.log('Streaming way data...');
     await streamJsonArray<BundledRoadWay>(wayPath, 'roadWays', (rw) => {
       const { minLat, maxLat, minLon, maxLon } = computeBboxFromFlatCoords(rw.coords);
+      const lanes = parseLanes(rw.lanes);
+      const widthM = parseWidthM(rw.width);
+      const singleTrack = deriveSingleTrack({ lanes, widthM, oneway: rw.oneway ?? null, junction: rw.junction ?? null, highway: rw.highway });
       insertWay.run(
         rw.highway,
         rw.surface ?? null,
@@ -476,6 +488,10 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
         normalizeMaxspeedKmh(rw.maxspeed),
         rw.maxspeedType ?? null,
         rw.osmId ?? null,
+        lanes,
+        widthM,
+        parseLaneMarkings(rw.laneMarkings),
+        singleTrack,
         JSON.stringify(rw.coords),
         minLat,
         maxLat,
