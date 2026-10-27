@@ -24,6 +24,7 @@ import {
   type UnderBridgeStats,
 } from './underBridgeCrossings';
 import { computeRingIdentity, type RingIdentity } from './ringIdentity';
+import { valhallaLat, valhallaLon } from './valhallaCoord.mjs';
 
 // =============================================================================
 // TYPES
@@ -1228,9 +1229,12 @@ async function streamConvertWays(inputPath: string, outputPath: string, regionId
     const coords = geometry.coordinates as [number, number][];
     if (coords.length < 2) continue;
 
+    // FEAT-175 source rounding: each node at the 6 decimals our Valhalla router writes for the same OSM node, so a road
+    // walked from the pack (Free Roam) and the same road routed reach the corner model as identical points (valhallaCoord.mjs).
+    // Only the shipped road_ways rows: the under-bridge test above already read the full-precision geojsonseq.
     const flatCoords: number[] = [];
     for (const [lon, lat] of coords) {
-      flatCoords.push(lon, lat);
+      flatCoords.push(valhallaLon(lon), valhallaLat(lat));
     }
 
     if (count > 0) ws.write(',');
