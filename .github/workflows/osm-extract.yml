@@ -356,6 +356,9 @@ jobs:
         run: |
           TAG="${{ steps.release-info.outputs.tag_name }}"
           TITLE="OSM Data - ${{ steps.release-info.outputs.month_name }}"
+          # ODbL notice (single source scripts/osm-license.json): release notes + ATTRIBUTION.txt asset.
+          ATTRIBUTION="$(jq -r .attribution scripts/osm-license.json)"
+          printf '%s\n' "$ATTRIBUTION" > release-files/ATTRIBUTION.txt
 
           # Never destroy a complete same-day release just to rerun the workflow.
           # A failed replacement would otherwise fall back an extra month.
@@ -377,6 +380,8 @@ jobs:
           **Version:** ${{ steps.release-info.outputs.version }}
           <!-- osm-workflow-run:${{ github.run_id }} -->
 
+          **License:** ${ATTRIBUTION}
+
           **Contents (per region):**
           - Traffic calming features (speed bumps, dips, bridges, tunnels, speed cameras)
           - Roundabouts (full and mini)
@@ -388,7 +393,8 @@ jobs:
           Download manifest.json first to check versions, then download needed regions.
 
           **Files:**
-          - manifest.json - Version and checksum info for all regions
+          - manifest.json - Version and checksum info for all regions (incl. a license block)
+          - ATTRIBUTION.txt - OpenStreetMap / ODbL notice (also stored in each .sqlite metadata table)
           - {region-id}.sqlite.gz - Pre-built SQLite database (recommended)
           - {region-id}.json.gz - Core data (traffic calming + roundabouts) [legacy]
           - {region-id}-surfaces.json.gz - Road surface types [legacy]

@@ -13,7 +13,7 @@
  * Output: output/{region-id}.sqlite.gz
  */
 
-import { createReadStream, existsSync, unlinkSync, statSync } from 'fs';
+import { createReadStream, existsSync, unlinkSync, statSync, readFileSync } from 'fs';
 import { createGunzip } from 'zlib';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
@@ -217,6 +217,8 @@ CREATE TABLE IF NOT EXISTS metadata (
 // =============================================================================
 
 const __filename = fileURLToPath(import.meta.url);
+// ODbL notice written into every pack's metadata (single source: osm-license.json).
+const OSM_LICENSE = JSON.parse(readFileSync(new URL('./osm-license.json', import.meta.url), 'utf-8'));
 
 // =============================================================================
 // HELPERS
@@ -512,6 +514,8 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
   insertMeta.run('hasSurfaceData', hasSurfaceData ? 'true' : 'false');
   insertMeta.run('hasWayData', hasWayData ? 'true' : 'false');
   insertMeta.run('hasBuiltUpData', hasBuiltUpData ? 'true' : 'false');
+  insertMeta.run('license', OSM_LICENSE.license);
+  insertMeta.run('attribution', OSM_LICENSE.attribution);
 
   // Commit transaction
   db.exec('COMMIT');
