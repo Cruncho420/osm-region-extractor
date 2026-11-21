@@ -11,7 +11,7 @@
  * cannot connect is retried. Checks, per region of scripts/regions.json: the -latest .osm.pbf, its .poly and, with
  * --osm-date YYMMDD, the dated .osm.pbf the build downloads; plus every .poly of scripts/region-slices.json and
  * scripts/release-trial-packs.json.
- * Usage: node scripts/check-geofabrik-paths.mjs [--osm-date YYMMDD] [--only-regions] [--json out.json]
+ * Usage: node scripts/check-geofabrik-paths.mjs [--osm-date YYMMDD] [--only-regions] [--region <id>] [--json out.json]
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -46,9 +46,11 @@ async function head(path) {
 }
 
 async function main() {
-  const regions = JSON.parse(readFileSync(join(HERE, 'regions.json'), 'utf8')).regions;
+  const only = flag('--region');
+  const regions = JSON.parse(readFileSync(join(HERE, 'regions.json'), 'utf8')).regions.filter((r) => !only || r.id === only);
+  if (only && regions.length === 0) { console.log(`::error::region ${only} is not in scripts/regions.json`); process.exit(1); }
   const checks = regions.flatMap((r) => addressesFor(r.geofabrikPath, osmDate).map((path) => ({ id: r.id, path })));
-  if (!args.includes('--only-regions')) {
+  if (!args.includes('--only-regions') && !only) {
     const slices = JSON.parse(readFileSync(join(HERE, 'region-slices.json'), 'utf8'));
     const polys = new Set();
     JSON.stringify(slices, (k, v) => {
