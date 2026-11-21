@@ -39,8 +39,12 @@ async function head(path) {
         signal: AbortSignal.timeout(20_000) });
       return { status: res.status, final: res.url };
     } catch (err) {
-      if (attempt === 3) return { status: 0, final: String(err?.cause?.code ?? err?.name ?? err) };
-      await sleep(10_000 * attempt);   // "could not connect" or no answer: Geofabrik refuses bursts now and then
+      const why = String(err?.cause?.code ?? err?.name ?? err);
+      // A refused connection is retried (Geofabrik refuses bursts now and then). No answer in 20 s is not:
+      // a moved dated address hangs instead of 404ing, and retrying each one would turn a minute-long
+      // check into hours.
+      if (attempt === 3 || why === 'TimeoutError') return { status: 0, final: why };
+      await sleep(10_000 * attempt);
     }
   }
   return { status: 0, final: 'unreachable' };
