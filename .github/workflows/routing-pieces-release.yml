@@ -168,7 +168,8 @@ jobs:
           # Driving side from real outlines (PR #21); the token rule is valhalla-tiles.yml's
           # (continent/country/sub -> country), so brazil/sudeste checks against Brazil.
           PBF=$(jq -r --arg c "$COUNTRY" '.countries[] | select(.country==$c) | .pbf' scripts/region-slices.json)
-          TOKEN=$(echo "$PBF" | awk -F/ '{ print (NF == 3 ? $2 : $NF) }')
+          # The token rule reads the pre-Nov-2026 form: drop Geofabrik's per-extract folder (brazil/sudeste/sudeste -> brazil/sudeste).
+          TOKEN=$(echo "$PBF" | sed -E 's#([^/]+)/\1$#\1#' | awk -F/ '{ print (NF == 3 ? $2 : $NF) }')
           REQUIRE=$(jq -r --arg t "$TOKEN" '.[$t] // error("no driving-side entry for \($t)") | (.members // [.iso]) | join(",")' scripts/country-driving-side.json)
           BBOX=$(jq -r --arg c "$COUNTRY" '.regions[] | select(.id==$c) | .bbox | "\(.[0]-1),\(.[1]-1),\(.[2]+1),\(.[3]+1)"' scripts/regions.json)
           sudo chown -R "$(id -u):$(id -g)" work
