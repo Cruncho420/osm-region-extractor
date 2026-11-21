@@ -43,6 +43,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Fail in minutes, not hours: Geofabrik moved every extract into its own folder in Nov 2026 and an old
+      # address 404s only when a region job reaches its download. HEAD requests only, nothing downloaded.
+      - name: Check every Geofabrik address answers
+        run: |
+          if [ -n "${{ inputs.single_region }}" ]; then
+            node scripts/check-geofabrik-paths.mjs --region "${{ inputs.single_region }}"
+          else
+            node scripts/check-geofabrik-paths.mjs --only-regions
+          fi
+
       - name: Get regions list
         id: regions
         run: |

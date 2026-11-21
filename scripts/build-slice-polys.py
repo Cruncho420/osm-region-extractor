@@ -153,7 +153,9 @@ def write(path, name, geom):
 
 def country_iso(pbf):
     """The country's ISO code, by the token rule of valhalla-tiles.yml (continent/country/sub -> country)."""
-    bits = pbf.split("/")
+    # Read the pre-Nov-2026 form: drop Geofabrik's per-extract folder (brazil/sudeste/sudeste -> brazil/sudeste).
+    parts = pbf.split("/")
+    bits = parts[:-1] if len(parts) > 1 and parts[-1] == parts[-2] else parts
     token = bits[1] if len(bits) == 3 else bits[-1]
     return json.loads((ROOT / "country-driving-side.json").read_text())[token]["iso"]
 
