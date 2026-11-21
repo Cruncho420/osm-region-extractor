@@ -33,13 +33,14 @@ export function addressesFor(geofabrikPath, date) {
 }
 
 async function head(path) {
-  for (let attempt = 1; attempt <= 4; attempt += 1) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      const res = await fetch(`${BASE}/${path}`, { method: 'HEAD', redirect: 'follow', headers: { 'user-agent': UA } });
+      const res = await fetch(`${BASE}/${path}`, { method: 'HEAD', redirect: 'follow', headers: { 'user-agent': UA },
+        signal: AbortSignal.timeout(20_000) });
       return { status: res.status, final: res.url };
     } catch (err) {
-      if (attempt === 4) return { status: 0, final: String(err?.cause?.code ?? err) };
-      await sleep(15_000 * attempt);   // "could not connect": Geofabrik refuses bursts now and then
+      if (attempt === 3) return { status: 0, final: String(err?.cause?.code ?? err?.name ?? err) };
+      await sleep(10_000 * attempt);   // "could not connect" or no answer: Geofabrik refuses bursts now and then
     }
   }
   return { status: 0, final: 'unreachable' };
@@ -65,7 +66,9 @@ async function main() {
     }
   }
   const failed = [];
+  if (args.includes('--progress')) console.error(`checking ${checks.length} addresses`);
   for (const [i, c] of checks.entries()) {
+    if (args.includes('--progress') && i % 50 === 0) console.error(`${i} of ${checks.length}, ${failed.length} failing so far`);
     const r = await head(c.path);
     if (r.status !== 200) failed.push({ ...c, ...r });
     if (i + 1 < checks.length) await sleep(PAUSE_MS);
