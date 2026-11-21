@@ -51,8 +51,13 @@ async function main() {
   if (!args.includes('--only-regions')) {
     const slices = JSON.parse(readFileSync(join(HERE, 'region-slices.json'), 'utf8'));
     const polys = new Set();
-    JSON.stringify(slices, (k, v) => { if ((k === 'sources' || k === 'union') && Array.isArray(v)) v.forEach((p) => polys.add(p)); return v; });
-    for (const p of polys) checks.push({ id: `slice:${p}`, path: `${p}.poly` });
+    JSON.stringify(slices, (k, v) => {
+      if ((k === 'sources' || k === 'union') && Array.isArray(v)) v.forEach((p) => polys.add(p));
+      if ((k === 'pbf' || k === 'within') && typeof v === 'string') polys.add(v);
+      return v;
+    });
+    // `ne:` sources are Natural Earth outlines, not Geofabrik addresses
+    for (const p of polys) if (!p.startsWith('ne:')) checks.push({ id: `slice:${p}`, path: `${p}.poly` });
     for (const t of JSON.parse(readFileSync(join(HERE, 'release-trial-packs.json'), 'utf8'))) {
       if (typeof t.poly === 'string' && t.poly.startsWith(BASE)) checks.push({ id: `trial:${t.id}`, path: t.poly.slice(BASE.length + 1) });
     }

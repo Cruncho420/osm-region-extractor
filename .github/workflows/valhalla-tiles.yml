@@ -626,7 +626,9 @@ jobs:
           # (Shenzhen inside the hong-kong extract as left-hand). Then EVERY country row is checked
           # against scripts/country-driving-side.json: a wrong side is corrected, a country with no
           # verified entry fails the build (never a guess). Logic + tests: scripts/driving-side-repair.py.
-          GEO_PATH="${{ steps.meta.outputs.geo_path }}"
+          # The driving-side table is keyed by the path BEFORE Geofabrik's Nov 2026 move into per-extract folders
+          # (europe/germany/baden-wuerttemberg/baden-wuerttemberg-latest.osm.pbf -> europe/germany/baden-wuerttemberg-latest.osm.pbf).
+          GEO_PATH=$(echo "${{ steps.meta.outputs.geo_path }}" | sed -E 's#([^/]+)/\1-latest\.osm\.pbf$#\1-latest.osm.pbf#')
           NPARTS=$(echo "$GEO_PATH" | awk -F'/' '{print NF}')
           SUB=$(echo "$GEO_PATH" | awk -F'/' '{print $NF}' | sed 's/-latest\.osm\.pbf$//')
           if [ "$NPARTS" -eq 3 ]; then TOKEN=$(echo "$GEO_PATH" | cut -d'/' -f2); else TOKEN="$SUB"; fi

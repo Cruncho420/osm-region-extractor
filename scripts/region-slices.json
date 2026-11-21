@@ -5,45 +5,45 @@
   "countries": [
     {
       "country": "europe-great-britain",
-      "pbf": "europe/great-britain",
+      "pbf": "europe/great-britain/great-britain",
       "pieces": [
         {
           "id": "europe-great-britain-north",
           "name": "England North, Wales and Scotland",
           "sources": [
-            "europe/united-kingdom/england",
-            "europe/united-kingdom/wales",
-            "europe/united-kingdom/scotland"
+            "europe/united-kingdom/england/england",
+            "europe/united-kingdom/wales/wales",
+            "europe/united-kingdom/scotland/scotland"
           ],
           "clipRoadData": true,
           "outline": {
             "union": [
-              "europe/united-kingdom/england/northumberland",
-              "europe/united-kingdom/england/tyne-and-wear",
-              "europe/united-kingdom/england/durham",
-              "europe/united-kingdom/england/cumbria",
-              "europe/united-kingdom/england/lancashire",
-              "europe/united-kingdom/england/merseyside",
-              "europe/united-kingdom/england/greater-manchester",
-              "europe/united-kingdom/england/cheshire",
-              "europe/united-kingdom/england/north-yorkshire",
-              "europe/united-kingdom/england/west-yorkshire",
-              "europe/united-kingdom/england/south-yorkshire",
-              "europe/united-kingdom/england/east-yorkshire-with-hull",
-              "europe/united-kingdom/england/derbyshire",
-              "europe/united-kingdom/england/nottinghamshire",
-              "europe/united-kingdom/england/lincolnshire",
-              "europe/united-kingdom/england/leicestershire",
-              "europe/united-kingdom/england/rutland",
-              "europe/united-kingdom/england/northamptonshire",
-              "europe/united-kingdom/england/shropshire",
-              "europe/united-kingdom/england/staffordshire",
-              "europe/united-kingdom/england/herefordshire",
-              "europe/united-kingdom/england/worcestershire",
-              "europe/united-kingdom/england/warwickshire",
-              "europe/united-kingdom/england/west-midlands",
-              "europe/united-kingdom/wales",
-              "europe/united-kingdom/scotland"
+              "europe/united-kingdom/england/northumberland/northumberland",
+              "europe/united-kingdom/england/tyne-and-wear/tyne-and-wear",
+              "europe/united-kingdom/england/durham/durham",
+              "europe/united-kingdom/england/cumbria/cumbria",
+              "europe/united-kingdom/england/lancashire/lancashire",
+              "europe/united-kingdom/england/merseyside/merseyside",
+              "europe/united-kingdom/england/greater-manchester/greater-manchester",
+              "europe/united-kingdom/england/cheshire/cheshire",
+              "europe/united-kingdom/england/north-yorkshire/north-yorkshire",
+              "europe/united-kingdom/england/west-yorkshire/west-yorkshire",
+              "europe/united-kingdom/england/south-yorkshire/south-yorkshire",
+              "europe/united-kingdom/england/east-yorkshire-with-hull/east-yorkshire-with-hull",
+              "europe/united-kingdom/england/derbyshire/derbyshire",
+              "europe/united-kingdom/england/nottinghamshire/nottinghamshire",
+              "europe/united-kingdom/england/lincolnshire/lincolnshire",
+              "europe/united-kingdom/england/leicestershire/leicestershire",
+              "europe/united-kingdom/england/rutland/rutland",
+              "europe/united-kingdom/england/northamptonshire/northamptonshire",
+              "europe/united-kingdom/england/shropshire/shropshire",
+              "europe/united-kingdom/england/staffordshire/staffordshire",
+              "europe/united-kingdom/england/herefordshire/herefordshire",
+              "europe/united-kingdom/england/worcestershire/worcestershire",
+              "europe/united-kingdom/england/warwickshire/warwickshire",
+              "europe/united-kingdom/england/west-midlands/west-midlands",
+              "europe/united-kingdom/wales/wales",
+              "europe/united-kingdom/scotland/scotland"
             ]
           }
         },
@@ -51,12 +51,12 @@
           "id": "europe-great-britain-england-south",
           "name": "England South",
           "sources": [
-            "europe/united-kingdom/england"
+            "europe/united-kingdom/england/england"
           ],
           "clipRoadData": true,
           "outline": {
             "union": [
-              "europe/united-kingdom/england"
+              "europe/united-kingdom/england/england"
             ],
             "minus": [
               "europe-great-britain-north"
@@ -67,17 +67,17 @@
     },
     {
       "country": "north-america-canada",
-      "pbf": "north-america/canada",
+      "pbf": "north-america/canada/canada",
       "pieces": [
         {
           "id": "north-america-canada-quebec",
           "name": "Quebec",
           "sources": [
-            "north-america/canada/quebec"
+            "north-america/canada/quebec/quebec"
           ],
           "outline": {
             "union": [
-              "north-america/canada/quebec"
+              "north-america/canada/quebec/quebec"
             ]
           }
         },
@@ -85,11 +85,11 @@
           "id": "north-america-canada-ontario",
           "name": "Ontario",
           "sources": [
-            "north-america/canada/ontario"
+            "north-america/canada/ontario/ontario"
           ],
           "outline": {
             "union": [
-              "north-america/canada/ontario"
+              "north-america/canada/ontario/ontario"
             ]
           }
         },
@@ -97,11 +97,11 @@
           "id": "north-america-canada-british-columbia",
           "name": "British Columbia",
           "sources": [
-            "north-america/canada/british-columbia"
+            "north-america/canada/british-columbia/british-columbia"
           ],
           "outline": {
             "union": [
-              "north-america/canada/british-columbia"
+              "north-america/canada/british-columbia/british-columbia"
             ]
           }
         },
@@ -109,15 +109,15 @@
           "id": "north-america-canada-prairies",
           "name": "Alberta, Saskatchewan and Manitoba",
           "sources": [
-            "north-america/canada/alberta",
-            "north-america/canada/saskatchewan",
-            "north-america/canada/manitoba"
+            "north-america/canada/alberta/alberta",
+            "north-america/canada/saskatchewan/saskatchewan",
+            "north-america/canada/manitoba/manitoba"
           ],
           "outline": {
             "union": [
-              "north-america/canada/alberta",
-              "north-america/canada/saskatchewan",
-              "north-america/canada/manitoba"
+              "north-america/canada/alberta/alberta",
+              "north-america/canada/saskatchewan/saskatchewan",
+              "north-america/canada/manitoba/manitoba"
             ]
           }
         },
@@ -125,17 +125,17 @@
           "id": "north-america-canada-atlantic",
           "name": "Atlantic Canada",
           "sources": [
-            "north-america/canada/new-brunswick",
-            "north-america/canada/nova-scotia",
-            "north-america/canada/prince-edward-island",
-            "north-america/canada/newfoundland-and-labrador"
+            "north-america/canada/new-brunswick/new-brunswick",
+            "north-america/canada/nova-scotia/nova-scotia",
+            "north-america/canada/prince-edward-island/prince-edward-island",
+            "north-america/canada/newfoundland-and-labrador/newfoundland-and-labrador"
           ],
           "outline": {
             "union": [
-              "north-america/canada/new-brunswick",
-              "north-america/canada/nova-scotia",
-              "north-america/canada/prince-edward-island",
-              "north-america/canada/newfoundland-and-labrador"
+              "north-america/canada/new-brunswick/new-brunswick",
+              "north-america/canada/nova-scotia/nova-scotia",
+              "north-america/canada/prince-edward-island/prince-edward-island",
+              "north-america/canada/newfoundland-and-labrador/newfoundland-and-labrador"
             ]
           }
         },
@@ -143,13 +143,13 @@
           "id": "north-america-canada-north",
           "name": "Yukon and Northwest Territories",
           "sources": [
-            "north-america/canada/yukon",
-            "north-america/canada/northwest-territories"
+            "north-america/canada/yukon/yukon",
+            "north-america/canada/northwest-territories/northwest-territories"
           ],
           "outline": {
             "union": [
-              "north-america/canada/yukon",
-              "north-america/canada/northwest-territories"
+              "north-america/canada/yukon/yukon",
+              "north-america/canada/northwest-territories/northwest-territories"
             ]
           }
         },
@@ -157,12 +157,12 @@
           "id": "north-america-canada-nunavut",
           "name": "Nunavut",
           "sources": [
-            "north-america/canada/nunavut"
+            "north-america/canada/nunavut/nunavut"
           ],
           "mapMaxZoom": 12,
           "outline": {
             "union": [
-              "north-america/canada/nunavut"
+              "north-america/canada/nunavut/nunavut"
             ]
           }
         }
@@ -170,19 +170,19 @@
     },
     {
       "country": "europe-italy",
-      "pbf": "europe/italy",
+      "pbf": "europe/italy/italy",
       "pieces": [
         {
           "id": "europe-italy-north",
           "name": "Northern Italy",
           "sources": [
-            "europe/italy/nord-ovest",
-            "europe/italy/nord-est"
+            "europe/italy/nord-ovest/nord-ovest",
+            "europe/italy/nord-est/nord-est"
           ],
           "outline": {
             "union": [
-              "europe/italy/nord-ovest",
-              "europe/italy/nord-est"
+              "europe/italy/nord-ovest/nord-ovest",
+              "europe/italy/nord-est/nord-est"
             ]
           }
         },
@@ -190,15 +190,15 @@
           "id": "europe-italy-centre-south",
           "name": "Central and Southern Italy with the islands",
           "sources": [
-            "europe/italy/centro",
-            "europe/italy/sud",
-            "europe/italy/isole"
+            "europe/italy/centro/centro",
+            "europe/italy/sud/sud",
+            "europe/italy/isole/isole"
           ],
           "outline": {
             "union": [
-              "europe/italy/centro",
-              "europe/italy/sud",
-              "europe/italy/isole"
+              "europe/italy/centro/centro",
+              "europe/italy/sud/sud",
+              "europe/italy/isole/isole"
             ]
           }
         }
@@ -206,31 +206,31 @@
     },
     {
       "country": "europe-spain",
-      "pbf": "europe/spain",
+      "pbf": "europe/spain/spain",
       "pieces": [
         {
           "id": "europe-spain-north",
           "name": "Northern Spain",
           "sources": [
-            "europe/spain/galicia",
-            "europe/spain/asturias",
-            "europe/spain/cantabria",
-            "europe/spain/pais-vasco",
-            "europe/spain/navarra",
-            "europe/spain/la-rioja",
-            "europe/spain/aragon",
-            "europe/spain/castilla-y-leon"
+            "europe/spain/galicia/galicia",
+            "europe/spain/asturias/asturias",
+            "europe/spain/cantabria/cantabria",
+            "europe/spain/pais-vasco/pais-vasco",
+            "europe/spain/navarra/navarra",
+            "europe/spain/la-rioja/la-rioja",
+            "europe/spain/aragon/aragon",
+            "europe/spain/castilla-y-leon/castilla-y-leon"
           ],
           "outline": {
             "union": [
-              "europe/spain/galicia",
-              "europe/spain/asturias",
-              "europe/spain/cantabria",
-              "europe/spain/pais-vasco",
-              "europe/spain/navarra",
-              "europe/spain/la-rioja",
-              "europe/spain/aragon",
-              "europe/spain/castilla-y-leon"
+              "europe/spain/galicia/galicia",
+              "europe/spain/asturias/asturias",
+              "europe/spain/cantabria/cantabria",
+              "europe/spain/pais-vasco/pais-vasco",
+              "europe/spain/navarra/navarra",
+              "europe/spain/la-rioja/la-rioja",
+              "europe/spain/aragon/aragon",
+              "europe/spain/castilla-y-leon/castilla-y-leon"
             ]
           }
         },
@@ -238,29 +238,29 @@
           "id": "europe-spain-south-east",
           "name": "Southern and Eastern Spain",
           "sources": [
-            "europe/spain/cataluna",
-            "europe/spain/valencia",
-            "europe/spain/islas-baleares",
-            "europe/spain/madrid",
-            "europe/spain/castilla-la-mancha",
-            "europe/spain/murcia",
-            "europe/spain/andalucia",
-            "europe/spain/extremadura",
-            "europe/spain/ceuta",
-            "europe/spain/melilla"
+            "europe/spain/cataluna/cataluna",
+            "europe/spain/valencia/valencia",
+            "europe/spain/islas-baleares/islas-baleares",
+            "europe/spain/madrid/madrid",
+            "europe/spain/castilla-la-mancha/castilla-la-mancha",
+            "europe/spain/murcia/murcia",
+            "europe/spain/andalucia/andalucia",
+            "europe/spain/extremadura/extremadura",
+            "europe/spain/ceuta/ceuta",
+            "europe/spain/melilla/melilla"
           ],
           "outline": {
             "union": [
-              "europe/spain/cataluna",
-              "europe/spain/valencia",
-              "europe/spain/islas-baleares",
-              "europe/spain/madrid",
-              "europe/spain/castilla-la-mancha",
-              "europe/spain/murcia",
-              "europe/spain/andalucia",
-              "europe/spain/extremadura",
-              "europe/spain/ceuta",
-              "europe/spain/melilla"
+              "europe/spain/cataluna/cataluna",
+              "europe/spain/valencia/valencia",
+              "europe/spain/islas-baleares/islas-baleares",
+              "europe/spain/madrid/madrid",
+              "europe/spain/castilla-la-mancha/castilla-la-mancha",
+              "europe/spain/murcia/murcia",
+              "europe/spain/andalucia/andalucia",
+              "europe/spain/extremadura/extremadura",
+              "europe/spain/ceuta/ceuta",
+              "europe/spain/melilla/melilla"
             ]
           }
         }
@@ -268,29 +268,29 @@
     },
     {
       "country": "europe-poland",
-      "pbf": "europe/poland",
+      "pbf": "europe/poland/poland",
       "pieces": [
         {
           "id": "europe-poland-north",
           "name": "Northern Poland (with Warsaw)",
           "sources": [
-            "europe/poland/zachodniopomorskie",
-            "europe/poland/pomorskie",
-            "europe/poland/warminsko-mazurskie",
-            "europe/poland/podlaskie",
-            "europe/poland/mazowieckie",
-            "europe/poland/lodzkie",
-            "europe/poland/kujawsko-pomorskie"
+            "europe/poland/zachodniopomorskie/zachodniopomorskie",
+            "europe/poland/pomorskie/pomorskie",
+            "europe/poland/warminsko-mazurskie/warminsko-mazurskie",
+            "europe/poland/podlaskie/podlaskie",
+            "europe/poland/mazowieckie/mazowieckie",
+            "europe/poland/lodzkie/lodzkie",
+            "europe/poland/kujawsko-pomorskie/kujawsko-pomorskie"
           ],
           "outline": {
             "union": [
-              "europe/poland/zachodniopomorskie",
-              "europe/poland/pomorskie",
-              "europe/poland/warminsko-mazurskie",
-              "europe/poland/podlaskie",
-              "europe/poland/mazowieckie",
-              "europe/poland/lodzkie",
-              "europe/poland/kujawsko-pomorskie"
+              "europe/poland/zachodniopomorskie/zachodniopomorskie",
+              "europe/poland/pomorskie/pomorskie",
+              "europe/poland/warminsko-mazurskie/warminsko-mazurskie",
+              "europe/poland/podlaskie/podlaskie",
+              "europe/poland/mazowieckie/mazowieckie",
+              "europe/poland/lodzkie/lodzkie",
+              "europe/poland/kujawsko-pomorskie/kujawsko-pomorskie"
             ]
           }
         },
@@ -298,27 +298,27 @@
           "id": "europe-poland-south",
           "name": "Southern Poland",
           "sources": [
-            "europe/poland/wielkopolskie",
-            "europe/poland/lubuskie",
-            "europe/poland/dolnoslaskie",
-            "europe/poland/opolskie",
-            "europe/poland/slaskie",
-            "europe/poland/malopolskie",
-            "europe/poland/podkarpackie",
-            "europe/poland/lubelskie",
-            "europe/poland/swietokrzyskie"
+            "europe/poland/wielkopolskie/wielkopolskie",
+            "europe/poland/lubuskie/lubuskie",
+            "europe/poland/dolnoslaskie/dolnoslaskie",
+            "europe/poland/opolskie/opolskie",
+            "europe/poland/slaskie/slaskie",
+            "europe/poland/malopolskie/malopolskie",
+            "europe/poland/podkarpackie/podkarpackie",
+            "europe/poland/lubelskie/lubelskie",
+            "europe/poland/swietokrzyskie/swietokrzyskie"
           ],
           "outline": {
             "union": [
-              "europe/poland/wielkopolskie",
-              "europe/poland/lubuskie",
-              "europe/poland/dolnoslaskie",
-              "europe/poland/opolskie",
-              "europe/poland/slaskie",
-              "europe/poland/malopolskie",
-              "europe/poland/podkarpackie",
-              "europe/poland/lubelskie",
-              "europe/poland/swietokrzyskie"
+              "europe/poland/wielkopolskie/wielkopolskie",
+              "europe/poland/lubuskie/lubuskie",
+              "europe/poland/dolnoslaskie/dolnoslaskie",
+              "europe/poland/opolskie/opolskie",
+              "europe/poland/slaskie/slaskie",
+              "europe/poland/malopolskie/malopolskie",
+              "europe/poland/podkarpackie/podkarpackie",
+              "europe/poland/lubelskie/lubelskie",
+              "europe/poland/swietokrzyskie/swietokrzyskie"
             ]
           }
         }
@@ -326,21 +326,21 @@
     },
     {
       "country": "asia-japan",
-      "pbf": "asia/japan",
+      "pbf": "asia/japan/japan",
       "pieces": [
         {
           "id": "asia-japan-east",
           "name": "Eastern Japan (Hokkaido, Tohoku, Kanto)",
           "sources": [
-            "asia/japan/hokkaido",
-            "asia/japan/tohoku",
-            "asia/japan/kanto"
+            "asia/japan/hokkaido/hokkaido",
+            "asia/japan/tohoku/tohoku",
+            "asia/japan/kanto/kanto"
           ],
           "outline": {
             "union": [
-              "asia/japan/hokkaido",
-              "asia/japan/tohoku",
-              "asia/japan/kanto"
+              "asia/japan/hokkaido/hokkaido",
+              "asia/japan/tohoku/tohoku",
+              "asia/japan/kanto/kanto"
             ]
           },
           "clipRoadData": true
@@ -349,13 +349,13 @@
           "id": "asia-japan-central",
           "name": "Central Japan (Chubu, Kansai)",
           "sources": [
-            "asia/japan/chubu",
-            "asia/japan/kansai"
+            "asia/japan/chubu/chubu",
+            "asia/japan/kansai/kansai"
           ],
           "outline": {
             "union": [
-              "asia/japan/chubu",
-              "asia/japan/kansai"
+              "asia/japan/chubu/chubu",
+              "asia/japan/kansai/kansai"
             ],
             "minus": [
               "asia-japan-east"
@@ -367,15 +367,15 @@
           "id": "asia-japan-west",
           "name": "Western Japan (Chugoku, Shikoku, Kyushu)",
           "sources": [
-            "asia/japan/chugoku",
-            "asia/japan/shikoku",
-            "asia/japan/kyushu"
+            "asia/japan/chugoku/chugoku",
+            "asia/japan/shikoku/shikoku",
+            "asia/japan/kyushu/kyushu"
           ],
           "outline": {
             "union": [
-              "asia/japan/chugoku",
-              "asia/japan/shikoku",
-              "asia/japan/kyushu"
+              "asia/japan/chugoku/chugoku",
+              "asia/japan/shikoku/shikoku",
+              "asia/japan/kyushu/kyushu"
             ],
             "minus": [
               "asia-japan-east",
@@ -388,17 +388,17 @@
     },
     {
       "country": "asia-indonesia",
-      "pbf": "asia/indonesia",
+      "pbf": "asia/indonesia/indonesia",
       "pieces": [
         {
           "id": "asia-indonesia-java",
           "name": "Java",
           "sources": [
-            "asia/indonesia/java"
+            "asia/indonesia/java/java"
           ],
           "outline": {
             "union": [
-              "asia/indonesia/java"
+              "asia/indonesia/java/java"
             ]
           },
           "clipRoadData": true
@@ -407,21 +407,21 @@
           "id": "asia-indonesia-outer",
           "name": "Sumatra, Kalimantan and the eastern islands",
           "sources": [
-            "asia/indonesia/sumatra",
-            "asia/indonesia/kalimantan",
-            "asia/indonesia/sulawesi",
-            "asia/indonesia/maluku",
-            "asia/indonesia/nusa-tenggara",
-            "asia/indonesia/papua"
+            "asia/indonesia/sumatra/sumatra",
+            "asia/indonesia/kalimantan/kalimantan",
+            "asia/indonesia/sulawesi/sulawesi",
+            "asia/indonesia/maluku/maluku",
+            "asia/indonesia/nusa-tenggara/nusa-tenggara",
+            "asia/indonesia/papua/papua"
           ],
           "outline": {
             "union": [
-              "asia/indonesia/sumatra",
-              "asia/indonesia/kalimantan",
-              "asia/indonesia/sulawesi",
-              "asia/indonesia/maluku",
-              "asia/indonesia/nusa-tenggara",
-              "asia/indonesia/papua"
+              "asia/indonesia/sumatra/sumatra",
+              "asia/indonesia/kalimantan/kalimantan",
+              "asia/indonesia/sulawesi/sulawesi",
+              "asia/indonesia/maluku/maluku",
+              "asia/indonesia/nusa-tenggara/nusa-tenggara",
+              "asia/indonesia/papua/papua"
             ],
             "minus": [
               "asia-indonesia-java"
@@ -433,21 +433,21 @@
     },
     {
       "country": "europe-norway",
-      "pbf": "europe/norway",
+      "pbf": "europe/norway/norway",
       "pieces": [
         {
           "id": "europe-norway-south",
           "name": "Southern Norway",
           "sources": [
-            "europe/norway/ostlandet",
-            "europe/norway/sorlandet",
-            "europe/norway/vestlandet"
+            "europe/norway/ostlandet/ostlandet",
+            "europe/norway/sorlandet/sorlandet",
+            "europe/norway/vestlandet/vestlandet"
           ],
           "outline": {
             "union": [
-              "europe/norway/ostlandet",
-              "europe/norway/sorlandet",
-              "europe/norway/vestlandet"
+              "europe/norway/ostlandet/ostlandet",
+              "europe/norway/sorlandet/sorlandet",
+              "europe/norway/vestlandet/vestlandet"
             ]
           },
           "clipRoadData": true
@@ -456,15 +456,15 @@
           "id": "europe-norway-north",
           "name": "Northern Norway (Trøndelag and north, with Svalbard)",
           "sources": [
-            "europe/norway/trondelag",
-            "europe/norway/nord-norge",
-            "europe/norway/svalbard-janmayen"
+            "europe/norway/trondelag/trondelag",
+            "europe/norway/nord-norge/nord-norge",
+            "europe/norway/svalbard-janmayen/svalbard-janmayen"
           ],
           "outline": {
             "union": [
-              "europe/norway/trondelag",
-              "europe/norway/nord-norge",
-              "europe/norway/svalbard-janmayen"
+              "europe/norway/trondelag/trondelag",
+              "europe/norway/nord-norge/nord-norge",
+              "europe/norway/svalbard-janmayen/svalbard-janmayen"
             ],
             "minus": [
               "europe-norway-south"
@@ -476,29 +476,29 @@
     },
     {
       "country": "australia-oceania-australia",
-      "pbf": "australia-oceania/australia",
+      "pbf": "australia-oceania/australia/australia",
       "pieces": [
         {
           "id": "australia-oceania-australia-east",
           "name": "Eastern Australia (NSW, ACT, Queensland, Victoria, Tasmania)",
           "sources": [
-            "australia-oceania/australia/new-south-wales",
-            "australia-oceania/australia/act",
-            "australia-oceania/australia/queensland",
-            "australia-oceania/australia/victoria",
-            "australia-oceania/australia/tasmania",
-            "australia-oceania/australia/coral-sea-islands",
-            "australia-oceania/australia/norfolk-island"
+            "australia-oceania/australia/new-south-wales/new-south-wales",
+            "australia-oceania/australia/act/act",
+            "australia-oceania/australia/queensland/queensland",
+            "australia-oceania/australia/victoria/victoria",
+            "australia-oceania/australia/tasmania/tasmania",
+            "australia-oceania/australia/coral-sea-islands/coral-sea-islands",
+            "australia-oceania/australia/norfolk-island/norfolk-island"
           ],
           "outline": {
             "union": [
-              "australia-oceania/australia/new-south-wales",
-              "australia-oceania/australia/act",
-              "australia-oceania/australia/queensland",
-              "australia-oceania/australia/victoria",
-              "australia-oceania/australia/tasmania",
-              "australia-oceania/australia/coral-sea-islands",
-              "australia-oceania/australia/norfolk-island"
+              "australia-oceania/australia/new-south-wales/new-south-wales",
+              "australia-oceania/australia/act/act",
+              "australia-oceania/australia/queensland/queensland",
+              "australia-oceania/australia/victoria/victoria",
+              "australia-oceania/australia/tasmania/tasmania",
+              "australia-oceania/australia/coral-sea-islands/coral-sea-islands",
+              "australia-oceania/australia/norfolk-island/norfolk-island"
             ]
           },
           "clipRoadData": true
@@ -507,23 +507,23 @@
           "id": "australia-oceania-australia-west",
           "name": "Western and Central Australia (WA, SA, NT)",
           "sources": [
-            "australia-oceania/australia/western-australia",
-            "australia-oceania/australia/south-australia",
-            "australia-oceania/australia/northern-territory",
-            "australia-oceania/australia/ashmore-cartier",
-            "australia-oceania/australia/christmas-island",
-            "australia-oceania/australia/cocos-islands",
-            "australia-oceania/australia/heard-mcdonald"
+            "australia-oceania/australia/western-australia/western-australia",
+            "australia-oceania/australia/south-australia/south-australia",
+            "australia-oceania/australia/northern-territory/northern-territory",
+            "australia-oceania/australia/ashmore-cartier/ashmore-cartier",
+            "australia-oceania/australia/christmas-island/christmas-island",
+            "australia-oceania/australia/cocos-islands/cocos-islands",
+            "australia-oceania/australia/heard-mcdonald/heard-mcdonald"
           ],
           "outline": {
             "union": [
-              "australia-oceania/australia/western-australia",
-              "australia-oceania/australia/south-australia",
-              "australia-oceania/australia/northern-territory",
-              "australia-oceania/australia/ashmore-cartier",
-              "australia-oceania/australia/christmas-island",
-              "australia-oceania/australia/cocos-islands",
-              "australia-oceania/australia/heard-mcdonald"
+              "australia-oceania/australia/western-australia/western-australia",
+              "australia-oceania/australia/south-australia/south-australia",
+              "australia-oceania/australia/northern-territory/northern-territory",
+              "australia-oceania/australia/ashmore-cartier/ashmore-cartier",
+              "australia-oceania/australia/christmas-island/christmas-island",
+              "australia-oceania/australia/cocos-islands/cocos-islands",
+              "australia-oceania/australia/heard-mcdonald/heard-mcdonald"
             ],
             "minus": [
               "australia-oceania-australia-east"
@@ -535,13 +535,13 @@
     },
     {
       "country": "central-america-mexico",
-      "pbf": "north-america/mexico",
+      "pbf": "north-america/mexico/mexico",
       "pieces": [
         {
           "id": "central-america-mexico-north-west",
           "name": "Northern and Western Mexico",
           "sources": [
-            "north-america/mexico"
+            "north-america/mexico/mexico"
           ],
           "outline": {
             "union": [
@@ -561,7 +561,7 @@
               "ne:MX:Jalisco",
               "ne:MX:Colima"
             ],
-            "within": "north-america/mexico",
+            "within": "north-america/mexico/mexico",
             "seaward": 0.2
           },
           "clipRoadData": true
@@ -570,11 +570,11 @@
           "id": "central-america-mexico-centre-south",
           "name": "Central and Southern Mexico",
           "sources": [
-            "north-america/mexico"
+            "north-america/mexico/mexico"
           ],
           "outline": {
             "union": [
-              "north-america/mexico"
+              "north-america/mexico/mexico"
             ],
             "minus": [
               "central-america-mexico-north-west"
@@ -586,20 +586,20 @@
     },
     {
       "country": "south-america-brazil-sudeste",
-      "pbf": "south-america/brazil/sudeste",
+      "pbf": "south-america/brazil/sudeste/sudeste",
       "pieces": [
         {
           "id": "south-america-brazil-sudeste-minas",
           "name": "Minas Gerais and Espírito Santo",
           "sources": [
-            "south-america/brazil/sudeste"
+            "south-america/brazil/sudeste/sudeste"
           ],
           "outline": {
             "union": [
               "ne:BR:Minas Gerais",
               "ne:BR:Espírito Santo"
             ],
-            "within": "south-america/brazil/sudeste",
+            "within": "south-america/brazil/sudeste/sudeste",
             "seaward": 0.2
           },
           "clipRoadData": true
@@ -608,11 +608,11 @@
           "id": "south-america-brazil-sudeste-sp-rj",
           "name": "São Paulo and Rio de Janeiro",
           "sources": [
-            "south-america/brazil/sudeste"
+            "south-america/brazil/sudeste/sudeste"
           ],
           "outline": {
             "union": [
-              "south-america/brazil/sudeste"
+              "south-america/brazil/sudeste/sudeste"
             ],
             "minus": [
               "south-america-brazil-sudeste-minas"
