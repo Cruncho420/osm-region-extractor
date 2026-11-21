@@ -7,8 +7,8 @@
  * wrong place and answers 404 (europe/germany/baden-wuerttemberg-latest.osm.pbf -> germany/baden-wuerttemberg/...), so
  * a monthly run would fail region by region hours in. This check runs first and fails the run in minutes, naming every
  * address that does not answer.
- * WHAT: HEAD requests only (nothing is downloaded), one at a time with a pause, a generic client name; a request that
- * cannot connect is retried. Checks, per region of scripts/regions.json: the -latest .osm.pbf, its .poly and, with
+ * WHAT: HEAD requests only (nothing is downloaded), one at a time with a pause, a generic client name; a refused
+ * connection is retried, and an address with no answer is rechecked once at the end (see runChecks). Checks, per region of scripts/regions.json: the -latest .osm.pbf, its .poly and, with
  * --osm-date YYMMDD, the dated .osm.pbf the build downloads; plus every .poly of scripts/region-slices.json and
  * scripts/release-trial-packs.json.
  * Usage: node scripts/check-geofabrik-paths.mjs [--osm-date YYMMDD] [--only-regions] [--region <id>] [--json out.json]
@@ -32,8 +32,8 @@ export function addressesFor(geofabrikPath, date) {
   return [`${stem}-latest.osm.pbf`, `${stem}.poly`, ...(date ? [`${stem}-${date}.osm.pbf`] : [])];
 }
 
-async function head(path) {
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+async function head(path, tries = 3) {
+  for (let attempt = 1; attempt <= tries; attempt += 1) {
     try {
       const res = await fetch(`${BASE}/${path}`, { method: 'HEAD', redirect: 'follow', headers: { 'user-agent': UA },
         signal: AbortSignal.timeout(20_000) });
@@ -43,11 +43,37 @@ async function head(path) {
       // A refused connection is retried (Geofabrik refuses bursts now and then). No answer in 20 s is not:
       // a moved dated address hangs instead of 404ing, and retrying each one would turn a minute-long
       // check into hours.
-      if (attempt === 3 || why === 'TimeoutError') return { status: 0, final: why };
+      if (attempt === tries || why === 'TimeoutError') return { status: 0, final: why };
       await sleep(10_000 * attempt);
     }
   }
   return { status: 0, final: 'unreachable' };
+}
+
+/**
+ * The decision. Any HTTP answer other than 200 (404, 410, ...) fails at once: the address is wrong. "No answer"
+ * (timeout, refused) is collected and rechecked once at the end, one try each, because Geofabrik drops a few
+ * requests now and then (3 of 828 on 21 Nov, all 200 on recheck). More than `maxNoAnswer` of them means Geofabrik
+ * itself is not answering: stop at once, so a mass hang ends in minutes, not hours.
+ * Returns { failed, notAnswering } — notAnswering is true when the only failures are "no answer".
+ */
+export async function runChecks(checks, headFn, { maxNoAnswer = 30, pause = 0, onProgress } = {}) {
+  const failed = [];
+  const noAnswer = [];
+  for (const [i, c] of checks.entries()) {
+    onProgress?.(i, checks.length, failed.length + noAnswer.length);
+    const r = await headFn(c.path, 3);
+    if (r.status === 0) noAnswer.push({ ...c, ...r });
+    else if (r.status !== 200) failed.push({ ...c, ...r });
+    if (noAnswer.length > maxNoAnswer) return { failed: [...failed, ...noAnswer], notAnswering: true, stoppedEarly: true };
+    if (pause && i + 1 < checks.length) await sleep(pause);
+  }
+  for (const c of noAnswer) {
+    const r = await headFn(c.path, 1);
+    if (r.status !== 200) failed.push({ ...c, ...r });
+    if (pause) await sleep(pause);
+  }
+  return { failed, notAnswering: failed.length > 0 && failed.every((f) => f.status === 0), stoppedEarly: false };
 }
 
 async function main() {
@@ -69,18 +95,18 @@ async function main() {
       if (typeof t.poly === 'string' && t.poly.startsWith(BASE)) checks.push({ id: `trial:${t.id}`, path: t.poly.slice(BASE.length + 1) });
     }
   }
-  const failed = [];
   if (args.includes('--progress')) console.error(`checking ${checks.length} addresses`);
-  for (const [i, c] of checks.entries()) {
-    if (args.includes('--progress') && i % 50 === 0) console.error(`${i} of ${checks.length}, ${failed.length} failing so far`);
-    const r = await head(c.path);
-    if (r.status !== 200) failed.push({ ...c, ...r });
-    if (i + 1 < checks.length) await sleep(PAUSE_MS);
-  }
+  const onProgress = args.includes('--progress')
+    ? (i, n, bad) => { if (i % 50 === 0) console.error(`${i} of ${n}, ${bad} not 200 so far`); } : undefined;
+  const { failed, notAnswering, stoppedEarly } = await runChecks(checks, head, { pause: PAUSE_MS, onProgress });
   const failedRegions = new Set(failed.filter((f) => !f.id.includes(':')).map((f) => f.id));
   console.log(`Geofabrik addresses: ${checks.length - failed.length} of ${checks.length} answer 200; regions with a failing address: ${failedRegions.size} of ${regions.length}`);
   for (const f of failed) console.log(`  ${f.status || 'no answer'}  ${f.id}  ${f.path}  ->  ${f.final}`);
   if (flag('--json')) writeFileSync(flag('--json'), JSON.stringify({ checked: checks.length, failed, failedRegions: [...failedRegions] }, null, 1));
+  if (notAnswering) {
+    console.log(`::error::Geofabrik not answering${stoppedEarly ? ' (stopped after more than 30 addresses gave no answer)' : ''}: no address answered wrongly; rerun later. The lists need no change.`);
+    process.exit(1);
+  }
   if (failed.length) {
     console.log('::error::Geofabrik does not serve some region addresses (above). Fix scripts/regions.json (and the slice/trial lists) before extracting.');
     process.exit(1);

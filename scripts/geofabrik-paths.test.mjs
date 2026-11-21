@@ -3,7 +3,48 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { stemMap, movePbfPath } from './migrate-geofabrik-paths.mjs';
-import { addressesFor } from './check-geofabrik-paths.mjs';
+import { addressesFor, runChecks } from './check-geofabrik-paths.mjs';
+
+// A fake Geofabrik: `answers[path]` is a list of statuses, one per call (0 = no answer); the last one repeats.
+function fakeHead(answers) {
+  const calls = {};
+  const fn = async (path) => {
+    const list = answers[path] ?? [200];
+    const n = calls[path] = (calls[path] ?? 0) + 1;
+    return { status: list[Math.min(n, list.length) - 1], final: path };
+  };
+  fn.calls = calls;
+  return fn;
+}
+const checksOf = (...paths) => paths.map((path) => ({ id: path, path }));
+
+test('a 404 fails at once and is not rechecked', async () => {
+  const head = fakeHead({ b: [404] });
+  const r = await runChecks(checksOf('a', 'b'), head);
+  assert.deepEqual(r.failed.map((f) => f.path), ['b']);
+  assert.equal(r.notAnswering, false);
+  assert.equal(head.calls.b, 1);
+});
+
+test('an address with no answer that answers on the recheck passes', async () => {
+  const r = await runChecks(checksOf('a', 'b', 'c'), fakeHead({ b: [0, 200] }));
+  assert.deepEqual(r.failed, []);
+});
+
+test('an address that stays silent fails as "Geofabrik not answering"', async () => {
+  const r = await runChecks(checksOf('a', 'b'), fakeHead({ b: [0] }));
+  assert.deepEqual(r.failed.map((f) => f.path), ['b']);
+  assert.equal(r.notAnswering, true);
+});
+
+test('a mass hang stops after maxNoAnswer silent addresses without checking the rest', async () => {
+  const paths = Array.from({ length: 100 }, (_, i) => `p${i}`);
+  const head = fakeHead(Object.fromEntries(paths.map((p) => [p, [0]])));
+  const r = await runChecks(checksOf(...paths), head, { maxNoAnswer: 30 });
+  assert.equal(r.stoppedEarly, true);
+  assert.equal(r.notAnswering, true);
+  assert.equal(Object.keys(head.calls).length, 31);
+});
 
 const index = { features: [
   { properties: { urls: { pbf: 'https://download.geofabrik.de/europe/germany/baden-wuerttemberg/baden-wuerttemberg-latest.osm.pbf' } } },
