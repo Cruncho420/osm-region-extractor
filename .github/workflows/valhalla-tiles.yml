@@ -84,6 +84,11 @@ on:
         required: false
         default: true
         type: boolean
+      use_rest_area:
+        description: 'TEST ONLY (Rods FEAT-185 R196): mark service and rest areas in the graph (mjolnir use_rest_area). Off = the packs as shipped.'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write  # Required for creating the smoke prerelease
@@ -598,10 +603,13 @@ jobs:
             > work/valhalla-base.json
           # Set concurrency/cache via jq (not CLI flags) so a flag-name drift in
           # valhalla_build_config can never silently leave defaults in place.
-          jq '.mjolnir.concurrency = 2 | .mjolnir.max_cache_size = 262144000' \
+          # use_rest_area (Rods FEAT-185 R196, test builds only): service and rest areas get their own road use, so the
+          # app can send a stop on a service area to the service area's own road. Off unless the dispatch input is set.
+          jq --argjson rest "${{ inputs.use_rest_area == true }}" \
+            '.mjolnir.concurrency = 2 | .mjolnir.max_cache_size = 262144000 | .mjolnir.data_processing.use_rest_area = $rest' \
             work/valhalla-base.json > work/valhalla.json
           jq '.mjolnir.concurrency = 1' work/valhalla.json > work/valhalla-c1.json
-          echo "mjolnir config: $(jq -c '.mjolnir | {tile_dir, tile_extract, concurrency, max_cache_size, admin, timezone}' work/valhalla.json)"
+          echo "mjolnir config: $(jq -c '.mjolnir | {tile_dir, tile_extract, concurrency, max_cache_size, admin, timezone, use_rest_area: .data_processing.use_rest_area}' work/valhalla.json)"
 
       - name: Build admin DB for ${{ matrix.region }}
         run: |
