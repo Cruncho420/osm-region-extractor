@@ -25,6 +25,8 @@ import {
 } from './underBridgeCrossings';
 import { computeRingIdentity, type RingIdentity } from './ringIdentity';
 import { valhallaLat, valhallaLon } from './valhallaCoord.mjs';
+// Rods FEAT-264: traffic lights, stop / give-way signs, railway crossings — their own pack tables.
+import { extractNewRoadFeatures } from './newRoadFeatures.mjs';
 
 // =============================================================================
 // TYPES
@@ -588,6 +590,30 @@ async function extractRegion(regionId: string): Promise<void> {
     console.log(`      Surface JSON size: ${(surfaceJsonSize / 1024).toFixed(1)} MB`);
     console.log(`      Surface compressed size: ${(surfaceGzSize / 1024).toFixed(1)} MB`);
     console.log(`      Compression ratio: ${((1 - surfaceGzSize / surfaceJsonSize) * 100).toFixed(1)}%\n`);
+
+    // New road features (Rods FEAT-264): traffic lights, stop and give-way signs, railway level
+    // crossings, each its own pack table (newRoadFeatures.mjs; reader contract in
+    // docs/NEW-ROAD-FEATURES-CONTRACT.md). Written to {region}-roadfeatures.json.gz, read by
+    // build-sqlite.ts on this runner and NEVER uploaded (same as -ways / -surfaces / -builtup).
+    // NON-FATAL like built-up: a failure here ships the region without the four tables, which the
+    // app reads as an old pack (no metadata key) — it must never cost a region its road data.
+    const roadFeaturesGz = join(OUTPUT_DIR, `${regionId}-roadfeatures.json.gz`);
+    try {
+      console.log(`[road features 1/1] Traffic lights, stop / give-way signs, railway crossings...`);
+      const tRf = Date.now();
+      const rf = extractNewRoadFeatures({ sourcePbf: localPbf, roadPbf: wayFilteredPbf, tmpPrefix: `/tmp/${regionId}` });
+      const version = new Date().toISOString().split('T')[0];
+      writeFileSync(roadFeaturesGz, gzipSync(Buffer.from(JSON.stringify({ version, region: regionId, ...rf })), { level: 9 }));
+      console.log(
+        `      lights ${rf.trafficLights.length} rows (${rf.stats.light.places60} places), ` +
+          `stop ${rf.stopSigns.length}, give-way ${rf.giveWaySigns.length}, railway ${rf.railwayCrossings.length} ` +
+          `in ${((Date.now() - tRf) / 1000).toFixed(1)} s`,
+      );
+      console.log(`      stats ${JSON.stringify(rf.stats)}\n`);
+    } catch (rfError) {
+      console.warn(`      ⚠ Road-feature extraction failed for ${regionId} — continuing WITHOUT the four tables:`, rfError);
+      if (existsSync(roadFeaturesGz)) { try { unlinkSync(roadFeaturesGz); } catch { /* ignore */ } }
+    }
 
     // Steps 12-14: Built-up areas (inferred-limits tier 3 — urban/rural signal).
     // landuse polygons (residential/retail/commercial/industrial) + place nodes

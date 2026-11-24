@@ -14,7 +14,7 @@
  */
 
 import { createReadStream, existsSync, unlinkSync, statSync, readFileSync } from 'fs';
-import { createGunzip } from 'zlib';
+import { createGunzip, gunzipSync } from 'zlib';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
@@ -210,6 +210,73 @@ CREATE TABLE IF NOT EXISTS metadata (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+`;
+
+// =============================================================================
+// NEW ROAD FEATURES (Rods FEAT-264) — deliberately NOT inside SCHEMA_SQL
+// =============================================================================
+//
+// Four tables, one per feature, created ONLY when {region}-roadfeatures.json.gz exists, so a region
+// whose road-feature pass failed is byte-for-byte the old pack shape. Kept out of SCHEMA_SQL on
+// purpose: the Rods app runs ITS SCHEMA_SQL on every pack it opens and a Rods test requires the two
+// constants to be identical, so moving these in is a coordinated change in both repos (see
+// docs/NEW-ROAD-FEATURES-CONTRACT.md § "Old packs"). Old app builds never SELECT from these tables,
+// so they are invisible to them (the toll_points precedent). Reader contract: that same doc.
+const NEW_ROAD_FEATURES_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS traffic_lights (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  node_id INTEGER NOT NULL,
+  lat REAL NOT NULL,
+  lon REAL NOT NULL,
+  junction_id INTEGER NOT NULL,
+  centre_lat REAL NOT NULL,
+  centre_lon REAL NOT NULL,
+  junction_node INTEGER NOT NULL,
+  way_id INTEGER,
+  approach_bearing_deg REAL,
+  direction_source TEXT,
+  layer INTEGER NOT NULL,
+  kind TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tl_lat_lon ON traffic_lights(lat, lon);
+CREATE INDEX IF NOT EXISTS idx_tl_junction ON traffic_lights(junction_id);
+
+CREATE TABLE IF NOT EXISTS stop_signs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  node_id INTEGER NOT NULL,
+  lat REAL NOT NULL,
+  lon REAL NOT NULL,
+  way_id INTEGER NOT NULL,
+  approach_bearing_deg REAL NOT NULL,
+  direction_source TEXT NOT NULL,
+  at_intersection INTEGER NOT NULL,
+  roundabout_entrance INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_stop_lat_lon ON stop_signs(lat, lon);
+
+CREATE TABLE IF NOT EXISTS give_way_signs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  node_id INTEGER NOT NULL,
+  lat REAL NOT NULL,
+  lon REAL NOT NULL,
+  way_id INTEGER NOT NULL,
+  approach_bearing_deg REAL NOT NULL,
+  direction_source TEXT NOT NULL,
+  at_intersection INTEGER NOT NULL,
+  roundabout_entrance INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_giveway_lat_lon ON give_way_signs(lat, lon);
+
+CREATE TABLE IF NOT EXISTS railway_crossings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  node_id INTEGER NOT NULL,
+  lat REAL NOT NULL,
+  lon REAL NOT NULL,
+  way_id INTEGER NOT NULL,
+  barrier TEXT,
+  light TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_rail_lat_lon ON railway_crossings(lat, lon);
 `;
 
 // =============================================================================
@@ -506,6 +573,33 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
     console.log('  ⚠ No built-up data file');
   }
 
+  // New road features (Rods FEAT-264): only when the extractor wrote the file — see
+  // NEW_ROAD_FEATURES_SCHEMA_SQL. Small (tens of thousands of rows per country), so read whole.
+  const roadFeaturesPath = join(outputDir, `${regionId}-roadfeatures.json.gz`);
+  let roadFeatureCounts: Record<string, number> | null = null;
+  let roadFeaturesVersion = 0;
+  if (existsSync(roadFeaturesPath)) {
+    console.log('Reading new road features...');
+    const rf = JSON.parse(gunzipSync(readFileSync(roadFeaturesPath)).toString('utf-8'));
+    roadFeaturesVersion = rf.newRoadFeaturesVersion;
+    db.exec(NEW_ROAD_FEATURES_SCHEMA_SQL);
+    const tables: Array<[string, string, string[]]> = [
+      ['traffic_lights', 'trafficLights', ['node_id', 'lat', 'lon', 'junction_id', 'centre_lat', 'centre_lon', 'junction_node', 'way_id', 'approach_bearing_deg', 'direction_source', 'layer', 'kind']],
+      ['stop_signs', 'stopSigns', ['node_id', 'lat', 'lon', 'way_id', 'approach_bearing_deg', 'direction_source', 'at_intersection', 'roundabout_entrance']],
+      ['give_way_signs', 'giveWaySigns', ['node_id', 'lat', 'lon', 'way_id', 'approach_bearing_deg', 'direction_source', 'at_intersection', 'roundabout_entrance']],
+      ['railway_crossings', 'railwayCrossings', ['node_id', 'lat', 'lon', 'way_id', 'barrier', 'light']],
+    ];
+    roadFeatureCounts = {};
+    for (const [table, key, cols] of tables) {
+      const stmt = db.prepare(`INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`);
+      for (const row of rf[key] as Array<Record<string, unknown>>) stmt.run(...cols.map((c) => row[c] ?? null));
+      roadFeatureCounts[table] = rf[key].length;
+    }
+    console.log(`  ✓ new road features ${JSON.stringify(roadFeatureCounts)}`);
+  } else {
+    console.log('  ⚠ No new road-feature file (pack keeps the old shape)');
+  }
+
   // Insert metadata
   const insertMeta = db.prepare('INSERT INTO metadata (key, value) VALUES (?, ?)');
   insertMeta.run('version', meta.version);
@@ -516,6 +610,11 @@ async function buildSqlite(regionId: string, outputDir: string): Promise<void> {
   insertMeta.run('hasBuiltUpData', hasBuiltUpData ? 'true' : 'false');
   insertMeta.run('license', OSM_LICENSE.license);
   insertMeta.run('attribution', OSM_LICENSE.attribution);
+  // FEAT-264: the reader's old-pack test is this key's ABSENCE (docs/NEW-ROAD-FEATURES-CONTRACT.md).
+  if (roadFeatureCounts) {
+    insertMeta.run('newRoadFeaturesVersion', String(roadFeaturesVersion));
+    for (const [table, n] of Object.entries(roadFeatureCounts)) insertMeta.run(`rows:${table}`, String(n));
+  }
 
   // Commit transaction
   db.exec('COMMIT');
