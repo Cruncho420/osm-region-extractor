@@ -126,5 +126,5 @@ Every run prints the same figures on the `[road features 1/1]` line of `extract-
 
 Lights: members per place 1 to 14 (217 single-node places), place span median 25 m; 182 places have another place
 centre within 80 m, the candidates for one big junction split in two (the clutter test of R36).
-Pack: `europe-lithuania.sqlite.gz` 79,461,171 → 80,165,291 bytes (+0.9 %); every pre-existing table byte-identical.
+Pack: `europe-lithuania.sqlite.gz` 79,461,171 → 80,112,981 bytes (+0.8 %); every pre-existing table byte-identical.
 Time: the road-feature pass takes 6–11 s; the region's extract 41.7 → 43.3 s, SQLite build 45.5 → 50.5 s (same load).
